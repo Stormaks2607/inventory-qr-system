@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Asset {{ asset.asset_tag_number }}</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: #f5f7fa;
+            padding: 30px;
+        }
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            max-width: 600px;
+            margin: auto;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        h2 {
+            margin-bottom: 10px;
+        }
+        .row {
+            margin: 8px 0;
+        }
+        .label {
+            font-weight: bold;
+        }
+        .status {
+            padding: 5px 10px;
+            border-radius: 6px;
+            display: inline-block;
+        }
+        .lost {
+            background: #ffcccc;
+            color: #a00;
+        }
+        .active {
+            background: #ccffcc;
+            color: #080;
+        }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>{{ asset.asset_tag_number }}</h2>
+    <div class="row"><span class="label">Description:</span> {{ asset.item_description }}</div>
+    <div class="row"><span class="label">Brand:</span> {{ asset.brand_make }}</div>
+    <div class="row"><span class="label">Model:</span> {{ asset.model }}</div>
+    <div class="row"><span class="label">Classification:</span> {{ asset.asset_classification }}</div>
+    <div class="row"><span class="label">Sub:</span> {{ asset.asset_sub_classification }}</div>
+    <div class="row"><span class="label">Quantity:</span> {{ asset.quantity }}</div>
+    <div class="row"><span class="label">Price:</span> {{ asset.purchase_price }} {{ asset.currency }}</div>
+
+    <div class="row">
+        <span class="label">Status:</span>
+        <span class="status {% if asset.current_status == 'LOST' %}lost{% else %}active{% endif %}">
+            {{ asset.current_status }}
+        </span>
+    </div>
+
+    <div class="row"><span class="label">Remarks:</span> {{ asset.remarks }}</div>
+</div>
+
+</body>
+</html>
