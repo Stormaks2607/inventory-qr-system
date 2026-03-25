@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from supabase import create_client, Client
 
+import json
 import requests
 from fastapi import Body
 
@@ -86,26 +87,30 @@ async def telegram_webhook(update: dict = Body(...)):
     token = os.getenv("BOT_TOKEN")
 
     try:
+        print("UPDATE:", update)
+
         if "message" not in update:
             return {"ok": True}
 
         message = update["message"]
         chat_id = message["chat"]["id"]
 
-        # 1. Получаем код из Mini App
-        if "web_app_data" in message and message["web_app_data"].get("data"):
-            import json
-            raw_data = message["web_app_data"]["data"]
+        text = ""
 
+        # 1. Данные из Mini App
+        if "web_app_data" in message and message["web_app_data"].get("data"):
+            raw_data = message["web_app_data"]["data"]
             try:
                 payload = json.loads(raw_data)
                 text = (payload.get("asset_tag") or "").strip()
             except Exception:
                 text = raw_data.strip()
-        else:
-            # 2. Обычный текст
-            text = (message.get("text") or "").strip()
 
+        # 2. Обычный текст
+        elif message.get("text"):
+            text = message["text"].strip()
+
+        # 3. Если ничего не получили
         if not text:
             requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
@@ -139,6 +144,10 @@ async def telegram_webhook(update: dict = Body(...)):
                     "chat_id": chat_id,
                     "text": (
                         "Вітаю! Я бот для пошуку активів.\n\n"
+                        "Що я вмію:\n"
+                        "• знайти актив за кодом\n"
+                        "• показати картку активу\n"
+                        "• відкрити web-картку\n\n"
                         "Оберіть дію нижче:"
                     ),
                     "reply_markup": {
