@@ -98,7 +98,22 @@ async def telegram_webhook(update: dict = Body(...)):
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={
                     "chat_id": chat_id,
-                    "text": "Надішли код активу, наприклад HELP-UKR-0015"
+                    "text": "Надішли код активу або натисни кнопку нижче.",
+                    "reply_markup": {
+                        "keyboard": [
+                            [
+                                {
+                                    "text": "📷 Сканувати QR",
+                                    "web_app": {
+                                        "url": "https://inventory-qr-system.onrender.com/miniapp"
+                                    }
+                                },
+                                {"text": "⌨️ Ввести код"}
+                            ],
+                            [{"text": "ℹ️ Допомога"}]
+                        ],
+                        "resize_keyboard": True
+                    }
                 },
                 timeout=15,
             )
@@ -111,7 +126,51 @@ async def telegram_webhook(update: dict = Body(...)):
                     "chat_id": chat_id,
                     "text": (
                         "Вітаю! Я бот для пошуку активів.\n\n"
-                        "Надішли код типу HELP-UKR-0015"
+                        "Що я вмію:\n"
+                        "• знайти актив за кодом\n"
+                        "• показати картку активу\n"
+                        "• відкрити web-картку\n\n"
+                        "Оберіть дію нижче:"
+                    ),
+                    "reply_markup": {
+                        "keyboard": [
+                            [
+                                {
+                                    "text": "📷 Сканувати QR",
+                                    "web_app": {
+                                        "url": "https://inventory-qr-system.onrender.com/miniapp"
+                                    }
+                                },
+                                {"text": "⌨️ Ввести код"}
+                            ],
+                            [{"text": "ℹ️ Допомога"}]
+                        ],
+                        "resize_keyboard": True
+                    }
+                },
+                timeout=15,
+            )
+            return {"ok": True}
+
+        if text == "⌨️ Ввести код":
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": "Введіть код активу, наприклад: HELP-UKR-0015"
+                },
+                timeout=15,
+            )
+            return {"ok": True}
+
+        if text == "ℹ️ Допомога":
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": (
+                        "Натисніть '📷 Сканувати QR' для відкриття сканера\n"
+                        "або '⌨️ Ввести код' для ручного введення."
                     )
                 },
                 timeout=15,
