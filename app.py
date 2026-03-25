@@ -85,3 +85,4 @@ def miniapp(request: Request):
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Inventory system is running"}
+ 
