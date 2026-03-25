@@ -91,7 +91,20 @@ async def telegram_webhook(update: dict = Body(...)):
 
         message = update["message"]
         chat_id = message["chat"]["id"]
-        text = (message.get("text") or "").strip()
+
+        # 1. Получаем код из Mini App
+        if "web_app_data" in message and message["web_app_data"].get("data"):
+            import json
+            raw_data = message["web_app_data"]["data"]
+
+            try:
+                payload = json.loads(raw_data)
+                text = (payload.get("asset_tag") or "").strip()
+            except Exception:
+                text = raw_data.strip()
+        else:
+            # 2. Обычный текст
+            text = (message.get("text") or "").strip()
 
         if not text:
             requests.post(
@@ -126,10 +139,6 @@ async def telegram_webhook(update: dict = Body(...)):
                     "chat_id": chat_id,
                     "text": (
                         "Вітаю! Я бот для пошуку активів.\n\n"
-                        "Що я вмію:\n"
-                        "• знайти актив за кодом\n"
-                        "• показати картку активу\n"
-                        "• відкрити web-картку\n\n"
                         "Оберіть дію нижче:"
                     ),
                     "reply_markup": {
@@ -168,10 +177,7 @@ async def telegram_webhook(update: dict = Body(...)):
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={
                     "chat_id": chat_id,
-                    "text": (
-                        "Натисніть '📷 Сканувати QR' для відкриття сканера\n"
-                        "або '⌨️ Ввести код' для ручного введення."
-                    )
+                    "text": "Натисніть '📷 Сканувати QR' або введіть код вручну."
                 },
                 timeout=15,
             )
