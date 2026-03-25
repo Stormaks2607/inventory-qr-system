@@ -7,6 +7,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from supabase import create_client, Client
 
+import requests
+from fastapi import Body
+
 # =========================
 # НАСТРОЙКИ
 # =========================
@@ -78,3 +81,85 @@ def miniapp(request: Request):
         name="miniapp.html",
         context={},
     )
+@app.post("/webhook")
+async def telegram_webhook(update: dict = Body(...)):
+    token = os.getenv("BOT_TOKEN")
+
+    try:
+        if "message" not in update:
+            return {"ok": True}
+
+        message = update["message"]
+        chat_id = message["chat"]["id"]
+        text = (message.get("text") or "").strip()
+
+        if not text:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": "Надішли код активу, наприклад HELP-UKR-0015"
+                },
+                timeout=15,
+            )
+            return {"ok": True}
+
+        if text == "/start":
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": (
+                        "Вітаю! Я бот для пошуку активів.\n\n"
+                        "Надішли код типу HELP-UKR-0015"
+                    )
+                },
+                timeout=15,
+            )
+            return {"ok": True}
+
+        asset = get_asset_by_tag(text)
+
+        if not asset:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": f"❌ Актив {text} не знайдено."
+                },
+                timeout=15,
+            )
+            return {"ok": True}
+
+        message_text = (
+            f"📦 {asset.get('asset_tag_number', '-')}\n"
+            f"📝 {asset.get('item_description', '-')}\n"
+            f"🏷 {asset.get('brand_make', '-')}\n"
+            f"📐 {asset.get('model', '-')}\n"
+            f"📂 {asset.get('asset_classification', '-')} / {asset.get('asset_sub_classification', '-')}\n"
+            f"📊 Status: {asset.get('current_status', '-')}\n"
+            f"💰 {asset.get('purchase_price', '-')} {asset.get('currency', '')}\n"
+            f"🔢 Qty: {asset.get('quantity', '-')}"
+        )
+
+        url = f"https://inventory-qr-system.onrender.com/view/{text}"
+
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": message_text,
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [{"text": "🔎 Відкрити картку", "url": url}]
+                    ]
+                }
+            },
+            timeout=15,
+        )
+
+        return {"ok": True}
+
+    except Exception as e:
+        print("WEBHOOK ERROR:", e)
+        return {"ok": False, "error": str(e)}
