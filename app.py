@@ -73,15 +73,20 @@ def view_asset(request: Request, asset_tag: str):
         raise HTTPException(status_code=404, detail="Asset not found")
 
     return templates.TemplateResponse(
-        "asset.html",
-        {"request": request, "asset": asset}
+        request=request,
+        name="asset.html",
+        context={"request": request, "asset": asset}
     )
+
+
 @app.get("/miniapp", response_class=HTMLResponse)
 def miniapp(request: Request):
     return templates.TemplateResponse(
-        "miniapp.html",
-        {"request": request}
+        request=request,
+        name="miniapp.html",
+        context={"request": request}
     )
+
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Inventory system is running"}
