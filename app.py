@@ -36,6 +36,12 @@ def normalize_credential(value: str) -> str:
     normalized = (value or "").strip()
     if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
         normalized = normalized[1:-1]
+    if "=" in normalized:
+        left, right = normalized.split("=", 1)
+        if left and all(ch.isupper() or ch == "_" for ch in left):
+            normalized = right.strip()
+            if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+                normalized = normalized[1:-1]
     return normalized
 
 
