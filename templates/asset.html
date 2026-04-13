@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Asset {{ asset.asset_tag_number }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f7fa;
+            padding: 30px;
+        }
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            max-width: 600px;
+            margin: auto;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        h2 {
+            margin-bottom: 10px;
+        }
+        .row {
+            margin: 8px 0;
+        }
+        .label {
+            font-weight: bold;
+        }
+        .status {
+            padding: 5px 10px;
+            border-radius: 6px;
+            display: inline-block;
+        }
+        .lost {
+            background: #ffcccc;
+            color: #a00;
+        }
+        .active {
+            background: #ccffcc;
+            color: #080;
+        }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>{{ asset.asset_tag_number }}</h2>
+    <div class="row"><span class="label">Description:</span> {{ asset.item_description or "-" }}</div>
+    <div class="row"><span class="label">Brand:</span> {{ asset.brand_make or "-" }}</div>
+    <div class="row"><span class="label">Model:</span> {{ asset.model or "-" }}</div>
+    <div class="row"><span class="label">Classification:</span> {{ asset.asset_classification or "-" }}</div>
+    <div class="row"><span class="label">Sub:</span> {{ asset.asset_sub_classification or "-" }}</div>
+    <div class="row"><span class="label">Quantity:</span> {{ asset.quantity or "-" }}</div>
+    <div class="row"><span class="label">Price:</span> {{ asset.purchase_price or "-" }} {{ asset.currency or "" }}</div>
+
+    <div class="row">
+        <span class="label">Status:</span>
+        <span class="status {% if ((asset.current_assignment.status if asset.current_assignment and asset.current_assignment.status else asset.current_status) or '') == 'LOST' %}lost{% else %}active{% endif %}">
+            {{ (asset.current_assignment.status if asset.current_assignment and asset.current_assignment.status else asset.current_status) or "-" }}
+        </span>
+    </div>
+
+    <div class="row"><span class="label">Responsible person:</span> {{ asset.current_assignment.responsible_person if asset.current_assignment else "-" }}</div>
+    <div class="row"><span class="label">Department:</span> {{ asset.current_assignment.department if asset.current_assignment else "-" }}</div>
+    <div class="row"><span class="label">City:</span> {{ asset.current_assignment.city if asset.current_assignment else "-" }}</div>
+    <div class="row"><span class="label">Remarks:</span> {{ asset.remarks or "-" }}</div>
+</div>
+
+</body>
+</html>

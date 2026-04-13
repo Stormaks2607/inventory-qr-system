@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Scanventory QR</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 24px; color: #111827; }
+        .card { max-width: 520px; margin: 0 auto; background: #fff; border-radius: 14px; padding: 24px; box-shadow: 0 6px 18px rgba(0,0,0,0.08); text-align: center; }
+        h1 { margin-top: 0; font-size: 28px; }
+        p { line-height: 1.5; color: #374151; }
+        button { border: none; border-radius: 10px; padding: 14px 18px; font-size: 18px; cursor: pointer; margin-top: 12px; width: 100%; }
+        .primary { background: #2563eb; color: white; }
+        .secondary { background: #e5e7eb; color: #111827; }
+        .result { margin-top: 18px; padding: 12px; border-radius: 10px; background: #f9fafb; border: 1px solid #e5e7eb; word-break: break-word; min-height: 24px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Сканування QR</h1>
+        <p>Натисни кнопку нижче, щоб відкрити сканер Telegram.</p>
+
+        <button class="primary" id="scanBtn">📷 Сканувати QR</button>
+        <button class="secondary" id="closeBtn">Закрити</button>
+
+        <div class="result" id="result">Результат ще не отримано</div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+
+        const resultBox = document.getElementById("result");
+        const scanBtn = document.getElementById("scanBtn");
+        const closeBtn = document.getElementById("closeBtn");
+
+        function setResult(text) {
+            resultBox.textContent = text;
+        }
+
+        scanBtn.addEventListener("click", () => {
+            if (!tg.showScanQrPopup) {
+                setResult("Ця версія Telegram не підтримує QR scanner popup.");
+                return;
+            }
+
+            tg.showScanQrPopup(
+                { text: "Наведи камеру на QR-код активу" },
+                function (qrText) {
+                    if (!qrText) {
+                        setResult("QR не зчитано.");
+                        return false;
+                    }
+
+                    setResult("Отримано: " + qrText);
+
+                    tg.sendData(JSON.stringify({
+                        asset_tag: qrText.trim()
+                    }));
+
+                    return true;
+                }
+            );
+        });
+
+        closeBtn.addEventListener("click", () => {
+            tg.close();
+        });
+    </script>
+</body>
+</html>

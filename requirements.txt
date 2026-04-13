@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+jinja2
+supabase
+requests
+python-telegram-bot
+python-dotenv
+pandas
+openpyxl
