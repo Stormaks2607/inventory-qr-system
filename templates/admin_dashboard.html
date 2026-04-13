@@ -1,0 +1,72 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Operations Dashboard</h2>
+    <p>This admin area is the foundation for asset operations, reporting, and hybrid Excel synchronization. Supabase is used for live work, while the Excel inventory file remains the official control copy.</p>
+</section>
+
+<section class="grid">
+    <article class="stat">
+        <div class="stat-label">Total assets</div>
+        <div class="stat-value">{{ summary.total_assets }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Assigned</div>
+        <div class="stat-value">{{ summary.assigned_assets }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Unassigned</div>
+        <div class="stat-value">{{ summary.unassigned_assets }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Lost</div>
+        <div class="stat-value">{{ summary.lost_assets }}</div>
+    </article>
+</section>
+
+<section class="two-column">
+    <article class="panel">
+        <h3>Top Cities</h3>
+        <ul class="list">
+            {% for item in summary.top_cities %}
+            <li><span>{{ item.label }}</span><strong>{{ item.count }}</strong></li>
+            {% else %}
+            <li><span class="muted">No data yet</span><strong>0</strong></li>
+            {% endfor %}
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>Top Departments</h3>
+        <ul class="list">
+            {% for item in summary.top_departments %}
+            <li><span>{{ item.label }}</span><strong>{{ item.count }}</strong></li>
+            {% else %}
+            <li><span class="muted">No data yet</span><strong>0</strong></li>
+            {% endfor %}
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>Top Responsible People</h3>
+        <ul class="list">
+            {% for item in summary.top_people %}
+            <li><span>{{ item.label }}</span><strong>{{ item.count }}</strong></li>
+            {% else %}
+            <li><span class="muted">No data yet</span><strong>0</strong></li>
+            {% endfor %}
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>Next Build Steps</h3>
+        <ul class="list">
+            <li><span>Asset editing workflows</span><strong>MVP</strong></li>
+            <li><span>Assignment change form</span><strong>MVP</strong></li>
+            <li><span>Sync preview against Excel</span><strong>Planned</strong></li>
+            <li><span>Exportable reports</span><strong>Planned</strong></li>
+        </ul>
+    </article>
+</section>
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Reports</h2>
+    <p>This screen is the reporting layer for management summaries. For now it surfaces live aggregated counts from Supabase and defines the report structure we will later export to Excel.</p>
+</section>
+
+<section class="grid">
+    <article class="stat">
+        <div class="stat-label">Total assets</div>
+        <div class="stat-value">{{ summary.total_assets }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Assigned</div>
+        <div class="stat-value">{{ summary.assigned_assets }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Unassigned</div>
+        <div class="stat-value">{{ summary.unassigned_assets }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Lost</div>
+        <div class="stat-value">{{ summary.lost_assets }}</div>
+    </article>
+</section>
+
+<section class="two-column">
+    <article class="panel">
+        <h3>Assets By City</h3>
+        <ul class="list">
+            {% for item in summary.top_cities %}
+            <li><span>{{ item.label }}</span><strong>{{ item.count }}</strong></li>
+            {% else %}
+            <li><span class="muted">No data yet</span><strong>0</strong></li>
+            {% endfor %}
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>Assets By Department</h3>
+        <ul class="list">
+            {% for item in summary.top_departments %}
+            <li><span>{{ item.label }}</span><strong>{{ item.count }}</strong></li>
+            {% else %}
+            <li><span class="muted">No data yet</span><strong>0</strong></li>
+            {% endfor %}
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>Assets By Responsible Person</h3>
+        <ul class="list">
+            {% for item in summary.top_people %}
+            <li><span>{{ item.label }}</span><strong>{{ item.count }}</strong></li>
+            {% else %}
+            <li><span class="muted">No data yet</span><strong>0</strong></li>
+            {% endfor %}
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>Planned Exports</h3>
+        <ul class="list">
+            <li><span>City summary export</span><strong>Planned</strong></li>
+            <li><span>Department summary export</span><strong>Planned</strong></li>
+            <li><span>Assignment audit export</span><strong>Planned</strong></li>
+            <li><span>Excel-compatible reporting pack</span><strong>Planned</strong></li>
+        </ul>
+    </article>
+</section>
+{% endblock %}

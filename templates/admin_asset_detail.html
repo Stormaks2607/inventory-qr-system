@@ -1,0 +1,109 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>{{ asset.asset_tag_number }}</h2>
+    <p>Detailed admin view for this asset. This screen is the base for future edit, reassignment, audit, and sync review actions.</p>
+</section>
+
+<section class="grid">
+    <article class="stat">
+        <div class="stat-label">Status</div>
+        <div class="stat-value" style="font-size: 24px;">{{ asset.effective_status or "-" }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Responsible person</div>
+        <div class="stat-value" style="font-size: 24px;">{{ asset.current_assignment.responsible_person if asset.current_assignment else "-" }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Department</div>
+        <div class="stat-value" style="font-size: 24px;">{{ asset.current_assignment.department if asset.current_assignment else "-" }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">City</div>
+        <div class="stat-value" style="font-size: 24px;">{{ asset.current_assignment.city if asset.current_assignment else "-" }}</div>
+    </article>
+</section>
+
+<section class="two-column">
+    <article class="panel">
+        <h3>Asset Information</h3>
+        <table>
+            <tbody>
+                <tr><th>Asset tag</th><td>{{ asset.asset_tag_number or "-" }}</td></tr>
+                <tr><th>Description</th><td>{{ asset.item_description or "-" }}</td></tr>
+                <tr><th>Brand</th><td>{{ asset.brand_make or "-" }}</td></tr>
+                <tr><th>Model</th><td>{{ asset.model or "-" }}</td></tr>
+                <tr><th>Classification</th><td>{{ asset.asset_classification or "-" }}</td></tr>
+                <tr><th>Sub-classification</th><td>{{ asset.asset_sub_classification or "-" }}</td></tr>
+                <tr><th>Quantity</th><td>{{ asset.quantity or "-" }}</td></tr>
+                <tr><th>Price</th><td>{{ asset.purchase_price or "-" }} {{ asset.currency or "" }}</td></tr>
+                <tr><th>Serial number</th><td>{{ asset.serial_number or "-" }}</td></tr>
+                <tr><th>Asset remarks</th><td>{{ asset.remarks or "-" }}</td></tr>
+            </tbody>
+        </table>
+    </article>
+
+    <article class="panel">
+        <h3>Current Assignment</h3>
+        {% if asset.current_assignment %}
+        <table>
+            <tbody>
+                <tr><th>Responsible person</th><td>{{ asset.current_assignment.responsible_person or "-" }}</td></tr>
+                <tr><th>Department</th><td>{{ asset.current_assignment.department or "-" }}</td></tr>
+                <tr><th>City</th><td>{{ asset.current_assignment.city or "-" }}</td></tr>
+                <tr><th>Location</th><td>{{ asset.current_assignment.location_name or "-" }}</td></tr>
+                <tr><th>Assignment date</th><td>{{ asset.current_assignment.assignment_date or "-" }}</td></tr>
+                <tr><th>Status</th><td>{{ asset.current_assignment.status or "-" }}</td></tr>
+                <tr><th>Notes</th><td>{{ asset.current_assignment.notes or "-" }}</td></tr>
+            </tbody>
+        </table>
+        {% else %}
+        <p class="muted">This asset does not currently have an active assignment.</p>
+        {% endif %}
+
+        <div class="toolbar" style="margin-top: 16px;">
+            <a class="btn secondary" href="/view/{{ asset.asset_tag_number }}">Public card</a>
+            <a class="btn secondary" href="/asset/{{ asset.asset_tag_number }}">Raw JSON</a>
+        </div>
+    </article>
+</section>
+
+<section class="panel">
+    <h3>Assignment History</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Assignment date</th>
+                <th>Return date</th>
+                <th>Responsible person</th>
+                <th>Department</th>
+                <th>City</th>
+                <th>Status</th>
+                <th>Notes</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for assignment in assignment_history %}
+            <tr>
+                <td>{{ assignment.assignment_date or "-" }}</td>
+                <td>{{ assignment.return_date or "-" }}</td>
+                <td>{{ assignment.responsible_person or "-" }}</td>
+                <td>{{ assignment.department or "-" }}</td>
+                <td>{{ assignment.city or "-" }}</td>
+                <td>
+                    <span class="badge {% if (assignment.status or '')|upper == 'LOST' %}warn{% endif %}">
+                        {{ assignment.status or "-" }}
+                    </span>
+                </td>
+                <td>{{ assignment.notes or "-" }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7" class="muted">No assignment history found for this asset.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

@@ -1,0 +1,58 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Asset Workspace</h2>
+    <p>Search the live asset inventory with current assignment data. This is the first operational layer for editing, reassignment, and exception handling.</p>
+</section>
+
+<section class="panel">
+    <div class="toolbar">
+        <form method="get" class="search">
+            <input type="text" name="q" value="{{ query }}" placeholder="Search by tag, description, brand, person, department, city or status">
+            <button class="btn" type="submit">Search</button>
+            <a class="btn secondary" href="/admin/assets">Reset</a>
+        </form>
+    </div>
+
+    <p class="muted">Showing {{ total_found }} assets from the current working dataset.</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Asset</th>
+                <th>Description</th>
+                <th>Status</th>
+                <th>Responsible person</th>
+                <th>Department</th>
+                <th>City</th>
+                <th>Open</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for asset in assets %}
+            <tr>
+                <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                <td>
+                    {{ asset.item_description or "-" }}<br>
+                    <span class="muted">{{ asset.brand_make or "-" }} / {{ asset.model or "-" }}</span>
+                </td>
+                <td>
+                    <span class="badge {% if (asset.effective_status or '')|upper == 'LOST' %}warn{% endif %}">
+                        {{ asset.effective_status or "-" }}
+                    </span>
+                </td>
+                <td>{{ asset.current_assignment.responsible_person if asset.current_assignment else "-" }}</td>
+                <td>{{ asset.current_assignment.department if asset.current_assignment else "-" }}</td>
+                <td>{{ asset.current_assignment.city if asset.current_assignment else "-" }}</td>
+                <td><a href="/admin/assets/{{ asset.asset_id }}">Open asset</a></td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7" class="muted">No assets matched the current search.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

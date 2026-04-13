@@ -1,0 +1,45 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Excel Synchronization</h2>
+    <p>The system follows a hybrid model: live operational work happens in Supabase, while the original Excel inventory file remains the official control and reporting file.</p>
+</section>
+
+<section class="two-column">
+    <article class="panel">
+        <h3>Current Sync Policy</h3>
+        <ul class="list">
+            {% for rule in sync_rules %}
+            <li><span>{{ rule }}</span><strong>Rule</strong></li>
+            {% endfor %}
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>Official Excel File</h3>
+        <ul class="list">
+            <li><span>Tracked source file</span><strong>{{ excel_file_name }}</strong></li>
+            <li><span>Current direction</span><strong>Hybrid</strong></li>
+            <li><span>Sync mode</span><strong>Planned controlled sync</strong></li>
+            <li><span>Next step</span><strong>Diff preview screen</strong></li>
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>MVP Sync Workflow</h3>
+        <ul class="list">
+            <li><span>1. Upload or read the official Excel file</span><strong>Planned</strong></li>
+            <li><span>2. Normalize rows into staging data</span><strong>Planned</strong></li>
+            <li><span>3. Compare staging with current Supabase data</span><strong>Planned</strong></li>
+            <li><span>4. Show changes before apply</span><strong>Planned</strong></li>
+            <li><span>5. Export updated official workbook</span><strong>Planned</strong></li>
+        </ul>
+    </article>
+
+    <article class="panel">
+        <h3>Why This Matters</h3>
+        <p class="muted">This approach avoids blind overwrites, preserves audit visibility, and keeps the operational system aligned with the Excel file that the organization still treats as the formal accounting document.</p>
+    </article>
+</section>
+{% endblock %}
