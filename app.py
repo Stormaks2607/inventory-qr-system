@@ -32,6 +32,13 @@ def is_admin_authenticated(request: Request) -> bool:
     return request.session.get("admin_authenticated") is True
 
 
+def normalize_credential(value: str) -> str:
+    normalized = (value or "").strip()
+    if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+        normalized = normalized[1:-1]
+    return normalized
+
+
 def require_admin(request: Request) -> Optional[RedirectResponse]:
     if is_admin_authenticated(request):
         return None
@@ -404,8 +411,13 @@ def admin_login_submit(
     password: str = Form(...),
     next: str = Form("/admin"),
 ):
-    valid_username = secrets.compare_digest(username, ADMIN_USERNAME)
-    valid_password = secrets.compare_digest(password, ADMIN_PASSWORD)
+    input_username = normalize_credential(username)
+    input_password = normalize_credential(password)
+    expected_username = normalize_credential(ADMIN_USERNAME)
+    expected_password = normalize_credential(ADMIN_PASSWORD)
+
+    valid_username = secrets.compare_digest(input_username, expected_username)
+    valid_password = secrets.compare_digest(input_password, expected_password)
 
     if not (valid_username and valid_password):
         return templates.TemplateResponse(
