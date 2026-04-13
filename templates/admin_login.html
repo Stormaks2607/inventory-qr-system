@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login</title>
+    <style>
+        :root {
+            --bg: #eef3f7;
+            --panel: #ffffff;
+            --text: #162235;
+            --muted: #667387;
+            --line: #d9e1ea;
+            --brand: #0f6c5c;
+            --danger: #b73b3b;
+            --shadow: 0 22px 48px rgba(22, 34, 53, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(15, 108, 92, 0.12), transparent 32%),
+                linear-gradient(180deg, #f8fbfd 0%, var(--bg) 100%);
+            color: var(--text);
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 460px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            padding: 32px;
+            box-shadow: var(--shadow);
+        }
+
+        .eyebrow {
+            color: var(--brand);
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            font-size: 12px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        h1 {
+            margin: 0 0 10px;
+            font-size: 34px;
+        }
+
+        p {
+            margin: 0 0 24px;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .field {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        input {
+            width: 100%;
+            padding: 13px 14px;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            font: inherit;
+        }
+
+        .error {
+            margin-bottom: 16px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: #fdecec;
+            color: var(--danger);
+            border: 1px solid #f3c7c7;
+        }
+
+        button {
+            width: 100%;
+            border: none;
+            border-radius: 12px;
+            padding: 14px 16px;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            color: white;
+            background: var(--brand);
+        }
+    </style>
+</head>
+<body>
+    <form class="login-card" method="post" action="/admin/login">
+        <div class="eyebrow">Restricted Access</div>
+        <h1>Admin Login</h1>
+        <p>Sign in to access the asset administration area, reports, and synchronization tools.</p>
+
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+
+        <input type="hidden" name="next" value="{{ next_url }}">
+
+        <div class="field">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" required autocomplete="username">
+        </div>
+
+        <div class="field">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" required autocomplete="current-password">
+        </div>
+
+        <button type="submit">Sign In</button>
+    </form>
+</body>
+</html>

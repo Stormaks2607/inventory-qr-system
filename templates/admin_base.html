@@ -56,6 +56,21 @@
             line-height: 1.5;
         }
 
+        .session-box {
+            margin: 0 0 18px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: rgba(243, 247, 245, 0.88);
+            font-size: 14px;
+        }
+
+        .session-box a {
+            color: #d5fff4;
+            text-decoration: none;
+        }
+
         .nav {
             display: grid;
             gap: 10px;
@@ -276,6 +291,12 @@
         <aside class="sidebar">
             <h1>Scanventory Admin</h1>
             <p>Operational asset management workspace built on Supabase with controlled Excel synchronization.</p>
+            {% if admin_username %}
+            <div class="session-box">
+                Signed in as <strong>{{ admin_username }}</strong><br>
+                <a href="/admin/logout">Log out</a>
+            </div>
+            {% endif %}
             <nav class="nav">
                 <a href="/admin" class="{% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a>
                 <a href="/admin/assets" class="{% if active_page == 'assets' %}active{% endif %}">Assets</a>

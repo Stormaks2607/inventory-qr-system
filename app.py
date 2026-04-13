@@ -1,11 +1,13 @@
 from typing import Optional
+import secrets
 import json
 import os
 
 import requests
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import Body, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.templating import Jinja2Templates
 from supabase import Client, create_client
 
@@ -16,10 +18,31 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PUBLIC_BASE_URL = "https://inventory-qr-system.onrender.com"
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
+ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "replace-this-session-secret")
 
 app = FastAPI(title="Asset API", version="1.0.0")
+app.add_middleware(SessionMiddleware, secret_key=ADMIN_SESSION_SECRET)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 templates = Jinja2Templates(directory="templates")
+
+
+def is_admin_authenticated(request: Request) -> bool:
+    return request.session.get("admin_authenticated") is True
+
+
+def require_admin(request: Request) -> Optional[RedirectResponse]:
+    if is_admin_authenticated(request):
+        return None
+
+    login_url = app.url_path_for("admin_login")
+    next_path = request.url.path
+    if request.url.query:
+        next_path = f"{next_path}?{request.url.query}"
+
+    redirect_url = f"{login_url}?next={next_path}"
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 
 def get_current_assignment(asset_id: int) -> Optional[dict]:
@@ -359,8 +382,59 @@ def miniapp(request: Request):
     )
 
 
+@app.get("/admin/login", response_class=HTMLResponse, name="admin_login")
+def admin_login(request: Request, next: str = "/admin"):
+    if is_admin_authenticated(request):
+        return RedirectResponse(url=next or "/admin", status_code=303)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_login.html",
+        context={
+            "error": None,
+            "next_url": next or "/admin",
+        },
+    )
+
+
+@app.post("/admin/login", response_class=HTMLResponse)
+def admin_login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form("/admin"),
+):
+    valid_username = secrets.compare_digest(username, ADMIN_USERNAME)
+    valid_password = secrets.compare_digest(password, ADMIN_PASSWORD)
+
+    if not (valid_username and valid_password):
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_login.html",
+            context={
+                "error": "Invalid username or password.",
+                "next_url": next or "/admin",
+            },
+            status_code=401,
+        )
+
+    request.session["admin_authenticated"] = True
+    request.session["admin_username"] = username
+    return RedirectResponse(url=next or "/admin", status_code=303)
+
+
+@app.get("/admin/logout")
+def admin_logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/admin/login", status_code=303)
+
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_dashboard(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
     assets = list_assets(limit=150)
     summary = build_asset_summary(assets)
 
@@ -371,12 +445,17 @@ def admin_dashboard(request: Request):
             "summary": summary,
             "active_page": "dashboard",
             "page_title": "Admin Dashboard",
+            "admin_username": request.session.get("admin_username"),
         },
     )
 
 
 @app.get("/admin/assets", response_class=HTMLResponse)
 def admin_assets(request: Request, q: str = ""):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
     assets = list_assets(limit=150)
     filtered_assets = [asset for asset in assets if asset_matches_query(asset, q.strip())]
 
@@ -389,12 +468,17 @@ def admin_assets(request: Request, q: str = ""):
             "total_found": len(filtered_assets),
             "active_page": "assets",
             "page_title": "Admin Assets",
+            "admin_username": request.session.get("admin_username"),
         },
     )
 
 
 @app.get("/admin/assets/{asset_id}", response_class=HTMLResponse)
 def admin_asset_detail(request: Request, asset_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
     asset = get_asset_by_id(asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -409,12 +493,17 @@ def admin_asset_detail(request: Request, asset_id: int):
             "assignment_history": assignment_history,
             "active_page": "assets",
             "page_title": f"Asset {asset.get('asset_tag_number')}",
+            "admin_username": request.session.get("admin_username"),
         },
     )
 
 
 @app.get("/admin/reports", response_class=HTMLResponse)
 def admin_reports(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
     assets = list_assets(limit=250)
     summary = build_asset_summary(assets)
 
@@ -425,12 +514,17 @@ def admin_reports(request: Request):
             "summary": summary,
             "active_page": "reports",
             "page_title": "Admin Reports",
+            "admin_username": request.session.get("admin_username"),
         },
     )
 
 
 @app.get("/admin/sync", response_class=HTMLResponse)
 def admin_sync(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
     sync_rules = [
         "Supabase is the operational working database.",
         "The Excel inventory file remains the official control file.",
@@ -447,6 +541,7 @@ def admin_sync(request: Request):
             "excel_file_name": "Inventory List_example_08.12.2025.xlsx",
             "active_page": "sync",
             "page_title": "Admin Sync",
+            "admin_username": request.session.get("admin_username"),
         },
     )
 

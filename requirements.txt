@@ -7,3 +7,4 @@ python-telegram-bot
 python-dotenv
 pandas
 openpyxl
+python-multipart
