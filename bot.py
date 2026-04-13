@@ -53,20 +53,22 @@ def get_asset(asset_tag: str):
 def format_asset(asset: dict) -> str:
     assignment = asset.get("current_assignment") or {}
     effective_status = assignment.get("status") or asset.get("current_status") or "-"
+    assignment_date = assignment.get("assignment_date") or "-"
 
     return (
-        f"Asset: {asset.get('asset_tag_number', '-')}\n"
-        f"Description: {asset.get('item_description', '-')}\n"
-        f"Brand: {asset.get('brand_make', '-')}\n"
-        f"Model: {asset.get('model', '-')}\n"
-        f"Classification: {asset.get('asset_classification', '-')} / "
+        f"📦 Asset: {asset.get('asset_tag_number', '-')}\n"
+        f"📝 Description: {asset.get('item_description', '-')}\n"
+        f"🏷️ Brand: {asset.get('brand_make', '-')}\n"
+        f"📐 Model: {asset.get('model', '-')}\n"
+        f"📂 Classification: {asset.get('asset_classification', '-')} / "
         f"{asset.get('asset_sub_classification', '-')}\n"
-        f"Status: {effective_status}\n"
-        f"Price: {asset.get('purchase_price', '-')} {asset.get('currency', '')}\n"
-        f"Qty: {asset.get('quantity', '-')}\n"
-        f"Responsible person: {assignment.get('responsible_person') or '-'}\n"
-        f"Department: {assignment.get('department') or '-'}\n"
-        f"City: {assignment.get('city') or '-'}"
+        f"📊 Status: {effective_status}\n"
+        f"💰 Price: {asset.get('purchase_price', '-')} {asset.get('currency', '')}\n"
+        f"🔢 Qty: {asset.get('quantity', '-')}\n"
+        f"👤 Responsible person: {assignment.get('responsible_person') or '-'}\n"
+        f"🏢 Department: {assignment.get('department') or '-'}\n"
+        f"📍 City: {assignment.get('city') or '-'}\n"
+        f"📅 Assignment date: {assignment_date}"
     )
 
 
@@ -84,7 +86,7 @@ async def send_asset_card(update: Update, asset_tag: str):
     url = f"{API_URL}/view/{asset_tag}"
 
     inline_keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Open asset card", url=url)]]
+        [[InlineKeyboardButton("🔍 Open asset card", url=url)]]
     )
 
     await update.message.reply_text(message, reply_markup=inline_keyboard)
