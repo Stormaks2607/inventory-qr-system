@@ -222,16 +222,39 @@ def get_effective_status(asset: dict) -> str:
     return assignment.get("status") or asset.get("current_status") or "-"
 
 
-def list_assets(limit: int = 100) -> list[dict]:
-    response = (
-        supabase.table("assets")
-        .select("*")
-        .order("asset_tag_number")
-        .limit(limit)
-        .execute()
-    )
+def list_assets(limit: Optional[int] = None, batch_size: int = 500) -> list[dict]:
+    assets: list[dict] = []
+    start = 0
 
-    assets = response.data or []
+    while True:
+        query = (
+            supabase.table("assets")
+            .select("*")
+            .order("asset_tag_number")
+            .range(start, start + batch_size - 1)
+        )
+        if limit is not None:
+            remaining = limit - len(assets)
+            if remaining <= 0:
+                break
+            query = query.limit(min(batch_size, remaining))
+
+        response = query.execute()
+        batch = response.data or []
+        if not batch:
+            break
+
+        assets.extend(batch)
+
+        if limit is not None and len(assets) >= limit:
+            assets = assets[:limit]
+            break
+
+        if len(batch) < batch_size:
+            break
+
+        start += len(batch)
+
     for asset in assets:
         asset["current_assignment"] = get_current_assignment(asset["asset_id"])
         asset["effective_status"] = get_effective_status(asset)
@@ -447,7 +470,7 @@ def admin_dashboard(request: Request):
     if redirect:
         return redirect
 
-    assets = list_assets(limit=150)
+    assets = list_assets()
     summary = build_asset_summary(assets)
 
     return templates.TemplateResponse(
@@ -468,7 +491,7 @@ def admin_assets(request: Request, q: str = ""):
     if redirect:
         return redirect
 
-    assets = list_assets(limit=150)
+    assets = list_assets()
     filtered_assets = [asset for asset in assets if asset_matches_query(asset, q.strip())]
 
     return templates.TemplateResponse(
@@ -516,7 +539,7 @@ def admin_reports(request: Request):
     if redirect:
         return redirect
 
-    assets = list_assets(limit=250)
+    assets = list_assets()
     summary = build_asset_summary(assets)
 
     return templates.TemplateResponse(
