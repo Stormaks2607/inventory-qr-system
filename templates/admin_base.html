@@ -202,6 +202,10 @@
             font: inherit;
         }
 
+        .search.compact input {
+            min-width: 0;
+        }
+
         .btn {
             display: inline-flex;
             align-items: center;
@@ -295,6 +299,90 @@
             font-size: 13px;
             text-transform: uppercase;
             letter-spacing: 0.06em;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        .th-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            min-width: 120px;
+        }
+
+        .th-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .filter-cell {
+            position: relative;
+        }
+
+        .filter-button {
+            width: 30px;
+            height: 30px;
+            border-radius: 10px;
+            border: 1px solid #d8e0e9;
+            background: #fff;
+            color: var(--muted);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+        }
+
+        .filter-button.active {
+            color: var(--brand);
+            border-color: #9ccfc4;
+            background: #edf8f4;
+        }
+
+        .filter-button svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .filter-popover {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            width: 280px;
+            padding: 16px;
+            border-radius: 18px;
+            border: 1px solid var(--line);
+            background: #fff;
+            box-shadow: 0 20px 40px rgba(23, 32, 51, 0.16);
+            z-index: 30;
+        }
+
+        .filter-popover[hidden] {
+            display: none;
+        }
+
+        .filter-popover h4 {
+            margin: 0 0 12px;
+            font-size: 16px;
+            color: var(--text);
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        .filter-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .filter-summary {
+            margin: 0 0 14px;
+            color: var(--muted);
+            font-size: 14px;
         }
 
         .badge {

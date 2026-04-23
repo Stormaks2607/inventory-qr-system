@@ -8,31 +8,74 @@
 
 <section class="panel">
     <div class="toolbar">
-        <form method="get" class="search" style="width: 100%;">
+        <form method="get" class="search compact" style="width: 100%;">
             <input type="text" name="q" value="{{ query }}" placeholder="Search by tag, description, brand, person, department, city or status">
-            <input type="text" name="asset_tag" value="{{ filters.asset_tag }}" placeholder="Asset">
-            <input type="text" name="description" value="{{ filters.description }}" placeholder="Description">
-            <input type="text" name="status" value="{{ filters.status }}" placeholder="Status">
-            <input type="text" name="person" value="{{ filters.person }}" placeholder="Responsible person">
-            <input type="text" name="department" value="{{ filters.department }}" placeholder="Department">
-            <input type="text" name="city" value="{{ filters.city }}" placeholder="City">
             <button class="btn" type="submit">Search</button>
             <a class="btn secondary" href="/admin/assets">Reset</a>
         </form>
     </div>
 
-    <p class="muted">Showing {{ total_found }} assets from the live inventory dataset. Use quick search for broad matching, or narrow the list with per-column filters.</p>
+    <p class="muted">Showing {{ total_found }} assets from the live inventory dataset. Use quick search for broad matching, or open filters inside the column headers for narrower matching.</p>
 
+    {% set filter_config = [
+        {"name": "asset_tag", "label": "Asset", "value": filters.asset_tag},
+        {"name": "description", "label": "Description", "value": filters.description},
+        {"name": "status", "label": "Status", "value": filters.status},
+        {"name": "person", "label": "Responsible person", "value": filters.person},
+        {"name": "department", "label": "Department", "value": filters.department},
+        {"name": "city", "label": "City", "value": filters.city}
+    ] %}
+
+    <div class="table-wrap">
     <table>
-        <thead>
+        <thead data-assets-filter-head>
             <tr>
-                <th>Asset</th>
-                <th>Description</th>
-                <th>Status</th>
-                <th>Responsible person</th>
-                <th>Department</th>
-                <th>City</th>
-                <th>Open</th>
+                {% for column in filter_config %}
+                <th class="filter-cell">
+                    <div class="th-content">
+                        <span class="th-label">{{ column.label }}</span>
+                        <button
+                            type="button"
+                            class="filter-button {% if column.value %}active{% endif %}"
+                            data-filter-toggle="{{ column.name }}"
+                            aria-expanded="false"
+                            aria-controls="filter-{{ column.name }}"
+                            title="Filter {{ column.label }}"
+                        >
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <path d="M3 5h18l-7 8v5l-4 2v-7L3 5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="filter-popover" id="filter-{{ column.name }}" hidden>
+                        <form method="get">
+                            <h4>{{ column.label }}</h4>
+                            <p class="filter-summary">
+                                {% if column.value %}
+                                Current filter: <strong>{{ column.value }}</strong>
+                                {% else %}
+                                No filter applied for this column.
+                                {% endif %}
+                            </p>
+                            <div class="field">
+                                <label for="filter-input-{{ column.name }}">Contains</label>
+                                <input id="filter-input-{{ column.name }}" type="text" name="{{ column.name }}" value="{{ column.value }}" placeholder="Type a value">
+                            </div>
+                            <input type="hidden" name="q" value="{{ query }}">
+                            {% for sibling in filter_config %}
+                            {% if sibling.name != column.name and sibling.value %}
+                            <input type="hidden" name="{{ sibling.name }}" value="{{ sibling.value }}">
+                            {% endif %}
+                            {% endfor %}
+                            <div class="filter-actions">
+                                <button class="btn" type="submit">Apply</button>
+                                <a class="btn secondary" href="/admin/assets">Reset</a>
+                            </div>
+                        </form>
+                    </div>
+                </th>
+                {% endfor %}
+                <th><div class="th-content"><span class="th-label">Open</span></div></th>
             </tr>
         </thead>
         <tbody>
@@ -60,5 +103,57 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </section>
+
+<script>
+    (() => {
+        const toggles = document.querySelectorAll("[data-filter-toggle]");
+        const popovers = document.querySelectorAll(".filter-popover");
+
+        function closeAll() {
+            toggles.forEach((button) => button.setAttribute("aria-expanded", "false"));
+            popovers.forEach((popover) => {
+                popover.hidden = true;
+            });
+        }
+
+        toggles.forEach((button) => {
+            const targetId = button.getAttribute("aria-controls");
+            const target = document.getElementById(targetId);
+            if (!target) {
+                return;
+            }
+
+            button.addEventListener("click", (event) => {
+                event.stopPropagation();
+                const isOpen = !target.hidden;
+                closeAll();
+                if (!isOpen) {
+                    target.hidden = false;
+                    button.setAttribute("aria-expanded", "true");
+                    const input = target.querySelector("input[type='text']");
+                    if (input) {
+                        input.focus();
+                        input.select();
+                    }
+                }
+            });
+
+            target.addEventListener("click", (event) => {
+                event.stopPropagation();
+            });
+        });
+
+        document.addEventListener("click", () => {
+            closeAll();
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeAll();
+            }
+        });
+    })();
+</script>
 {% endblock %}
