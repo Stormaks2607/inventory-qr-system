@@ -39,6 +39,20 @@ def normalize_credential(value: str) -> str:
     return normalized
 
 
+def parse_int_field(value: str) -> Optional[int]:
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+    return int(normalized)
+
+
+def parse_float_field(value: str) -> Optional[float]:
+    normalized = (value or "").strip().replace(",", ".")
+    if not normalized:
+        return None
+    return float(normalized)
+
+
 def require_admin(request: Request) -> Optional[RedirectResponse]:
     if is_admin_authenticated(request):
         return None
@@ -50,6 +64,14 @@ def require_admin(request: Request) -> Optional[RedirectResponse]:
 
     redirect_url = f"{login_url}?next={next_path}"
     return RedirectResponse(url=redirect_url, status_code=303)
+
+
+def set_flash(request: Request, level: str, message: str) -> None:
+    request.session["admin_flash"] = {"level": level, "message": message}
+
+
+def pop_flash(request: Request) -> Optional[dict]:
+    return request.session.pop("admin_flash", None)
 
 
 def get_current_assignment(asset_id: int) -> Optional[dict]:
@@ -215,6 +237,59 @@ def get_assignment_history(asset_id: int, limit: int = 20) -> list[dict]:
 
     assignments = response.data or []
     return [enrich_assignment(assignment) for assignment in assignments]
+
+
+def list_people() -> list[dict]:
+    response = (
+        supabase.table("persons")
+        .select("*")
+        .order("name_eng")
+        .execute()
+    )
+    return response.data or []
+
+
+def list_locations() -> list[dict]:
+    response = (
+        supabase.table("locations")
+        .select("*")
+        .order("city")
+        .execute()
+    )
+    return response.data or []
+
+
+def close_current_assignments(asset_id: int, return_date: Optional[str]) -> None:
+    current_assignments = (
+        supabase.table("asset_assignments")
+        .select("assignment_id")
+        .eq("asset_id", asset_id)
+        .is_("return_date", "null")
+        .execute()
+    )
+
+    for row in current_assignments.data or []:
+        (
+            supabase.table("asset_assignments")
+            .update({"return_date": return_date})
+            .eq("assignment_id", row["assignment_id"])
+            .execute()
+        )
+
+
+def get_assignment_form_context(asset: dict) -> dict:
+    current_assignment = asset.get("current_assignment") or {}
+    return {
+        "people": list_people(),
+        "locations": list_locations(),
+        "assignment_form": {
+            "person_id": current_assignment.get("person_id") or "",
+            "location_id": current_assignment.get("location_id") or "",
+            "assignment_date": current_assignment.get("assignment_date") or "",
+            "status": current_assignment.get("status") or asset.get("current_status") or "",
+            "notes": current_assignment.get("notes") or "",
+        },
+    }
 
 
 def get_effective_status(asset: dict) -> str:
@@ -526,11 +601,150 @@ def admin_asset_detail(request: Request, asset_id: int):
         context={
             "asset": asset,
             "assignment_history": assignment_history,
+            "flash": pop_flash(request),
             "active_page": "assets",
             "page_title": f"Asset {asset.get('asset_tag_number')}",
             "admin_username": request.session.get("admin_username"),
+            **get_assignment_form_context(asset),
         },
     )
+
+
+@app.post("/admin/assets/{asset_id}/edit")
+def admin_asset_edit(
+    request: Request,
+    asset_id: int,
+    item_description: str = Form(""),
+    brand_make: str = Form(""),
+    model: str = Form(""),
+    asset_classification: str = Form(""),
+    asset_sub_classification: str = Form(""),
+    quantity: str = Form(""),
+    purchase_price: str = Form(""),
+    currency: str = Form(""),
+    serial_number: str = Form(""),
+    current_status: str = Form(""),
+    remarks: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    try:
+        update_data = {
+            "item_description": item_description.strip() or None,
+            "brand_make": brand_make.strip() or None,
+            "model": model.strip() or None,
+            "asset_classification": asset_classification.strip() or None,
+            "asset_sub_classification": asset_sub_classification.strip() or None,
+            "quantity": parse_int_field(quantity),
+            "purchase_price": parse_float_field(purchase_price),
+            "currency": currency.strip() or None,
+            "serial_number": serial_number.strip() or None,
+            "current_status": current_status.strip() or None,
+            "remarks": remarks.strip() or None,
+        }
+    except ValueError:
+        set_flash(request, "error", "Quantity must be an integer and purchase price must be a number.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    (
+        supabase.table("assets")
+        .update(update_data)
+        .eq("asset_id", asset_id)
+        .execute()
+    )
+
+    set_flash(request, "success", "Asset details were updated.")
+    return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+
+@app.post("/admin/assets/{asset_id}/assignment")
+def admin_asset_assignment_update(
+    request: Request,
+    asset_id: int,
+    person_id: str = Form(""),
+    location_id: str = Form(""),
+    assignment_date: str = Form(""),
+    status: str = Form(""),
+    notes: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    person_id = person_id.strip()
+    location_id = location_id.strip()
+    assignment_date = assignment_date.strip()
+    status = status.strip()
+    notes = notes.strip()
+
+    if not assignment_date:
+        set_flash(request, "error", "Assignment date is required.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    if bool(person_id) != bool(location_id):
+        set_flash(request, "error", "Select both responsible person and location, or leave both empty to unassign.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    current_assignment = asset.get("current_assignment")
+
+    if not person_id and not location_id:
+        if current_assignment:
+            close_current_assignments(asset_id, assignment_date)
+            if status:
+                supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+            set_flash(request, "success", "Current assignment was closed and the asset is now unassigned.")
+        else:
+            if status:
+                supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+            set_flash(request, "success", "Asset is already unassigned.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    new_assignment = {
+        "asset_id": asset_id,
+        "person_id": int(person_id),
+        "location_id": int(location_id),
+        "assignment_date": assignment_date,
+        "return_date": None,
+        "status": status or None,
+        "notes": notes or None,
+    }
+
+    if (
+        current_assignment
+        and current_assignment.get("person_id") == int(person_id)
+        and current_assignment.get("location_id") == int(location_id)
+    ):
+        (
+            supabase.table("asset_assignments")
+            .update({
+                "assignment_date": assignment_date,
+                "status": status or None,
+                "notes": notes or None,
+            })
+            .eq("assignment_id", current_assignment["assignment_id"])
+            .execute()
+        )
+        if status:
+            supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+        set_flash(request, "success", "Current assignment was updated.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    close_current_assignments(asset_id, assignment_date)
+    supabase.table("asset_assignments").insert(new_assignment).execute()
+    if status:
+        supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+    set_flash(request, "success", "Assignment was updated.")
+    return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
 
 @app.get("/admin/reports", response_class=HTMLResponse)

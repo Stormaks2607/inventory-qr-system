@@ -6,6 +6,12 @@
     <p>Detailed admin view for this asset. This screen is the base for future edit, reassignment, audit, and sync review actions.</p>
 </section>
 
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
 <section class="grid">
     <article class="stat">
         <div class="stat-label">Status</div>
@@ -66,6 +72,122 @@
             <a class="btn secondary" href="/view/{{ asset.asset_tag_number }}">Public card</a>
             <a class="btn secondary" href="/asset/{{ asset.asset_tag_number }}">Raw JSON</a>
         </div>
+    </article>
+</section>
+
+<section class="two-column" style="margin-top: 24px;">
+    <article class="panel">
+        <h3>Edit Asset</h3>
+        <form method="post" action="/admin/assets/{{ asset.asset_id }}/edit" class="form-grid">
+            <div class="field full">
+                <label for="item_description">Description</label>
+                <input id="item_description" name="item_description" type="text" value="{{ asset.item_description or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="brand_make">Brand</label>
+                <input id="brand_make" name="brand_make" type="text" value="{{ asset.brand_make or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="model">Model</label>
+                <input id="model" name="model" type="text" value="{{ asset.model or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="asset_classification">Classification</label>
+                <input id="asset_classification" name="asset_classification" type="text" value="{{ asset.asset_classification or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="asset_sub_classification">Sub-classification</label>
+                <input id="asset_sub_classification" name="asset_sub_classification" type="text" value="{{ asset.asset_sub_classification or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="quantity">Quantity</label>
+                <input id="quantity" name="quantity" type="text" value="{{ asset.quantity or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="purchase_price">Purchase price</label>
+                <input id="purchase_price" name="purchase_price" type="text" value="{{ asset.purchase_price or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="currency">Currency</label>
+                <input id="currency" name="currency" type="text" value="{{ asset.currency or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="serial_number">Serial number</label>
+                <input id="serial_number" name="serial_number" type="text" value="{{ asset.serial_number or '' }}">
+            </div>
+
+            <div class="field">
+                <label for="current_status">Default status</label>
+                <input id="current_status" name="current_status" type="text" value="{{ asset.current_status or '' }}">
+            </div>
+
+            <div class="field full">
+                <label for="remarks">Remarks</label>
+                <textarea id="remarks" name="remarks">{{ asset.remarks or '' }}</textarea>
+            </div>
+
+            <div class="toolbar" style="margin-bottom: 0;">
+                <button class="btn" type="submit">Save asset</button>
+            </div>
+        </form>
+    </article>
+
+    <article class="panel">
+        <h3>Update Assignment</h3>
+        <p class="muted">Choose both person and location to create or replace the active assignment. Leave both empty to close the current assignment.</p>
+        <form method="post" action="/admin/assets/{{ asset.asset_id }}/assignment" class="form-grid">
+            <div class="field">
+                <label for="person_id">Responsible person</label>
+                <select id="person_id" name="person_id">
+                    <option value="">Unassigned</option>
+                    {% for person in people %}
+                    {% set person_name = person.name_eng or person.name or person.full_name or ('Person #' ~ person.person_id) %}
+                    <option value="{{ person.person_id }}" {% if assignment_form.person_id|string == person.person_id|string %}selected{% endif %}>
+                        {{ person_name }}{% if person.department %} - {{ person.department }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="location_id">Location</label>
+                <select id="location_id" name="location_id">
+                    <option value="">No location</option>
+                    {% for location in locations %}
+                    <option value="{{ location.location_id }}" {% if assignment_form.location_id|string == location.location_id|string %}selected{% endif %}>
+                        {{ location.city or 'Unknown city' }} / {{ location.department or 'Unknown department' }}{% if location.name %} - {{ location.name }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="assignment_date">Assignment date</label>
+                <input id="assignment_date" name="assignment_date" type="date" value="{{ assignment_form.assignment_date }}">
+            </div>
+
+            <div class="field">
+                <label for="status">Assignment status</label>
+                <input id="status" name="status" type="text" value="{{ assignment_form.status }}">
+            </div>
+
+            <div class="field full">
+                <label for="notes">Assignment notes</label>
+                <textarea id="notes" name="notes">{{ assignment_form.notes }}</textarea>
+            </div>
+
+            <div class="toolbar" style="margin-bottom: 0;">
+                <button class="btn" type="submit">Save assignment</button>
+            </div>
+        </form>
     </article>
 </section>
 
