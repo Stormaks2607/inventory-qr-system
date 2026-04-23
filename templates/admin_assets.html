@@ -8,14 +8,20 @@
 
 <section class="panel">
     <div class="toolbar">
-        <form method="get" class="search">
+        <form method="get" class="search" style="width: 100%;">
             <input type="text" name="q" value="{{ query }}" placeholder="Search by tag, description, brand, person, department, city or status">
+            <input type="text" name="asset_tag" value="{{ filters.asset_tag }}" placeholder="Asset">
+            <input type="text" name="description" value="{{ filters.description }}" placeholder="Description">
+            <input type="text" name="status" value="{{ filters.status }}" placeholder="Status">
+            <input type="text" name="person" value="{{ filters.person }}" placeholder="Responsible person">
+            <input type="text" name="department" value="{{ filters.department }}" placeholder="Department">
+            <input type="text" name="city" value="{{ filters.city }}" placeholder="City">
             <button class="btn" type="submit">Search</button>
             <a class="btn secondary" href="/admin/assets">Reset</a>
         </form>
     </div>
 
-    <p class="muted">Showing {{ total_found }} assets from the live inventory dataset.</p>
+    <p class="muted">Showing {{ total_found }} assets from the live inventory dataset. Use quick search for broad matching, or narrow the list with per-column filters.</p>
 
     <table>
         <thead>

@@ -362,6 +362,25 @@ def asset_matches_query(asset: dict, query: str) -> bool:
     )
 
 
+def field_contains(value: Optional[str], query: str) -> bool:
+    normalized_query = (query or "").strip().lower()
+    if not normalized_query:
+        return True
+    return normalized_query in str(value or "").lower()
+
+
+def asset_matches_filters(asset: dict, filters: dict[str, str]) -> bool:
+    assignment = asset.get("current_assignment") or {}
+    return (
+        field_contains(asset.get("asset_tag_number"), filters.get("asset_tag", ""))
+        and field_contains(asset.get("item_description"), filters.get("description", ""))
+        and field_contains(asset.get("effective_status"), filters.get("status", ""))
+        and field_contains(assignment.get("responsible_person"), filters.get("person", ""))
+        and field_contains(assignment.get("department"), filters.get("department", ""))
+        and field_contains(assignment.get("city"), filters.get("city", ""))
+    )
+
+
 def build_asset_summary(assets: list[dict]) -> dict:
     assigned_count = 0
     unassigned_count = 0
@@ -561,13 +580,34 @@ def admin_dashboard(request: Request):
 
 
 @app.get("/admin/assets", response_class=HTMLResponse)
-def admin_assets(request: Request, q: str = ""):
+def admin_assets(
+    request: Request,
+    q: str = "",
+    asset_tag: str = "",
+    description: str = "",
+    status: str = "",
+    person: str = "",
+    department: str = "",
+    city: str = "",
+):
     redirect = require_admin(request)
     if redirect:
         return redirect
 
     assets = list_assets()
-    filtered_assets = [asset for asset in assets if asset_matches_query(asset, q.strip())]
+    filters = {
+        "asset_tag": asset_tag.strip(),
+        "description": description.strip(),
+        "status": status.strip(),
+        "person": person.strip(),
+        "department": department.strip(),
+        "city": city.strip(),
+    }
+    filtered_assets = [
+        asset
+        for asset in assets
+        if asset_matches_query(asset, q.strip()) and asset_matches_filters(asset, filters)
+    ]
 
     return templates.TemplateResponse(
         request=request,
@@ -575,6 +615,7 @@ def admin_assets(request: Request, q: str = ""):
         context={
             "assets": filtered_assets,
             "query": q,
+            "filters": filters,
             "total_found": len(filtered_assets),
             "active_page": "assets",
             "page_title": "Admin Assets",
