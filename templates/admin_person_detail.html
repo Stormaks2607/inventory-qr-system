@@ -1,0 +1,812 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<style>
+    .branding-scope {
+        --report-primary: {{ branding.primary_color }};
+        --report-accent: {{ branding.accent_color }};
+    }
+
+    .branding-scope.theme-corporate {
+        --report-surface: #f7f9fc;
+        --report-border-radius: 10px;
+    }
+
+    .branding-scope.theme-classic {
+        --report-surface: #ffffff;
+        --report-border-radius: 22px;
+    }
+
+    .branding-scope.theme-compact {
+        --report-surface: #fcfdfd;
+        --report-border-radius: 12px;
+    }
+
+    .branding-scope.theme-help_standard {
+        --report-surface: #ffffff;
+        --report-border-radius: 0px;
+    }
+
+    .report-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+    }
+
+    .report-meta {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+
+    .report-card {
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: var(--report-surface, #f8fafc);
+        border: 1px solid #e8edf3;
+    }
+
+    .report-card strong {
+        display: block;
+        font-size: 24px;
+        margin-top: 6px;
+    }
+
+    .report-sheet {
+        display: grid;
+        gap: 18px;
+    }
+
+    .report-banner {
+        padding: 22px 24px;
+        border-radius: var(--report-border-radius, 22px);
+        border: 1px solid #d7dee7;
+        background: linear-gradient(135deg, #ffffff 0%, var(--report-accent) 100%);
+    }
+
+    .report-banner-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: flex-start;
+        margin-bottom: 18px;
+    }
+
+    .report-title {
+        margin: 0;
+        font-size: 30px;
+        line-height: 1.1;
+    }
+
+    .report-subtitle {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+    }
+
+    .report-stamp {
+        min-width: 180px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        border: 1px solid #d7dee7;
+        background: #ffffff;
+        text-align: right;
+    }
+
+    .report-stamp-label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+
+    .report-stamp-value {
+        margin-top: 6px;
+        font-size: 24px;
+        font-weight: 700;
+    }
+
+    .report-summary {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr;
+        gap: 16px;
+    }
+
+    .report-box {
+        padding: 16px 18px;
+        border-radius: calc(var(--report-border-radius, 22px) - 4px);
+        border: 1px solid #dfe6ee;
+        background: var(--report-surface, #ffffff);
+    }
+
+    .report-box h3 {
+        margin: 0 0 14px;
+        font-size: 16px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+    }
+
+    .report-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px 18px;
+    }
+
+    .report-field-label {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 4px;
+    }
+
+    .report-field-value {
+        font-size: 17px;
+        font-weight: 600;
+    }
+
+    .report-count {
+        display: grid;
+        gap: 8px;
+        align-content: center;
+        min-height: 100%;
+    }
+
+    .report-count-label {
+        color: var(--muted);
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+
+    .report-count-value {
+        font-size: 44px;
+        font-weight: 700;
+        line-height: 1;
+        color: var(--report-primary);
+    }
+
+    .signature-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+    }
+
+    .signature-box {
+        padding: 18px;
+        border-radius: calc(var(--report-border-radius, 22px) - 4px);
+        border: 1px solid #dfe6ee;
+        background: var(--report-surface, #ffffff);
+    }
+
+    .signature-label {
+        color: var(--muted);
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 28px;
+    }
+
+    .signature-line {
+        border-top: 1px solid #7f8b99;
+        padding-top: 8px;
+        font-size: 14px;
+        color: var(--muted);
+    }
+
+    .print-heading {
+        display: none;
+        margin-bottom: 14px;
+    }
+
+    .theme-corporate .report-banner {
+        background:
+            linear-gradient(90deg, color-mix(in srgb, var(--report-primary) 18%, white) 0%, transparent 22%),
+            linear-gradient(135deg, #ffffff 0%, var(--report-accent) 100%);
+        border-left: 8px solid var(--report-primary);
+    }
+
+    .theme-corporate .report-title,
+    .theme-corporate .report-count-value,
+    .theme-corporate .report-stamp-value {
+        color: var(--report-primary);
+    }
+
+    .theme-corporate .signature-box {
+        border-top: 4px solid var(--report-primary);
+    }
+
+    .theme-compact .report-sheet {
+        gap: 12px;
+    }
+
+    .theme-compact .report-banner {
+        padding: 16px 18px;
+    }
+
+    .theme-compact .report-title {
+        font-size: 24px;
+    }
+
+    .theme-compact .report-subtitle {
+        font-size: 14px;
+    }
+
+    .theme-compact .report-summary {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .theme-compact .report-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .theme-compact .panel {
+        padding: 16px;
+    }
+
+    .theme-compact .signature-grid {
+        gap: 12px;
+    }
+
+    .help-sheet {
+        border: 1.5px solid #1d2430;
+        background: #ffffff;
+    }
+
+    .help-sheet-header {
+        padding: 14px 18px 10px;
+        border-bottom: 1.5px solid #1d2430;
+        display: grid;
+        gap: 8px;
+    }
+
+    .help-sheet-topline {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: flex-start;
+    }
+
+    .help-sheet-title {
+        margin: 2px 0 0;
+        font-size: 19px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .help-brand {
+        display: inline-grid;
+        gap: 2px;
+        margin-bottom: 10px;
+    }
+
+    .help-brand-word {
+        color: #141414;
+        font-size: 34px;
+        font-weight: 800;
+        line-height: 1;
+        letter-spacing: -0.03em;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+    }
+
+    .help-brand-caption {
+        color: #2b2b2b;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+    }
+
+    .help-sheet-meta {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px 14px;
+        font-size: 13px;
+    }
+
+    .help-meta-label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 4px;
+    }
+
+    .help-meta-value {
+        font-weight: 600;
+    }
+
+    .help-meta-row {
+        display: grid;
+        grid-template-columns: 150px 1fr 110px 1fr;
+        gap: 8px 10px;
+        padding-top: 8px;
+        border-top: 1px solid #d5dbe3;
+        font-size: 13px;
+    }
+
+    .help-inline-label {
+        color: #4c5665;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .help-inline-value {
+        font-weight: 600;
+    }
+
+    .help-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+    }
+
+    .help-table th,
+    .help-table td {
+        border: 1px solid #1d2430;
+        padding: 7px 6px;
+        vertical-align: top;
+        font-size: 11.5px;
+        line-height: 1.3;
+        color: #111827;
+    }
+
+    .help-table th {
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.05em;
+        background: #f7f8fa;
+    }
+
+    .help-col-num { width: 6%; }
+    .help-col-spec { width: 38%; }
+    .help-col-brand { width: 11%; }
+    .help-col-model { width: 13%; }
+    .help-col-serial { width: 12%; }
+    .help-col-tag { width: 12%; }
+    .help-col-status { width: 8%; }
+
+    .help-spec-lines {
+        display: grid;
+        gap: 2px;
+    }
+
+    .help-footer {
+        padding: 12px 18px 16px;
+        display: grid;
+        gap: 10px;
+    }
+
+    .help-note {
+        font-size: 11px;
+        color: var(--muted);
+    }
+
+    .help-certification {
+        padding: 8px 0 2px;
+        font-size: 11.5px;
+        color: #273142;
+    }
+
+    .help-liability {
+        padding: 10px 12px;
+        border: 1px solid #1d2430;
+        background: #fbfcfd;
+        font-size: 11.5px;
+        line-height: 1.45;
+        color: #18212d;
+    }
+
+    .help-liability-signoff {
+        margin-top: 10px;
+        font-weight: 600;
+    }
+
+    .help-signatures {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+    }
+
+    .help-signature-box {
+        min-height: 60px;
+        display: grid;
+        align-content: end;
+        gap: 8px;
+    }
+
+    .help-signature-line {
+        border-top: 1px solid #1d2430;
+        padding-top: 8px;
+        font-size: 13px;
+    }
+
+    @media print {
+        @page {
+            size: A4 portrait;
+            margin: 14mm 12mm;
+        }
+
+        body {
+            background: #ffffff;
+        }
+
+        .sidebar,
+        .hero .toolbar,
+        .screen-only {
+            display: none !important;
+        }
+
+        .layout {
+            display: block;
+        }
+
+        .content {
+            padding: 0;
+        }
+
+        .hero,
+        .panel,
+        .stat,
+        .report-banner,
+        .report-box,
+        .signature-box {
+            box-shadow: none;
+            border-color: #cfd8e3;
+            break-inside: avoid;
+        }
+
+        .hero {
+            padding: 0;
+            border: none;
+            background: transparent;
+            margin-bottom: 16px;
+        }
+
+        .print-heading {
+            display: block;
+        }
+
+        .print-only {
+            display: block;
+        }
+
+        .table-wrap {
+            overflow: visible;
+        }
+
+        .help-sheet {
+            border: 1.2px solid #000;
+            break-inside: avoid;
+        }
+
+        .help-sheet-header {
+            padding: 10px 12px 8px;
+        }
+
+        .help-footer {
+            padding: 10px 12px 14px;
+        }
+
+        .help-table th,
+        .help-table td {
+            border-color: #000;
+            font-size: 10.5px;
+            padding: 6px 5px;
+        }
+
+        .help-liability {
+            font-size: 10.5px;
+            padding: 8px 10px;
+        }
+
+        .help-meta-row {
+            grid-template-columns: 120px 1fr 90px 1fr;
+            font-size: 11px;
+        }
+
+        .help-brand-word {
+            font-size: 28px;
+        }
+
+        .help-brand-caption {
+            font-size: 10px;
+        }
+
+        table {
+            font-size: 12px;
+        }
+
+        th,
+        td {
+            padding: 8px 6px;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+    }
+
+    @media (max-width: 900px) {
+        .report-banner-top,
+        .report-summary,
+        .signature-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .report-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .report-stamp {
+            text-align: left;
+        }
+
+        .help-sheet-topline,
+        .help-sheet-meta,
+        .help-meta-row,
+        .help-signatures {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<div class="branding-scope theme-{{ branding.report_theme or 'classic' }}">
+<section class="hero">
+    <div class="report-header">
+        <div>
+            <h2>{{ display_name }}</h2>
+            <p>Employee asset profile with a formal printable assignment sheet.</p>
+        </div>
+        <div class="toolbar screen-only" style="margin-bottom: 0;">
+            <a class="btn secondary" href="/admin/people">Back to people</a>
+            <button class="btn" type="button" data-print-report>Print report</button>
+        </div>
+    </div>
+
+        {% if branding.report_theme != 'help_standard' %}
+        <div class="report-meta screen-only">
+            <div class="report-card">
+                {{ branding.company_name }}
+                <strong>{{ person.department or "-" }}</strong>
+            </div>
+            <div class="report-card">
+                Assigned assets
+                <strong>{{ assigned_assets|length }}</strong>
+            </div>
+            <div class="report-card">
+                Print date
+                <strong>{{ printed_at }}</strong>
+            </div>
+        </div>
+        {% endif %}
+</section>
+
+{% if branding.report_theme == 'help_standard' %}
+<section class="report-sheet">
+    <article class="help-sheet">
+        <header class="help-sheet-header">
+            <div class="help-sheet-topline">
+                <div>
+                    {% if branding_logo_url %}
+                    <div style="margin-bottom: 10px;">
+                        <img src="{{ branding_logo_url }}" alt="{{ branding.company_name }} logo" style="max-height: 58px; max-width: 220px;">
+                    </div>
+                    {% else %}
+                    <div class="help-brand" aria-label="Help name">
+                        <div class="help-brand-word">Help</div>
+                        <div class="help-brand-caption">Hilfe zur Selbsthilfe</div>
+                    </div>
+                    {% endif %}
+                    <div class="muted" style="text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px;">{{ branding.company_name }}</div>
+                    <h1 class="help-sheet-title">Стандартний перелік активів / Standard Asset List</h1>
+                    <div class="muted">Додаток до договору про матеріальну відповідальність / Appendix to the agreement on material responsibility.</div>
+                </div>
+                <div style="text-align: right;">
+                    <div class="help-meta-label">Дата друку / Printed on</div>
+                    <div class="help-meta-value">{{ printed_at }}</div>
+                </div>
+            </div>
+
+            <div class="help-sheet-meta">
+                <div>
+                    <div class="help-meta-label">Працівник / Employee</div>
+                    <div class="help-meta-value">{{ display_name }}</div>
+                </div>
+                <div>
+                    <div class="help-meta-label">Кількість активів / Assigned Assets</div>
+                    <div class="help-meta-value">{{ assigned_assets|length }}</div>
+                </div>
+            </div>
+
+            <div class="help-meta-row">
+                <div class="help-inline-label">Тип документа / Document Type</div>
+                <div class="help-inline-value">Стандартний перелік активів / Standard Asset List</div>
+                <div class="help-inline-label">Шаблон / Template</div>
+                <div class="help-inline-value">Help Standard</div>
+                <div class="help-inline-label">Дата звіту / Reference Date</div>
+                <div class="help-inline-value">{{ printed_at }}</div>
+            </div>
+        </header>
+
+        <table class="help-table">
+            <thead>
+                <tr>
+                    <th class="help-col-num">№</th>
+                    <th class="help-col-spec">Актив / Специфікація<br>Asset / Specification</th>
+                    <th class="help-col-brand">Бренд<br>Brand</th>
+                    <th class="help-col-model">Модель<br>Model</th>
+                    <th class="help-col-serial">Серійний №<br>Serial No.</th>
+                    <th class="help-col-tag">Інв. №<br>Inventory No.</th>
+                    <th class="help-col-status">Статус<br>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for asset in assigned_assets %}
+                {% set assignment = asset.current_assignment or {} %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>
+                        <div class="help-spec-lines">
+                            <strong>{{ asset.item_description or "-" }}</strong>
+                            {% if asset.quantity %}
+                            <div>Кількість / Qty: {{ asset.quantity }}</div>
+                            {% endif %}
+                        </div>
+                    </td>
+                    <td>{{ asset.brand_make or "-" }}</td>
+                    <td>{{ asset.model or "-" }}</td>
+                    <td>{{ asset.serial_number or "-" }}</td>
+                    <td>{{ asset.asset_tag_number or "-" }}</td>
+                    <td>{{ asset.effective_status or "-" }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="7" class="muted">Наразі за цим працівником не закріплено активних активів / No active assets are currently assigned to this employee.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <footer class="help-footer">
+            <div class="help-note">{{ branding.footer_note }}</div>
+            <div class="help-certification">Цей документ є додатком до договору про матеріальну відповідальність та підтверджує перелік активів, переданих працівнику / This document is an appendix to the agreement on material responsibility and confirms the list of assets assigned to the employee.</div>
+            <div class="help-liability">
+                Працівник своїм підписом підтверджує, що ознайомлений(а) з обов'язком нести повну відповідальність за збереження, належне використання та підтримання у робочому стані ввіреного обладнання, і зобов'язується повернути його у робочому стані у разі припинення співпраці. У разі пошкодження, несправності або втрати обладнання працівник зобов'язується негайно повідомити відповідальну особу організації та відшкодувати витрати на відновлення або заміну такого обладнання відповідно до внутрішніх правил та чинних домовленостей сторін.
+                <br><br>
+                By signing this document, the employee confirms full responsibility for the safekeeping, proper use, and maintenance of the assigned equipment in working condition, and undertakes to return it in working condition upon termination of cooperation. In the event of damage, malfunction, or loss of equipment, the employee must immediately inform the responsible person of the organization and reimburse the organization's costs for repair or replacement in accordance with internal rules and applicable agreements between the parties.
+                <div class="help-liability-signoff">Ознайомлений(а) та згодний(а) / Acknowledged and agreed __________________</div>
+            </div>
+            <div class="help-signatures">
+                <div class="help-signature-box">
+                    <div class="help-meta-label">Видав / Issued by</div>
+                    <div class="help-signature-line">{{ branding.issuer_signature_label }}</div>
+                </div>
+                <div class="help-signature-box">
+                    <div class="help-meta-label">Отримав / Received by</div>
+                    <div class="help-signature-line">{{ branding.receiver_signature_label or (display_name ~ ' signature') }}</div>
+                </div>
+            </div>
+        </footer>
+    </article>
+</section>
+{% else %}
+<section class="report-sheet">
+    <div class="print-heading">
+        <div class="muted">{{ branding.footer_note }}</div>
+    </div>
+
+    <article class="report-banner">
+        <div class="report-banner-top">
+            <div>
+                {% if branding_logo_url %}
+                <div style="margin-bottom: 16px;">
+                    <img src="{{ branding_logo_url }}" alt="{{ branding.company_name }} logo" style="max-height: 74px; max-width: 240px;">
+                </div>
+                {% endif %}
+                <div class="muted" style="text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px;">{{ branding.company_name }}</div>
+                <h1 class="report-title">{{ branding.report_title }}</h1>
+                <div class="muted" style="margin-top: 6px; font-size: 13px;">Template: {{ (branding.report_theme or 'classic')|capitalize }}</div>
+                <p class="report-subtitle">{{ branding.report_subtitle }}</p>
+            </div>
+            <div class="report-stamp">
+                <div class="report-stamp-label">Printed on</div>
+                <div class="report-stamp-value">{{ printed_at }}</div>
+            </div>
+        </div>
+
+        <div class="report-summary">
+            <section class="report-box">
+                <h3>Employee Details</h3>
+                <div class="report-grid">
+                    <div>
+                        <div class="report-field-label">Employee name</div>
+                        <div class="report-field-value">{{ display_name }}</div>
+                    </div>
+                    <div>
+                        <div class="report-field-label">Department</div>
+                        <div class="report-field-value">{{ person.department or "-" }}</div>
+                    </div>
+                    <div>
+                        <div class="report-field-label">Person ID</div>
+                        <div class="report-field-value">{{ person.person_id }}</div>
+                    </div>
+                    <div>
+                        <div class="report-field-label">Report type</div>
+                        <div class="report-field-value">Current assignment register</div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="report-box report-count">
+                <div class="report-count-label">Total assigned assets</div>
+                <div class="report-count-value">{{ assigned_assets|length }}</div>
+                <div class="muted">Live count of active assignments for this employee.</div>
+            </section>
+        </div>
+    </article>
+
+    <section class="panel">
+        <h3>Assigned Assets</h3>
+        <p class="muted">Current live assignments for this employee. This table is formatted for both on-screen review and paper printout.</p>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Asset tag</th>
+                        <th>Description</th>
+                        <th>Status</th>
+                        <th>City</th>
+                        <th>Location</th>
+                        <th>Assignment date</th>
+                        <th class="screen-only">Open</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for asset in assigned_assets %}
+                    {% set assignment = asset.current_assignment or {} %}
+                    <tr>
+                        <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                        <td>
+                            {{ asset.item_description or "-" }}<br>
+                            <span class="muted">{{ asset.brand_make or "-" }} / {{ asset.model or "-" }}</span>
+                        </td>
+                        <td>
+                            <span class="badge {% if (asset.effective_status or '')|upper == 'LOST' %}warn{% endif %}">
+                                {{ asset.effective_status or "-" }}
+                            </span>
+                        </td>
+                        <td>{{ assignment.city or "-" }}</td>
+                        <td>{{ assignment.location_name or "-" }}</td>
+                        <td>{{ assignment.assignment_date or "-" }}</td>
+                        <td class="screen-only"><a href="/admin/assets/{{ asset.asset_id }}">Open asset</a></td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="muted">No active assets are currently assigned to this employee.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="signature-grid">
+        <article class="signature-box">
+            <div class="signature-label">{{ branding.issuer_label }}</div>
+            <div class="signature-line">{{ branding.issuer_signature_label }}</div>
+        </article>
+        <article class="signature-box">
+            <div class="signature-label">{{ branding.receiver_label }}</div>
+            <div class="signature-line">{{ branding.receiver_signature_label or (display_name ~ ' signature') }}</div>
+        </article>
+    </section>
+</section>
+{% endif %}
+</div>
+{% endblock %}

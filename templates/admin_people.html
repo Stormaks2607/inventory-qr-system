@@ -1,0 +1,47 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>People</h2>
+    <p>Find an employee quickly, open their card, and review everything currently assigned to them.</p>
+</section>
+
+<section class="panel">
+    <div class="toolbar">
+        <form method="get" class="search compact" style="width: 100%;">
+            <input type="text" name="q" value="{{ query }}" placeholder="Search by employee name or department">
+            <button class="btn" type="submit">Search</button>
+            <a class="btn secondary" href="/admin/people">Reset</a>
+        </form>
+    </div>
+
+    <p class="muted">Showing {{ people|length }} employees from the live directory, sorted by number of assigned assets.</p>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Employee</th>
+                    <th>Department</th>
+                    <th>Assigned assets</th>
+                    <th>Open</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for person in people %}
+                <tr>
+                    <td><strong>{{ person.display_name }}</strong></td>
+                    <td>{{ person.department or "-" }}</td>
+                    <td>{{ person.assigned_count }}</td>
+                    <td><a href="/admin/people/{{ person.person_id }}">Open profile</a></td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4" class="muted">No employees matched the current search.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

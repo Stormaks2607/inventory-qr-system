@@ -1,12 +1,16 @@
 from typing import Optional
+import csv
+import io
 import secrets
 import json
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.templating import Jinja2Templates
 from supabase import Client, create_client
@@ -21,11 +25,165 @@ PUBLIC_BASE_URL = "https://inventory-qr-system.onrender.com"
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
 ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "replace-this-session-secret")
+BRANDING_SETTINGS_PATH = os.path.join("private_docs", "company_branding.json")
+BRANDING_UPLOAD_DIR = os.path.join("private_docs", "branding")
+ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+BRANDING_SUPABASE_TABLE = "organization_branding"
 
 app = FastAPI(title="Asset API", version="1.0.0")
 app.add_middleware(SessionMiddleware, secret_key=ADMIN_SESSION_SECRET)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 templates = Jinja2Templates(directory="templates")
+
+
+def get_default_branding_settings() -> dict:
+    return {
+        "company_name": "Your Company",
+        "report_title": "Asset Assignment Statement",
+        "report_subtitle": "Official summary of all assets currently assigned to the employee at the time of printing.",
+        "report_theme": "classic",
+        "primary_color": "#0f6c5c",
+        "accent_color": "#f4fbf8",
+        "footer_note": "Internal use only",
+        "issuer_label": "Issued by",
+        "issuer_signature_label": "Name, role, and signature",
+        "receiver_label": "Received by employee",
+        "receiver_signature_label": "Employee signature",
+        "logo_path": "",
+    }
+
+
+def sanitize_tenant_key(value: str) -> str:
+    normalized = "".join(
+        character.lower() if character.isalnum() else "-"
+        for character in (value or "").strip()
+    )
+    collapsed = "-".join(part for part in normalized.split("-") if part)
+    return collapsed or "default"
+
+
+def get_current_tenant_key(request: Request) -> str:
+    return sanitize_tenant_key(request.session.get("admin_username") or "default")
+
+
+def get_branding_settings_path(tenant_key: str) -> str:
+    safe_tenant_key = sanitize_tenant_key(tenant_key)
+    return os.path.join("private_docs", f"company_branding_{safe_tenant_key}.json")
+
+
+def get_branding_upload_dir(tenant_key: str) -> str:
+    safe_tenant_key = sanitize_tenant_key(tenant_key)
+    return os.path.join(BRANDING_UPLOAD_DIR, safe_tenant_key)
+
+
+def ensure_branding_storage() -> None:
+    os.makedirs(os.path.dirname(BRANDING_SETTINGS_PATH), exist_ok=True)
+    os.makedirs(BRANDING_UPLOAD_DIR, exist_ok=True)
+
+
+def load_branding_settings_from_supabase(tenant_key: str) -> Optional[dict]:
+    try:
+        response = (
+            supabase.table(BRANDING_SUPABASE_TABLE)
+            .select("*")
+            .eq("tenant_key", tenant_key)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+
+    if not response.data:
+        return None
+
+    settings = get_default_branding_settings()
+    settings.update(
+        {
+            key: value
+            for key, value in response.data[0].items()
+            if key in settings and value is not None
+        }
+    )
+    return settings
+
+
+def load_branding_settings_from_file(tenant_key: str) -> dict:
+    ensure_branding_storage()
+    settings_path = get_branding_settings_path(tenant_key)
+    settings = get_default_branding_settings()
+    if os.path.exists(settings_path):
+        with open(settings_path, "r", encoding="utf-8") as file:
+            saved = json.load(file)
+        settings.update({key: value for key, value in saved.items() if key in settings})
+    elif tenant_key == "default" and os.path.exists(BRANDING_SETTINGS_PATH):
+        with open(BRANDING_SETTINGS_PATH, "r", encoding="utf-8") as file:
+            saved = json.load(file)
+        settings.update({key: value for key, value in saved.items() if key in settings})
+    return settings
+
+
+def load_branding_settings(tenant_key: str) -> tuple[dict, str]:
+    settings = load_branding_settings_from_supabase(tenant_key)
+    if settings is not None:
+        return settings, "supabase"
+    return load_branding_settings_from_file(tenant_key), "local"
+
+
+def save_branding_settings_to_supabase(tenant_key: str, settings: dict) -> bool:
+    payload = {"tenant_key": tenant_key, **settings}
+    try:
+        supabase.table(BRANDING_SUPABASE_TABLE).upsert(payload).execute()
+        return True
+    except Exception:
+        return False
+
+
+def save_branding_settings_to_file(tenant_key: str, settings: dict) -> None:
+    ensure_branding_storage()
+    settings_path = get_branding_settings_path(tenant_key)
+    with open(settings_path, "w", encoding="utf-8") as file:
+        json.dump(settings, file, ensure_ascii=False, indent=2)
+
+
+def save_branding_settings(tenant_key: str, settings: dict) -> str:
+    if save_branding_settings_to_supabase(tenant_key, settings):
+        save_branding_settings_to_file(tenant_key, settings)
+        return "supabase"
+
+    save_branding_settings_to_file(tenant_key, settings)
+    return "local"
+
+
+def get_branding_logo_url(settings: dict) -> Optional[str]:
+    logo_path = settings.get("logo_path") or ""
+    if not logo_path:
+        return None
+    return "/admin/branding/logo"
+
+
+def save_branding_logo(tenant_key: str, logo_file: UploadFile, current_logo_path: str) -> str:
+    ensure_branding_storage()
+    upload_dir = get_branding_upload_dir(tenant_key)
+    os.makedirs(upload_dir, exist_ok=True)
+    filename = logo_file.filename or ""
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in ALLOWED_LOGO_EXTENSIONS:
+        raise ValueError("Logo must be a PNG, JPG, JPEG, or WEBP file.")
+
+    safe_name = f"brand-logo{extension}"
+    target_path = os.path.join(upload_dir, safe_name)
+
+    file_bytes = logo_file.file.read()
+    if not file_bytes:
+        raise ValueError("Uploaded logo file is empty.")
+
+    with open(target_path, "wb") as file:
+        file.write(file_bytes)
+
+    if current_logo_path and current_logo_path != target_path and os.path.exists(current_logo_path):
+        os.remove(current_logo_path)
+
+    return target_path
 
 
 def is_admin_authenticated(request: Request) -> bool:
@@ -249,6 +407,28 @@ def list_people() -> list[dict]:
     return response.data or []
 
 
+def get_person_display_name(person: dict) -> str:
+    return (
+        person.get("name_eng")
+        or person.get("name")
+        or person.get("full_name")
+        or f"Person #{person.get('person_id')}"
+    )
+
+
+def get_person_by_id(person_id: int) -> Optional[dict]:
+    response = (
+        supabase.table("persons")
+        .select("*")
+        .eq("person_id", person_id)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        return None
+    return response.data[0]
+
+
 def list_locations() -> list[dict]:
     response = (
         supabase.table("locations")
@@ -334,6 +514,58 @@ def list_assets(limit: Optional[int] = None, batch_size: int = 500) -> list[dict
         asset["current_assignment"] = get_current_assignment(asset["asset_id"])
         asset["effective_status"] = get_effective_status(asset)
     return assets
+
+
+def search_people_with_assets(query: str = "") -> list[dict]:
+    assets = list_assets()
+    people = list_people()
+    assignments_by_person: dict[int, list[dict]] = {}
+
+    for asset in assets:
+        assignment = asset.get("current_assignment") or {}
+        person_id = assignment.get("person_id")
+        if person_id:
+            assignments_by_person.setdefault(person_id, []).append(asset)
+
+    rows: list[dict] = []
+    normalized_query = query.strip().lower()
+
+    for person in people:
+        person_id = person.get("person_id")
+        assigned_assets = assignments_by_person.get(person_id, [])
+        row = {
+            "person_id": person_id,
+            "display_name": get_person_display_name(person),
+            "department": person.get("department") or "-",
+            "assigned_count": len(assigned_assets),
+            "assets": assigned_assets,
+        }
+
+        if normalized_query:
+            haystack = " ".join(
+                [
+                    str(row["display_name"]),
+                    str(person.get("department") or ""),
+                    str(person.get("name") or ""),
+                    str(person.get("name_eng") or ""),
+                    str(person.get("full_name") or ""),
+                ]
+            ).lower()
+            if normalized_query not in haystack:
+                continue
+
+        rows.append(row)
+
+    rows.sort(key=lambda item: (-item["assigned_count"], item["display_name"]))
+    return rows
+
+
+def get_assets_for_person(person_id: int) -> list[dict]:
+    return [
+        asset
+        for asset in list_assets()
+        if (asset.get("current_assignment") or {}).get("person_id") == person_id
+    ]
 
 
 def asset_matches_query(asset: dict, query: str) -> bool:
@@ -423,6 +655,57 @@ def build_asset_summary(assets: list[dict]) -> dict:
         "top_departments": top_items(department_map),
         "top_people": top_items(person_map),
     }
+
+
+def summarize_assets_by_field(assets: list[dict], field_name: str, empty_label: str) -> list[dict]:
+    counts: dict[str, int] = {}
+
+    for asset in assets:
+        assignment = asset.get("current_assignment") or {}
+        label = assignment.get(field_name) or empty_label
+        counts[label] = counts.get(label, 0) + 1
+
+    return [
+        {"label": key, "count": value}
+        for key, value in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def build_assignment_audit_rows(assets: list[dict]) -> list[dict]:
+    rows: list[dict] = []
+
+    for asset in assets:
+        assignment = asset.get("current_assignment") or {}
+        rows.append(
+            {
+                "asset_tag_number": asset.get("asset_tag_number") or "",
+                "item_description": asset.get("item_description") or "",
+                "brand_make": asset.get("brand_make") or "",
+                "model": asset.get("model") or "",
+                "effective_status": asset.get("effective_status") or "",
+                "current_status": asset.get("current_status") or "",
+                "responsible_person": assignment.get("responsible_person") or "",
+                "department": assignment.get("department") or "",
+                "city": assignment.get("city") or "",
+                "location_name": assignment.get("location_name") or "",
+                "assignment_date": assignment.get("assignment_date") or "",
+                "assignment_status": assignment.get("status") or "",
+                "assignment_notes": assignment.get("notes") or "",
+            }
+        )
+
+    return rows
+
+
+def csv_response(filename: str, fieldnames: list[str], rows: list[dict]) -> StreamingResponse:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    buffer.seek(0)
+
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv; charset=utf-8", headers=headers)
 
 
 def format_asset_message(asset: dict) -> str:
@@ -624,6 +907,150 @@ def admin_assets(
     )
 
 
+@app.get("/admin/people", response_class=HTMLResponse)
+def admin_people(request: Request, q: str = ""):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    people = search_people_with_assets(q)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_people.html",
+        context={
+            "people": people,
+            "query": q,
+            "active_page": "people",
+            "page_title": "People",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.get("/admin/people/{person_id}", response_class=HTMLResponse)
+def admin_person_detail(request: Request, person_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    person = get_person_by_id(person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    assigned_assets = get_assets_for_person(person_id)
+    display_name = get_person_display_name(person)
+    printed_at = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y")
+    tenant_key = get_current_tenant_key(request)
+    branding, branding_storage = load_branding_settings(tenant_key)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_person_detail.html",
+        context={
+            "person": person,
+            "display_name": display_name,
+            "assigned_assets": assigned_assets,
+            "printed_at": printed_at,
+            "branding": branding,
+            "branding_storage": branding_storage,
+            "tenant_key": tenant_key,
+            "branding_logo_url": get_branding_logo_url(branding),
+            "active_page": "people",
+            "page_title": display_name,
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.get("/admin/branding/logo")
+def admin_branding_logo(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    branding, _ = load_branding_settings(get_current_tenant_key(request))
+    logo_path = branding.get("logo_path") or ""
+    if not logo_path or not os.path.exists(logo_path):
+        raise HTTPException(status_code=404, detail="Logo not found")
+
+    return FileResponse(logo_path)
+
+
+@app.get("/admin/branding", response_class=HTMLResponse)
+def admin_branding(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    tenant_key = get_current_tenant_key(request)
+    branding, branding_storage = load_branding_settings(tenant_key)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_branding.html",
+        context={
+            "branding": branding,
+            "branding_storage": branding_storage,
+            "tenant_key": tenant_key,
+            "branding_logo_url": get_branding_logo_url(branding),
+            "flash": pop_flash(request),
+            "active_page": "branding",
+            "page_title": "Branding",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.post("/admin/branding")
+def admin_branding_save(
+    request: Request,
+    company_name: str = Form(""),
+    report_title: str = Form(""),
+    report_subtitle: str = Form(""),
+    report_theme: str = Form("classic"),
+    primary_color: str = Form(""),
+    accent_color: str = Form(""),
+    footer_note: str = Form(""),
+    issuer_label: str = Form(""),
+    issuer_signature_label: str = Form(""),
+    receiver_label: str = Form(""),
+    receiver_signature_label: str = Form(""),
+    logo_file: Optional[UploadFile] = File(None),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    tenant_key = get_current_tenant_key(request)
+    branding, _ = load_branding_settings(tenant_key)
+    branding.update(
+        {
+            "company_name": company_name.strip() or get_default_branding_settings()["company_name"],
+            "report_title": report_title.strip() or get_default_branding_settings()["report_title"],
+            "report_subtitle": report_subtitle.strip() or get_default_branding_settings()["report_subtitle"],
+            "report_theme": report_theme.strip() if report_theme.strip() in {"classic", "corporate", "compact", "help_standard"} else get_default_branding_settings()["report_theme"],
+            "primary_color": primary_color.strip() or get_default_branding_settings()["primary_color"],
+            "accent_color": accent_color.strip() or get_default_branding_settings()["accent_color"],
+            "footer_note": footer_note.strip() or get_default_branding_settings()["footer_note"],
+            "issuer_label": issuer_label.strip() or get_default_branding_settings()["issuer_label"],
+            "issuer_signature_label": issuer_signature_label.strip() or get_default_branding_settings()["issuer_signature_label"],
+            "receiver_label": receiver_label.strip() or get_default_branding_settings()["receiver_label"],
+            "receiver_signature_label": receiver_signature_label.strip() or get_default_branding_settings()["receiver_signature_label"],
+        }
+    )
+
+    try:
+        if logo_file and (logo_file.filename or "").strip():
+            branding["logo_path"] = save_branding_logo(tenant_key, logo_file, branding.get("logo_path") or "")
+    except ValueError as error:
+        set_flash(request, "error", str(error))
+        return RedirectResponse(url="/admin/branding", status_code=303)
+
+    storage_backend = save_branding_settings(tenant_key, branding)
+    set_flash(request, "success", f"Branding settings were updated for tenant '{tenant_key}' using {storage_backend} storage.")
+    return RedirectResponse(url="/admin/branding", status_code=303)
+
+
 @app.get("/admin/assets/{asset_id}", response_class=HTMLResponse)
 def admin_asset_detail(request: Request, asset_id: int):
     redirect = require_admin(request)
@@ -807,6 +1234,62 @@ def admin_reports(request: Request):
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.get("/admin/reports/export/{report_name}")
+def admin_reports_export(request: Request, report_name: str):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    assets = list_assets()
+
+    if report_name == "cities":
+        rows = summarize_assets_by_field(assets, "city", "Unknown")
+        return csv_response(
+            "assets-by-city.csv",
+            ["label", "count"],
+            [{"label": row["label"], "count": row["count"]} for row in rows],
+        )
+
+    if report_name == "departments":
+        rows = summarize_assets_by_field(assets, "department", "Unknown")
+        return csv_response(
+            "assets-by-department.csv",
+            ["label", "count"],
+            [{"label": row["label"], "count": row["count"]} for row in rows],
+        )
+
+    if report_name == "people":
+        rows = summarize_assets_by_field(assets, "responsible_person", "Unassigned")
+        return csv_response(
+            "assets-by-responsible-person.csv",
+            ["label", "count"],
+            [{"label": row["label"], "count": row["count"]} for row in rows],
+        )
+
+    if report_name == "assignments":
+        return csv_response(
+            "assignment-audit.csv",
+            [
+                "asset_tag_number",
+                "item_description",
+                "brand_make",
+                "model",
+                "effective_status",
+                "current_status",
+                "responsible_person",
+                "department",
+                "city",
+                "location_name",
+                "assignment_date",
+                "assignment_status",
+                "assignment_notes",
+            ],
+            build_assignment_audit_rows(assets),
+        )
+
+    raise HTTPException(status_code=404, detail="Report not found")
 
 
 @app.get("/admin/sync", response_class=HTMLResponse)

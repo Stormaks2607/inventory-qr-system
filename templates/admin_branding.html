@@ -1,0 +1,544 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<style>
+    .branding-preview-scope {
+        --preview-primary: {{ branding.primary_color }};
+        --preview-accent: {{ branding.accent_color }};
+        --preview-surface: #ffffff;
+        --preview-radius: 22px;
+    }
+
+    .branding-preview-scope.theme-corporate {
+        --preview-surface: #f7f9fc;
+        --preview-radius: 10px;
+    }
+
+    .branding-preview-scope.theme-compact {
+        --preview-surface: #fcfdfd;
+        --preview-radius: 12px;
+    }
+
+    .branding-preview-scope.theme-help_standard {
+        --preview-surface: #ffffff;
+        --preview-radius: 0px;
+    }
+
+    .preview-frame {
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: #f6f9fb;
+    }
+
+    .preview-banner {
+        padding: 22px 24px;
+        border-radius: var(--preview-radius);
+        border: 1px solid #d7dee7;
+        background: linear-gradient(135deg, #ffffff 0%, var(--preview-accent) 100%);
+    }
+
+    .theme-corporate .preview-banner {
+        background:
+            linear-gradient(90deg, color-mix(in srgb, var(--preview-primary) 18%, white) 0%, transparent 22%),
+            linear-gradient(135deg, #ffffff 0%, var(--preview-accent) 100%);
+        border-left: 8px solid var(--preview-primary);
+    }
+
+    .theme-compact .preview-banner {
+        padding: 16px 18px;
+    }
+
+    .theme-help_standard .preview-banner {
+        padding: 14px 16px;
+        border-radius: 0;
+        background: #ffffff;
+        border: 1.5px solid #202833;
+    }
+
+    .theme-help_standard .preview-title {
+        font-size: 20px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .theme-help_standard .preview-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .theme-help_standard .preview-fields {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .theme-help_standard .preview-box,
+    .theme-help_standard .preview-table,
+    .theme-help_standard .preview-signature {
+        border-radius: 0;
+    }
+
+    .theme-help_standard .preview-signatures {
+        gap: 10px;
+    }
+
+    .preview-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 18px;
+        margin-bottom: 18px;
+    }
+
+    .preview-title {
+        margin: 10px 0 8px;
+        font-size: 28px;
+        line-height: 1.1;
+    }
+
+    .theme-compact .preview-title {
+        font-size: 22px;
+    }
+
+    .preview-subtitle {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.5;
+    }
+
+    .preview-stamp {
+        min-width: 160px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        border: 1px solid #d7dee7;
+        background: #ffffff;
+        text-align: right;
+    }
+
+    .preview-stamp-value,
+    .theme-corporate .preview-title,
+    .theme-corporate .preview-count strong {
+        color: var(--preview-primary);
+    }
+
+    .preview-grid {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr;
+        gap: 16px;
+    }
+
+    .theme-compact .preview-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .preview-box {
+        padding: 16px 18px;
+        border-radius: calc(var(--preview-radius) - 4px);
+        border: 1px solid #dfe6ee;
+        background: var(--preview-surface);
+    }
+
+    .preview-box h4 {
+        margin: 0 0 12px;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+    }
+
+    .preview-fields {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px 16px;
+    }
+
+    .theme-compact .preview-fields {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .preview-label {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 4px;
+    }
+
+    .preview-value {
+        font-size: 15px;
+        font-weight: 600;
+    }
+
+    .preview-count {
+        display: grid;
+        align-content: center;
+        gap: 8px;
+    }
+
+    .preview-count strong {
+        font-size: 42px;
+        line-height: 1;
+        color: var(--preview-primary);
+    }
+
+    .preview-table {
+        margin-top: 16px;
+        padding: 16px 18px;
+        border-radius: calc(var(--preview-radius) - 4px);
+        border: 1px solid #dfe6ee;
+        background: #ffffff;
+    }
+
+    .preview-table-grid {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .preview-table-grid th,
+    .preview-table-grid td {
+        padding: 8px 6px;
+        border-bottom: 1px solid #e7edf4;
+        text-align: left;
+    }
+
+    .preview-table-grid th {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+
+    .preview-signatures {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin-top: 16px;
+    }
+
+    .preview-signature {
+        padding: 16px 18px;
+        border-radius: calc(var(--preview-radius) - 4px);
+        border: 1px solid #dfe6ee;
+        background: var(--preview-surface);
+    }
+
+    .theme-corporate .preview-signature {
+        border-top: 4px solid var(--preview-primary);
+    }
+
+    .preview-signature-title {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 26px;
+    }
+
+    .preview-signature-line {
+        border-top: 1px solid #7f8b99;
+        padding-top: 8px;
+        font-size: 13px;
+        color: var(--muted);
+    }
+
+    .preview-logo {
+        display: none;
+        margin-bottom: 14px;
+        max-height: 68px;
+        max-width: 220px;
+    }
+
+    .preview-logo.visible {
+        display: block;
+    }
+
+    @media (max-width: 900px) {
+        .preview-top,
+        .preview-grid,
+        .preview-signatures {
+            grid-template-columns: 1fr;
+        }
+
+        .preview-fields {
+            grid-template-columns: 1fr;
+        }
+
+        .preview-stamp {
+            text-align: left;
+        }
+    }
+</style>
+
+<section class="hero">
+    <h2>Branding</h2>
+    <p>Configure company identity for printable reports. This MVP stores your logo and report labels locally and applies them to employee assignment statements.</p>
+    <div class="toolbar" style="margin-top: 16px; margin-bottom: 0;">
+        <span class="btn secondary" style="cursor: default;">Tenant: {{ tenant_key }}</span>
+        <span class="btn secondary" style="cursor: default;">Storage: {{ branding_storage|capitalize }}</span>
+    </div>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="two-column">
+    <article class="panel">
+        <h3>Company Settings</h3>
+        <form method="post" action="/admin/branding" enctype="multipart/form-data" class="form-grid" id="branding-form">
+            <div class="field full">
+                <label for="company_name">Company name</label>
+                <input id="company_name" name="company_name" type="text" value="{{ branding.company_name }}">
+            </div>
+
+            <div class="field full">
+                <label for="report_title">Report title</label>
+                <input id="report_title" name="report_title" type="text" value="{{ branding.report_title }}">
+            </div>
+
+            <div class="field full">
+                <label for="report_subtitle">Report subtitle</label>
+                <textarea id="report_subtitle" name="report_subtitle">{{ branding.report_subtitle }}</textarea>
+            </div>
+
+            <div class="field full">
+                <label for="report_theme">Report template</label>
+                <select id="report_theme" name="report_theme">
+                    <option value="classic" {% if branding.report_theme == 'classic' %}selected{% endif %}>Classic</option>
+                    <option value="corporate" {% if branding.report_theme == 'corporate' %}selected{% endif %}>Corporate</option>
+                    <option value="compact" {% if branding.report_theme == 'compact' %}selected{% endif %}>Compact</option>
+                    <option value="help_standard" {% if branding.report_theme == 'help_standard' %}selected{% endif %}>Help Standard</option>
+                </select>
+                <span class="muted">Choose a layout style without editing the report manually.</span>
+            </div>
+
+            <div class="field">
+                <label for="primary_color">Primary color</label>
+                <input id="primary_color" name="primary_color" type="color" value="{{ branding.primary_color }}">
+            </div>
+
+            <div class="field">
+                <label for="accent_color">Accent color</label>
+                <input id="accent_color" name="accent_color" type="color" value="{{ branding.accent_color }}">
+            </div>
+
+            <div class="field full">
+                <label for="footer_note">Footer / note</label>
+                <input id="footer_note" name="footer_note" type="text" value="{{ branding.footer_note }}">
+            </div>
+
+            <div class="field">
+                <label for="issuer_label">Issuer block title</label>
+                <input id="issuer_label" name="issuer_label" type="text" value="{{ branding.issuer_label }}">
+            </div>
+
+            <div class="field">
+                <label for="issuer_signature_label">Issuer signature line</label>
+                <input id="issuer_signature_label" name="issuer_signature_label" type="text" value="{{ branding.issuer_signature_label }}">
+            </div>
+
+            <div class="field">
+                <label for="receiver_label">Receiver block title</label>
+                <input id="receiver_label" name="receiver_label" type="text" value="{{ branding.receiver_label }}">
+            </div>
+
+            <div class="field">
+                <label for="receiver_signature_label">Receiver signature line</label>
+                <input id="receiver_signature_label" name="receiver_signature_label" type="text" value="{{ branding.receiver_signature_label }}">
+            </div>
+
+            <div class="field full">
+                <label for="logo_file">Company logo</label>
+                <input id="logo_file" name="logo_file" type="file" accept=".png,.jpg,.jpeg,.webp">
+                <span class="muted">Supported formats: PNG, JPG, JPEG, WEBP.</span>
+            </div>
+
+            <div class="toolbar" style="margin-bottom: 0;">
+                <button class="btn" type="submit">Save branding</button>
+            </div>
+        </form>
+    </article>
+
+    <article class="panel">
+        <h3>Live Preview</h3>
+        <div class="branding-preview-scope theme-{{ branding.report_theme or 'classic' }}" id="branding-live-preview">
+            <div class="preview-frame">
+                <article class="preview-banner">
+                    <div class="preview-top">
+                        <div>
+                            <img
+                                id="preview-logo"
+                                class="preview-logo {% if branding_logo_url %}visible{% endif %}"
+                                src="{% if branding_logo_url %}{{ branding_logo_url }}{% endif %}"
+                                alt="Company logo preview"
+                            >
+                            <div class="muted" id="preview-company" style="text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px;">{{ branding.company_name }}</div>
+                            <h4 class="preview-title" id="preview-title">{{ branding.report_title }}</h4>
+                            <div class="muted" id="preview-theme-label" style="margin: 0 0 8px; font-size: 13px;">Template: {{ branding.report_theme|replace('_', ' ')|title }}</div>
+                            <p class="preview-subtitle" id="preview-subtitle">{{ branding.report_subtitle }}</p>
+                        </div>
+                        <div class="preview-stamp">
+                            <div class="muted" style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;">Printed on</div>
+                            <div class="preview-stamp-value">25.04.2026</div>
+                        </div>
+                    </div>
+
+                    <div class="preview-grid">
+                        <section class="preview-box">
+                            <h4>Employee Details</h4>
+                            <div class="preview-fields">
+                                <div>
+                                    <div class="preview-label">Employee name</div>
+                                    <div class="preview-value">Alex Johnson</div>
+                                </div>
+                                <div>
+                                    <div class="preview-label">Department</div>
+                                    <div class="preview-value">Operations</div>
+                                </div>
+                                <div>
+                                    <div class="preview-label">Person ID</div>
+                                    <div class="preview-value">1042</div>
+                                </div>
+                                <div>
+                                    <div class="preview-label">Report type</div>
+                                    <div class="preview-value">Current assignment register</div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="preview-box preview-count">
+                            <div class="preview-label" style="text-transform: uppercase; letter-spacing: 0.08em;">Total assigned assets</div>
+                            <strong>7</strong>
+                            <div class="muted">Live count of active assignments for this employee.</div>
+                        </section>
+                    </div>
+
+                    <section class="preview-table">
+                        <table class="preview-table-grid">
+                            <thead>
+                                <tr>
+                                    <th>Asset tag</th>
+                                    <th>Description</th>
+                                    <th>Status</th>
+                                    <th>City</th>
+                                    <th>Assignment date</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><strong>LAP-0042</strong></td>
+                                    <td>ThinkPad T14</td>
+                                    <td>IN USE</td>
+                                    <td>Kyiv</td>
+                                    <td>2026-03-18</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>MON-0158</strong></td>
+                                    <td>Dell P2422H</td>
+                                    <td>IN USE</td>
+                                    <td>Kyiv</td>
+                                    <td>2026-03-18</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </section>
+
+                    <section class="preview-signatures">
+                        <article class="preview-signature">
+                            <div class="preview-signature-title" id="preview-issuer-label">{{ branding.issuer_label }}</div>
+                            <div class="preview-signature-line" id="preview-issuer-signature">{{ branding.issuer_signature_label }}</div>
+                        </article>
+                        <article class="preview-signature">
+                            <div class="preview-signature-title" id="preview-receiver-label">{{ branding.receiver_label }}</div>
+                            <div class="preview-signature-line" id="preview-receiver-signature">{{ branding.receiver_signature_label }}</div>
+                        </article>
+                    </section>
+                </article>
+            </div>
+        </div>
+        <p class="muted" style="margin-bottom: 0; margin-top: 14px;">Preview updates instantly while you edit settings and matches the employee assignment report style for tenant <strong>{{ tenant_key }}</strong>.</p>
+    </article>
+</section>
+
+<script>
+    (() => {
+        const form = document.getElementById("branding-form");
+        const preview = document.getElementById("branding-live-preview");
+        if (!form || !preview) {
+            return;
+        }
+
+        const fields = {
+            company: document.getElementById("company_name"),
+            title: document.getElementById("report_title"),
+            subtitle: document.getElementById("report_subtitle"),
+            theme: document.getElementById("report_theme"),
+            primary: document.getElementById("primary_color"),
+            accent: document.getElementById("accent_color"),
+            issuerLabel: document.getElementById("issuer_label"),
+            issuerSignature: document.getElementById("issuer_signature_label"),
+            receiverLabel: document.getElementById("receiver_label"),
+            receiverSignature: document.getElementById("receiver_signature_label"),
+            logo: document.getElementById("logo_file")
+        };
+
+        const nodes = {
+            company: document.getElementById("preview-company"),
+            title: document.getElementById("preview-title"),
+            subtitle: document.getElementById("preview-subtitle"),
+            themeLabel: document.getElementById("preview-theme-label"),
+            issuerLabel: document.getElementById("preview-issuer-label"),
+            issuerSignature: document.getElementById("preview-issuer-signature"),
+            receiverLabel: document.getElementById("preview-receiver-label"),
+            receiverSignature: document.getElementById("preview-receiver-signature"),
+            logo: document.getElementById("preview-logo")
+        };
+
+        function capitalize(value) {
+            if (!value) {
+                return "";
+            }
+            return value.charAt(0).toUpperCase() + value.slice(1);
+        }
+
+        function updatePreview() {
+            preview.classList.remove("theme-classic", "theme-corporate", "theme-compact", "theme-help_standard");
+            preview.classList.add(`theme-${fields.theme.value || "classic"}`);
+            preview.style.setProperty("--preview-primary", fields.primary.value || "#0f6c5c");
+            preview.style.setProperty("--preview-accent", fields.accent.value || "#f4fbf8");
+
+            nodes.company.textContent = fields.company.value || "Your Company";
+            nodes.title.textContent = fields.title.value || "Asset Assignment Statement";
+            nodes.subtitle.textContent = fields.subtitle.value || "Official summary of all assets currently assigned to the employee at the time of printing.";
+            nodes.themeLabel.textContent = `Template: ${capitalize((fields.theme.value || "classic").replace("_", " "))}`;
+            nodes.issuerLabel.textContent = fields.issuerLabel.value || "Issued by";
+            nodes.issuerSignature.textContent = fields.issuerSignature.value || "Name, role, and signature";
+            nodes.receiverLabel.textContent = fields.receiverLabel.value || "Received by employee";
+            nodes.receiverSignature.textContent = fields.receiverSignature.value || "Employee signature";
+        }
+
+        Object.values(fields).forEach((field) => {
+            if (!field || field === fields.logo) {
+                return;
+            }
+            field.addEventListener("input", updatePreview);
+            field.addEventListener("change", updatePreview);
+        });
+
+        if (fields.logo && nodes.logo) {
+            fields.logo.addEventListener("change", () => {
+                const [file] = fields.logo.files || [];
+                if (!file) {
+                    return;
+                }
+                const objectUrl = URL.createObjectURL(file);
+                nodes.logo.src = objectUrl;
+                nodes.logo.classList.add("visible");
+            });
+        }
+
+        updatePreview();
+    })();
+</script>
+{% endblock %}

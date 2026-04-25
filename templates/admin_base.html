@@ -230,6 +230,10 @@
             background: #b73b3b;
         }
 
+        .print-only {
+            display: none;
+        }
+
         .flash {
             margin-bottom: 18px;
             padding: 14px 16px;
@@ -444,6 +448,8 @@
             <nav class="nav">
                 <a href="/admin" class="{% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a>
                 <a href="/admin/assets" class="{% if active_page == 'assets' %}active{% endif %}">Assets</a>
+                <a href="/admin/people" class="{% if active_page == 'people' %}active{% endif %}">People</a>
+                <a href="/admin/branding" class="{% if active_page == 'branding' %}active{% endif %}">Branding</a>
                 <a href="/admin/reports" class="{% if active_page == 'reports' %}active{% endif %}">Reports</a>
                 <a href="/admin/sync" class="{% if active_page == 'sync' %}active{% endif %}">Excel Sync</a>
                 <a href="/miniapp">Mini App</a>
@@ -454,5 +460,16 @@
             {% block content %}{% endblock %}
         </main>
     </div>
+
+    <script>
+        (() => {
+            const printButtons = document.querySelectorAll("[data-print-report]");
+            printButtons.forEach((button) => {
+                button.addEventListener("click", () => {
+                    window.print();
+                });
+            });
+        })();
+    </script>
 </body>
 </html>
