@@ -5,6 +5,7 @@ import io
 import secrets
 import json
 import os
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -31,6 +32,12 @@ BRANDING_UPLOAD_DIR = os.path.join("private_docs", "branding")
 ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 BRANDING_SUPABASE_TABLE = "organization_branding"
 DEFAULT_BRANDING_TENANT_KEY = "default"
+ASSET_STATUS_OPTIONS = [
+    ("functional", "Функціонуючий / Functional"),
+    ("non-functional", "Не функціонуючий / Non-functional"),
+    ("lost", "Втрачений / Lost"),
+    ("disposed", "Списаний / Disposed"),
+]
 
 app = FastAPI(title="Asset API", version="1.0.0")
 app.add_middleware(SessionMiddleware, secret_key=ADMIN_SESSION_SECRET)
@@ -243,6 +250,23 @@ def parse_float_field(value: str) -> Optional[float]:
     if not normalized:
         return None
     return float(normalized)
+
+
+def normalize_asset_tag(value: str) -> str:
+    return " ".join((value or "").strip().upper().split())
+
+
+def validate_asset_tag_format(asset_tag_number: str) -> Optional[str]:
+    if not asset_tag_number:
+        return "Asset tag/Inventory No. is required."
+
+    if not re.fullmatch(r"[A-Z0-9](?:[A-Z0-9/\- ]*[A-Z0-9])?", asset_tag_number):
+        return "Asset tag/Inventory No. may only contain letters, digits, spaces, hyphens, and slashes."
+
+    if not any(character.isdigit() for character in asset_tag_number):
+        return "Asset tag/Inventory No. must contain at least one numeric part."
+
+    return None
 
 
 def require_admin(request: Request) -> Optional[RedirectResponse]:
@@ -519,7 +543,7 @@ def get_assignment_form_context(asset: dict) -> dict:
 def get_asset_form_values(asset: Optional[dict] = None) -> dict:
     asset = asset or {}
     return {
-        "asset_tag_number": asset.get("asset_tag_number") or "",
+        "asset_tag_number": asset.get("asset_tag_number") or suggest_next_asset_tag(),
         "item_description": asset.get("item_description") or "",
         "brand_make": asset.get("brand_make") or "",
         "model": asset.get("model") or "",
@@ -532,6 +556,155 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
         "current_status": asset.get("current_status") or "",
         "remarks": asset.get("remarks") or "",
     }
+
+
+def list_lookup_values(table_name: str, column_name: str, fallback: Optional[list[str]] = None) -> list[str]:
+    fallback = fallback or []
+    try:
+        response = (
+            supabase.table(table_name)
+            .select(column_name)
+            .order(column_name)
+            .execute()
+        )
+    except Exception:
+        return fallback
+
+    values = []
+    for row in response.data or []:
+        value = (row.get(column_name) or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return values or fallback
+
+
+def list_distinct_asset_field_values(field_name: str) -> list[str]:
+    try:
+        response = supabase.table("assets").select(field_name).execute()
+    except Exception:
+        return []
+
+    values = []
+    for row in response.data or []:
+        value = (row.get(field_name) or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return sorted(values)
+
+
+def get_asset_create_options() -> dict:
+    classifications = list_lookup_values(
+        "asset_classifications",
+        "classification_name",
+        fallback=list_distinct_asset_field_values("asset_classification"),
+    )
+    sub_classifications = list_lookup_values(
+        "asset_sub_classifications",
+        "sub_classification_name",
+        fallback=list_distinct_asset_field_values("asset_sub_classification"),
+    )
+
+    currencies = []
+    for table_name, column_name in [
+        ("currencies", "currency_code"),
+        ("currencies", "code"),
+        ("asset_currencies", "currency_code"),
+        ("asset_currencies", "code"),
+        ("currency", "currency_code"),
+        ("currency", "code"),
+    ]:
+        currencies = list_lookup_values(table_name, column_name)
+        if currencies:
+            break
+
+    if not currencies:
+        currencies = list_distinct_asset_field_values("currency")
+
+    return {
+        "status_options": ASSET_STATUS_OPTIONS,
+        "classification_options": classifications,
+        "sub_classification_options": sub_classifications,
+        "currency_options": currencies,
+    }
+
+
+def asset_tag_exists(asset_tag_number: str) -> bool:
+    try:
+        response = (
+            supabase.table("assets")
+            .select("asset_id")
+            .eq("asset_tag_number", asset_tag_number)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return False
+
+    return bool(response.data)
+
+
+def get_asset_tag_standard() -> dict:
+    try:
+        response = supabase.table("assets").select("asset_tag_number").execute()
+    except Exception:
+        return {"prefix": "", "width": 0, "example": "", "suggested_next": ""}
+
+    sequence_map: dict[str, dict[str, int]] = {}
+    for row in response.data or []:
+        asset_tag = normalize_asset_tag(row.get("asset_tag_number") or "")
+        match = re.match(r"^(.*?)(\d+)$", asset_tag)
+        if not match:
+            continue
+
+        prefix = match.group(1)
+        number = int(match.group(2))
+        width = len(match.group(2))
+        sequence = sequence_map.setdefault(prefix, {"count": 0, "max_number": 0, "width": width})
+        sequence["count"] += 1
+        if number > sequence["max_number"]:
+            sequence["max_number"] = number
+            sequence["width"] = width
+
+    if not sequence_map:
+        return {"prefix": "", "width": 0, "example": "", "suggested_next": ""}
+
+    best_prefix, best_sequence = max(
+        sequence_map.items(),
+        key=lambda item: (item[1]["count"], item[1]["max_number"], item[0]),
+    )
+    next_number = best_sequence["max_number"] + 1
+    width = best_sequence["width"]
+    return {
+        "prefix": best_prefix,
+        "width": width,
+        "example": f"{best_prefix}{'0' * max(width - 1, 0)}1" if width else "",
+        "suggested_next": f"{best_prefix}{str(next_number).zfill(width)}" if width else "",
+    }
+
+
+def suggest_next_asset_tag() -> str:
+    return get_asset_tag_standard().get("suggested_next") or ""
+
+
+def get_asset_tag_warning(asset_tag_number: str, standard: Optional[dict] = None) -> str:
+    asset_tag_number = normalize_asset_tag(asset_tag_number)
+    standard = standard or get_asset_tag_standard()
+    prefix = standard.get("prefix") or ""
+    width = standard.get("width") or 0
+
+    if not asset_tag_number or not prefix or not width:
+        return ""
+
+    match = re.match(r"^(.*?)(\d+)$", asset_tag_number)
+    if not match:
+        return "This inventory number does not follow the numbering pattern currently used in the database."
+
+    current_prefix = match.group(1)
+    current_width = len(match.group(2))
+    if current_prefix != prefix or current_width != width:
+        return "This inventory number differs from the numbering pattern currently used in the database."
+
+    return ""
 
 
 def get_effective_status(asset: dict) -> str:
@@ -980,11 +1153,15 @@ def admin_asset_new(request: Request):
     if redirect:
         return redirect
 
+    asset_tag_standard = get_asset_tag_standard()
     return templates.TemplateResponse(
         request=request,
         name="admin_asset_create.html",
         context={
             "asset_form": get_asset_form_values(),
+            **get_asset_create_options(),
+            "asset_tag_standard": asset_tag_standard,
+            "asset_tag_warning": "",
             "flash": pop_flash(request),
             "active_page": "assets",
             "page_title": "New Asset",
@@ -1008,13 +1185,15 @@ def admin_asset_create(
     serial_number: str = Form(""),
     current_status: str = Form(""),
     remarks: str = Form(""),
+    confirm_nonstandard_asset_tag: str = Form(""),
 ):
     redirect = require_admin(request)
     if redirect:
         return redirect
 
+    asset_tag_standard = get_asset_tag_standard()
     asset_form = {
-        "asset_tag_number": asset_tag_number.strip(),
+        "asset_tag_number": normalize_asset_tag(asset_tag_number),
         "item_description": item_description.strip(),
         "brand_make": brand_make.strip(),
         "model": model.strip(),
@@ -1028,13 +1207,52 @@ def admin_asset_create(
         "remarks": remarks.strip(),
     }
 
-    if not asset_form["asset_tag_number"]:
+    format_error = validate_asset_tag_format(asset_form["asset_tag_number"])
+    if format_error:
         return templates.TemplateResponse(
             request=request,
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                "flash": {"level": "error", "message": "Asset tag is required."},
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_warning": "",
+                "flash": {"level": "error", "message": format_error},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    asset_tag_warning = get_asset_tag_warning(asset_form["asset_tag_number"], asset_tag_standard)
+    if asset_tag_warning and confirm_nonstandard_asset_tag != "yes":
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {"level": "error", "message": "Please confirm saving this non-standard inventory number."},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    if asset_tag_exists(asset_form["asset_tag_number"]):
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {"level": "error", "message": f"Asset tag/Inventory No. '{asset_form['asset_tag_number']}' already exists."},
                 "active_page": "assets",
                 "page_title": "New Asset",
                 "admin_username": request.session.get("admin_username"),
@@ -1063,6 +1281,9 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_warning": asset_tag_warning,
                 "flash": {"level": "error", "message": "Quantity must be an integer and purchase price must be a number."},
                 "active_page": "assets",
                 "page_title": "New Asset",
@@ -1083,6 +1304,9 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_warning": asset_tag_warning,
                 "flash": {"level": "error", "message": "Asset could not be created. Check whether the asset tag already exists."},
                 "active_page": "assets",
                 "page_title": "New Asset",

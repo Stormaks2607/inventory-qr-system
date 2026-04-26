@@ -12,25 +12,43 @@
 </div>
 {% endif %}
 
+{% if asset_tag_warning %}
+<div class="flash" style="background: #fff5e8; color: #8a5710; border-color: #efd5a6;">
+    {{ asset_tag_warning }}
+    {% if asset_tag_standard.example %}
+    Typical example in the current database: <strong>{{ asset_tag_standard.example }}</strong>
+    {% endif %}
+</div>
+{% endif %}
+
 <section class="panel">
     <div class="toolbar">
         <a class="btn secondary" href="/admin/assets">Back to assets</a>
     </div>
 
-    <form method="post" action="/admin/assets/new" class="form-grid">
+    <form method="post" action="/admin/assets/new" class="form-grid" data-asset-create-form>
+        <input type="hidden" name="confirm_nonstandard_asset_tag" value="" data-confirm-nonstandard>
         <div class="field">
-            <label for="asset_tag_number">Asset tag</label>
+            <label for="asset_tag_number">Asset tag/Inventory No.</label>
             <input id="asset_tag_number" name="asset_tag_number" type="text" value="{{ asset_form.asset_tag_number }}" required>
+            {% if asset_tag_standard.suggested_next %}
+            <div class="muted" style="font-size: 13px;">Suggested next number: {{ asset_tag_standard.suggested_next }}</div>
+            {% endif %}
         </div>
 
         <div class="field">
             <label for="current_status">Default status</label>
-            <input id="current_status" name="current_status" type="text" value="{{ asset_form.current_status }}">
+            <select id="current_status" name="current_status">
+                <option value="">Select status</option>
+                {% for status_value, status_label in status_options %}
+                <option value="{{ status_value }}" {% if asset_form.current_status == status_value %}selected{% endif %}>{{ status_label }}</option>
+                {% endfor %}
+            </select>
         </div>
 
         <div class="field full">
             <label for="item_description">Description</label>
-            <input id="item_description" name="item_description" type="text" value="{{ asset_form.item_description }}">
+            <textarea id="item_description" name="item_description" rows="4">{{ asset_form.item_description }}</textarea>
         </div>
 
         <div class="field">
@@ -45,12 +63,22 @@
 
         <div class="field">
             <label for="asset_classification">Classification</label>
-            <input id="asset_classification" name="asset_classification" type="text" value="{{ asset_form.asset_classification }}">
+            <select id="asset_classification" name="asset_classification">
+                <option value="">Select classification</option>
+                {% for option in classification_options %}
+                <option value="{{ option }}" {% if asset_form.asset_classification == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
         </div>
 
         <div class="field">
             <label for="asset_sub_classification">Sub-classification</label>
-            <input id="asset_sub_classification" name="asset_sub_classification" type="text" value="{{ asset_form.asset_sub_classification }}">
+            <select id="asset_sub_classification" name="asset_sub_classification">
+                <option value="">Select sub-classification</option>
+                {% for option in sub_classification_options %}
+                <option value="{{ option }}" {% if asset_form.asset_sub_classification == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
         </div>
 
         <div class="field">
@@ -65,7 +93,12 @@
 
         <div class="field">
             <label for="currency">Currency</label>
-            <input id="currency" name="currency" type="text" value="{{ asset_form.currency }}">
+            <select id="currency" name="currency">
+                <option value="">Select currency</option>
+                {% for option in currency_options %}
+                <option value="{{ option }}" {% if asset_form.currency == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
         </div>
 
         <div class="field">
@@ -75,7 +108,7 @@
 
         <div class="field full">
             <label for="remarks">Remarks</label>
-            <textarea id="remarks" name="remarks">{{ asset_form.remarks }}</textarea>
+            <textarea id="remarks" name="remarks" rows="3">{{ asset_form.remarks }}</textarea>
         </div>
 
         <div class="toolbar" style="margin-bottom: 0;">
@@ -84,4 +117,54 @@
         </div>
     </form>
 </section>
+
+<script>
+    (() => {
+        const form = document.querySelector("[data-asset-create-form]");
+        if (!form) {
+            return;
+        }
+
+        const assetTagInput = form.querySelector("#asset_tag_number");
+        const confirmField = form.querySelector("[data-confirm-nonstandard]");
+        const standardPrefix = {{ asset_tag_standard.prefix|tojson }};
+        const standardWidth = {{ asset_tag_standard.width|tojson }};
+        const hasStandard = Boolean(standardPrefix) && Boolean(standardWidth);
+
+        function normalizeAssetTag(value) {
+            return (value || "").trim().toUpperCase().replace(/\s+/g, " ");
+        }
+
+        function isNonstandardAssetTag(value) {
+            const normalized = normalizeAssetTag(value);
+            if (!normalized || !hasStandard) {
+                return false;
+            }
+
+            const match = normalized.match(/^(.*?)(\d+)$/);
+            if (!match) {
+                return true;
+            }
+
+            return match[1] !== standardPrefix || match[2].length !== Number(standardWidth);
+        }
+
+        form.addEventListener("submit", (event) => {
+            confirmField.value = "";
+            if (!isNonstandardAssetTag(assetTagInput?.value)) {
+                return;
+            }
+
+            const confirmed = window.confirm(
+                "This inventory number differs from the numbering pattern currently used in the database. Do you want to save it anyway?"
+            );
+            if (!confirmed) {
+                event.preventDefault();
+                return;
+            }
+
+            confirmField.value = "yes";
+        });
+    })();
+</script>
 {% endblock %}
