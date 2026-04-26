@@ -516,7 +516,7 @@ def list_assets(limit: Optional[int] = None, batch_size: int = 500) -> list[dict
     return assets
 
 
-def search_people_with_assets(query: str = "") -> list[dict]:
+def search_people_with_assets(query: str = "", show_all: bool = False) -> list[dict]:
     assets = list_assets()
     people = list_people()
     assignments_by_person: dict[int, list[dict]] = {}
@@ -540,6 +540,9 @@ def search_people_with_assets(query: str = "") -> list[dict]:
             "assigned_count": len(assigned_assets),
             "assets": assigned_assets,
         }
+
+        if not show_all and row["assigned_count"] == 0:
+            continue
 
         if normalized_query:
             haystack = " ".join(
@@ -908,12 +911,12 @@ def admin_assets(
 
 
 @app.get("/admin/people", response_class=HTMLResponse)
-def admin_people(request: Request, q: str = ""):
+def admin_people(request: Request, q: str = "", show_all: bool = False):
     redirect = require_admin(request)
     if redirect:
         return redirect
 
-    people = search_people_with_assets(q)
+    people = search_people_with_assets(q, show_all=show_all)
 
     return templates.TemplateResponse(
         request=request,
@@ -921,6 +924,7 @@ def admin_people(request: Request, q: str = ""):
         context={
             "people": people,
             "query": q,
+            "show_all": show_all,
             "active_page": "people",
             "page_title": "People",
             "admin_username": request.session.get("admin_username"),

@@ -1,6 +1,21 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
+<style>
+    .person-row-unassigned {
+        background: #fbfcfd;
+    }
+
+    .person-row-unassigned td {
+        color: #5f6b7a;
+    }
+
+    .person-row-unassigned strong,
+    .person-row-unassigned a {
+        color: #344154;
+    }
+</style>
+
 <section class="hero">
     <h2>People</h2>
     <p>Find an employee quickly, open their card, and review everything currently assigned to them.</p>
@@ -10,12 +25,22 @@
     <div class="toolbar">
         <form method="get" class="search compact" style="width: 100%;">
             <input type="text" name="q" value="{{ query }}" placeholder="Search by employee name or department">
+            <label style="display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 14px;">
+                <input type="checkbox" name="show_all" value="true" {% if show_all %}checked{% endif %}>
+                Show employees without assets
+            </label>
             <button class="btn" type="submit">Search</button>
             <a class="btn secondary" href="/admin/people">Reset</a>
         </form>
     </div>
 
-    <p class="muted">Showing {{ people|length }} employees from the live directory, sorted by number of assigned assets.</p>
+    <p class="muted">
+        {% if show_all %}
+        Showing {{ people|length }} employees from the live directory, including people without assigned assets.
+        {% else %}
+        Showing {{ people|length }} employees with assigned assets. Enable the checkbox to view the full directory.
+        {% endif %}
+    </p>
 
     <div class="table-wrap">
         <table>
@@ -29,10 +54,20 @@
             </thead>
             <tbody>
                 {% for person in people %}
-                <tr>
-                    <td><strong>{{ person.display_name }}</strong></td>
+                <tr{% if show_all and person.assigned_count == 0 %} class="person-row-unassigned"{% endif %}>
+                    <td>
+                        <strong>{{ person.display_name }}</strong>
+                        {% if show_all and person.assigned_count == 0 %}
+                        <span class="badge warn" style="margin-left: 10px;">0 assets</span>
+                        {% endif %}
+                    </td>
                     <td>{{ person.department or "-" }}</td>
-                    <td>{{ person.assigned_count }}</td>
+                    <td>
+                        {{ person.assigned_count }}
+                        {% if show_all and person.assigned_count == 0 %}
+                        <span class="muted" style="margin-left: 8px;">unassigned</span>
+                        {% endif %}
+                    </td>
                     <td><a href="/admin/people/{{ person.person_id }}">Open profile</a></td>
                 </tr>
                 {% else %}

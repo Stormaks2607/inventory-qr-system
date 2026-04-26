@@ -35,6 +35,12 @@
         margin-bottom: 18px;
     }
 
+    .help-print-toolbar {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 16px;
+    }
+
     .report-meta {
         display: grid;
         gap: 10px;
@@ -466,6 +472,11 @@
             margin-bottom: 16px;
         }
 
+        .theme-help_standard .hero,
+        .theme-help_standard .help-print-toolbar {
+            display: none !important;
+        }
+
         .print-heading {
             display: block;
         }
@@ -555,7 +566,15 @@
     }
 </style>
 
-<div class="branding-scope theme-{{ branding.report_theme or 'classic' }}">
+<div class="branding-scope theme-{{ branding.report_theme or 'classic' }}" data-print-title="{{ branding.company_name }} Asset Report">
+{% if branding.report_theme == 'help_standard' %}
+<div class="help-print-toolbar screen-only">
+    <div class="toolbar" style="margin-bottom: 0;">
+        <a class="btn secondary" href="/admin/people">Back to people</a>
+        <button class="btn" type="button" data-print-report>Print report</button>
+    </div>
+</div>
+{% else %}
 <section class="hero">
     <div class="report-header">
         <div>
@@ -568,23 +587,22 @@
         </div>
     </div>
 
-        {% if branding.report_theme != 'help_standard' %}
-        <div class="report-meta screen-only">
-            <div class="report-card">
-                {{ branding.company_name }}
-                <strong>{{ person.department or "-" }}</strong>
-            </div>
-            <div class="report-card">
-                Assigned assets
-                <strong>{{ assigned_assets|length }}</strong>
-            </div>
-            <div class="report-card">
-                Print date
-                <strong>{{ printed_at }}</strong>
-            </div>
+    <div class="report-meta screen-only">
+        <div class="report-card">
+            {{ branding.company_name }}
+            <strong>{{ person.department or "-" }}</strong>
         </div>
-        {% endif %}
+        <div class="report-card">
+            Assigned assets
+            <strong>{{ assigned_assets|length }}</strong>
+        </div>
+        <div class="report-card">
+            Print date
+            <strong>{{ printed_at }}</strong>
+        </div>
+    </div>
 </section>
+{% endif %}
 
 {% if branding.report_theme == 'help_standard' %}
 <section class="report-sheet">

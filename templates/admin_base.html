@@ -463,10 +463,23 @@
 
     <script>
         (() => {
+            let originalTitle = document.title;
+            window.addEventListener("afterprint", () => {
+                document.title = originalTitle;
+            });
             const printButtons = document.querySelectorAll("[data-print-report]");
             printButtons.forEach((button) => {
                 button.addEventListener("click", () => {
+                    originalTitle = document.title;
+                    const printTitleNode = document.querySelector("[data-print-title]");
+                    const printTitle = printTitleNode?.getAttribute("data-print-title");
+                    if (printTitle) {
+                        document.title = printTitle;
+                    }
                     window.print();
+                    window.setTimeout(() => {
+                        document.title = originalTitle;
+                    }, 0);
                 });
             });
         })();
