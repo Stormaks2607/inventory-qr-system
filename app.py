@@ -1,4 +1,5 @@
 from typing import Optional
+import base64
 import csv
 import io
 import secrets
@@ -29,6 +30,7 @@ BRANDING_SETTINGS_PATH = os.path.join("private_docs", "company_branding.json")
 BRANDING_UPLOAD_DIR = os.path.join("private_docs", "branding")
 ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 BRANDING_SUPABASE_TABLE = "organization_branding"
+DEFAULT_BRANDING_TENANT_KEY = "default"
 
 app = FastAPI(title="Asset API", version="1.0.0")
 app.add_middleware(SessionMiddleware, secret_key=ADMIN_SESSION_SECRET)
@@ -59,11 +61,15 @@ def sanitize_tenant_key(value: str) -> str:
         for character in (value or "").strip()
     )
     collapsed = "-".join(part for part in normalized.split("-") if part)
-    return collapsed or "default"
+    return collapsed or DEFAULT_BRANDING_TENANT_KEY
 
 
 def get_current_tenant_key(request: Request) -> str:
-    return sanitize_tenant_key(request.session.get("admin_username") or "default")
+    return sanitize_tenant_key(request.session.get("admin_tenant_key") or DEFAULT_BRANDING_TENANT_KEY)
+
+
+def get_legacy_tenant_key(request: Request) -> str:
+    return sanitize_tenant_key(request.session.get("admin_username") or DEFAULT_BRANDING_TENANT_KEY)
 
 
 def get_branding_settings_path(tenant_key: str) -> str:
@@ -129,6 +135,26 @@ def load_branding_settings(tenant_key: str) -> tuple[dict, str]:
     return load_branding_settings_from_file(tenant_key), "local"
 
 
+def branding_matches_defaults(settings: dict) -> bool:
+    defaults = get_default_branding_settings()
+    return all(settings.get(key) == value for key, value in defaults.items())
+
+
+def resolve_branding_for_request(request: Request) -> tuple[str, dict, str]:
+    tenant_key = get_current_tenant_key(request)
+    branding, branding_storage = load_branding_settings(tenant_key)
+    if not branding_matches_defaults(branding):
+        return tenant_key, branding, branding_storage
+
+    legacy_tenant_key = get_legacy_tenant_key(request)
+    if legacy_tenant_key != tenant_key:
+        legacy_branding, legacy_storage = load_branding_settings(legacy_tenant_key)
+        if not branding_matches_defaults(legacy_branding):
+            return tenant_key, legacy_branding, legacy_storage
+
+    return tenant_key, branding, branding_storage
+
+
 def save_branding_settings_to_supabase(tenant_key: str, settings: dict) -> bool:
     payload = {"tenant_key": tenant_key, **settings}
     try:
@@ -158,6 +184,8 @@ def get_branding_logo_url(settings: dict) -> Optional[str]:
     logo_path = settings.get("logo_path") or ""
     if not logo_path:
         return None
+    if logo_path.startswith("data:image/"):
+        return logo_path
     return "/admin/branding/logo"
 
 
@@ -177,13 +205,19 @@ def save_branding_logo(tenant_key: str, logo_file: UploadFile, current_logo_path
     if not file_bytes:
         raise ValueError("Uploaded logo file is empty.")
 
-    with open(target_path, "wb") as file:
-        file.write(file_bytes)
+    mime_type = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(extension, "application/octet-stream")
+    encoded = base64.b64encode(file_bytes).decode("ascii")
+    logo_data_url = f"data:{mime_type};base64,{encoded}"
 
-    if current_logo_path and current_logo_path != target_path and os.path.exists(current_logo_path):
+    if current_logo_path and not current_logo_path.startswith("data:image/") and current_logo_path != target_path and os.path.exists(current_logo_path):
         os.remove(current_logo_path)
 
-    return target_path
+    return logo_data_url
 
 
 def is_admin_authenticated(request: Request) -> bool:
@@ -414,6 +448,16 @@ def get_person_display_name(person: dict) -> str:
         or person.get("full_name")
         or f"Person #{person.get('person_id')}"
     )
+
+
+def get_person_report_name(person: dict) -> str:
+    local_name = (person.get("name") or person.get("full_name") or "").strip()
+    english_name = (person.get("name_eng") or "").strip()
+
+    if local_name and english_name and local_name.casefold() != english_name.casefold():
+        return f"{local_name} / {english_name}"
+
+    return english_name or local_name or f"Person #{person.get('person_id')}"
 
 
 def get_person_by_id(person_id: int) -> Optional[dict]:
@@ -834,7 +878,8 @@ def admin_login_submit(
         )
 
     request.session["admin_authenticated"] = True
-    request.session["admin_username"] = username
+    request.session["admin_username"] = input_username
+    request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
     return RedirectResponse(url=next or "/admin", status_code=303)
 
 
@@ -944,9 +989,9 @@ def admin_person_detail(request: Request, person_id: int):
 
     assigned_assets = get_assets_for_person(person_id)
     display_name = get_person_display_name(person)
+    report_display_name = get_person_report_name(person)
     printed_at = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y")
-    tenant_key = get_current_tenant_key(request)
-    branding, branding_storage = load_branding_settings(tenant_key)
+    tenant_key, branding, branding_storage = resolve_branding_for_request(request)
 
     return templates.TemplateResponse(
         request=request,
@@ -954,6 +999,7 @@ def admin_person_detail(request: Request, person_id: int):
         context={
             "person": person,
             "display_name": display_name,
+            "report_display_name": report_display_name,
             "assigned_assets": assigned_assets,
             "printed_at": printed_at,
             "branding": branding,
@@ -973,9 +1019,9 @@ def admin_branding_logo(request: Request):
     if redirect:
         return redirect
 
-    branding, _ = load_branding_settings(get_current_tenant_key(request))
+    _, branding, _ = resolve_branding_for_request(request)
     logo_path = branding.get("logo_path") or ""
-    if not logo_path or not os.path.exists(logo_path):
+    if not logo_path or logo_path.startswith("data:image/") or not os.path.exists(logo_path):
         raise HTTPException(status_code=404, detail="Logo not found")
 
     return FileResponse(logo_path)
@@ -987,8 +1033,7 @@ def admin_branding(request: Request):
     if redirect:
         return redirect
 
-    tenant_key = get_current_tenant_key(request)
-    branding, branding_storage = load_branding_settings(tenant_key)
+    tenant_key, branding, branding_storage = resolve_branding_for_request(request)
     return templates.TemplateResponse(
         request=request,
         name="admin_branding.html",
@@ -1025,8 +1070,7 @@ def admin_branding_save(
     if redirect:
         return redirect
 
-    tenant_key = get_current_tenant_key(request)
-    branding, _ = load_branding_settings(tenant_key)
+    tenant_key, branding, _ = resolve_branding_for_request(request)
     branding.update(
         {
             "company_name": company_name.strip() or get_default_branding_settings()["company_name"],

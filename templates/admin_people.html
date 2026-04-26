@@ -55,19 +55,9 @@
             <tbody>
                 {% for person in people %}
                 <tr{% if show_all and person.assigned_count == 0 %} class="person-row-unassigned"{% endif %}>
-                    <td>
-                        <strong>{{ person.display_name }}</strong>
-                        {% if show_all and person.assigned_count == 0 %}
-                        <span class="badge warn" style="margin-left: 10px;">0 assets</span>
-                        {% endif %}
-                    </td>
+                    <td><strong>{{ person.display_name }}</strong></td>
                     <td>{{ person.department or "-" }}</td>
-                    <td>
-                        {{ person.assigned_count }}
-                        {% if show_all and person.assigned_count == 0 %}
-                        <span class="muted" style="margin-left: 8px;">unassigned</span>
-                        {% endif %}
-                    </td>
+                    <td>{{ person.assigned_count }}</td>
                     <td><a href="/admin/people/{{ person.person_id }}">Open profile</a></td>
                 </tr>
                 {% else %}

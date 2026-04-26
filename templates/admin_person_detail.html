@@ -633,7 +633,7 @@
             <div class="help-sheet-meta">
                 <div>
                     <div class="help-meta-label">Працівник / Employee</div>
-                    <div class="help-meta-value">{{ display_name }}</div>
+                    <div class="help-meta-value">{{ report_display_name }}</div>
                 </div>
                 <div>
                     <div class="help-meta-label">Кількість активів / Assigned Assets</div>
@@ -706,7 +706,7 @@
                 </div>
                 <div class="help-signature-box">
                     <div class="help-meta-label">Отримав / Received by</div>
-                    <div class="help-signature-line">{{ branding.receiver_signature_label or (display_name ~ ' signature') }}</div>
+                    <div class="help-signature-line">{{ branding.receiver_signature_label or (report_display_name ~ ' signature') }}</div>
                 </div>
             </div>
         </footer>
