@@ -1,6 +1,41 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
+<style>
+    .asset-create-top-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+    }
+
+    .asset-status-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 10px;
+        align-items: end;
+    }
+
+    .asset-status-row.single {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .asset-status-custom[hidden] {
+        display: none;
+    }
+
+    .asset-helper {
+        min-height: 20px;
+        font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+        .asset-create-top-row,
+        .asset-status-row {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
 <section class="hero">
     <h2>New Asset</h2>
     <p>Create a new asset record in the inventory, then continue in the detail page for assignment and further edits.</p>
@@ -28,22 +63,39 @@
 
     <form method="post" action="/admin/assets/new" class="form-grid" data-asset-create-form>
         <input type="hidden" name="confirm_nonstandard_asset_tag" value="" data-confirm-nonstandard>
-        <div class="field">
-            <label for="asset_tag_number">Asset tag/Inventory No.</label>
-            <input id="asset_tag_number" name="asset_tag_number" type="text" value="{{ asset_form.asset_tag_number }}" required>
-            {% if asset_tag_standard.suggested_next %}
-            <div class="muted" style="font-size: 13px;">Suggested next number: {{ asset_tag_standard.suggested_next }}</div>
-            {% endif %}
-        </div>
+        <div class="asset-create-top-row field full">
+            <div class="field">
+                <label for="asset_tag_number">Asset tag/Inventory No.</label>
+                <input id="asset_tag_number" name="asset_tag_number" type="text" value="{{ asset_form.asset_tag_number }}" required>
+                <div class="muted asset-helper">
+                    {% if asset_tag_standard.suggested_next %}
+                    Suggested next number: {{ asset_tag_standard.suggested_next }}
+                    {% endif %}
+                </div>
+            </div>
 
-        <div class="field">
-            <label for="current_status">Default status</label>
-            <select id="current_status" name="current_status">
-                <option value="">Select status</option>
-                {% for status_value, status_label in status_options %}
-                <option value="{{ status_value }}" {% if asset_form.current_status == status_value %}selected{% endif %}>{{ status_label }}</option>
-                {% endfor %}
-            </select>
+            <div class="field">
+                <label for="current_status">Asset status</label>
+                <div class="asset-status-row {% if asset_form.current_status_select != '__custom__' %}single{% endif %}" data-asset-status-row>
+                    <select id="current_status" name="current_status" data-asset-status-select>
+                        <option value="">Select status</option>
+                        {% for status_value, status_label in status_options %}
+                        <option value="{{ status_value }}" {% if asset_form.current_status_select == status_value %}selected{% endif %}>{{ status_label }}</option>
+                        {% endfor %}
+                        <option value="__custom__" {% if asset_form.current_status_select == '__custom__' %}selected{% endif %}>Custom status</option>
+                    </select>
+                    <input
+                        class="asset-status-custom"
+                        type="text"
+                        name="current_status_custom"
+                        value="{{ asset_form.current_status_custom }}"
+                        placeholder="Enter custom status"
+                        data-asset-status-custom
+                        {% if asset_form.current_status_select != '__custom__' %}hidden{% endif %}
+                    >
+                </div>
+                <div class="muted asset-helper">&nbsp;</div>
+            </div>
         </div>
 
         <div class="field full">
@@ -127,6 +179,9 @@
 
         const assetTagInput = form.querySelector("#asset_tag_number");
         const confirmField = form.querySelector("[data-confirm-nonstandard]");
+        const statusSelect = form.querySelector("[data-asset-status-select]");
+        const statusCustomInput = form.querySelector("[data-asset-status-custom]");
+        const statusRow = form.querySelector("[data-asset-status-row]");
         const standardPrefix = {{ asset_tag_standard.prefix|tojson }};
         const standardWidth = {{ asset_tag_standard.width|tojson }};
         const hasStandard = Boolean(standardPrefix) && Boolean(standardWidth);
@@ -148,6 +203,24 @@
 
             return match[1] !== standardPrefix || match[2].length !== Number(standardWidth);
         }
+
+        function syncCustomStatusField() {
+            const customSelected = statusSelect?.value === "__custom__";
+            if (!statusCustomInput || !statusRow) {
+                return;
+            }
+
+            statusCustomInput.hidden = !customSelected;
+            statusRow.classList.toggle("single", !customSelected);
+            if (customSelected) {
+                statusCustomInput.focus();
+            } else {
+                statusCustomInput.value = "";
+            }
+        }
+
+        statusSelect?.addEventListener("change", syncCustomStatusField);
+        syncCustomStatusField();
 
         form.addEventListener("submit", (event) => {
             confirmField.value = "";

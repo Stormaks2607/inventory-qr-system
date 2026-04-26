@@ -44,6 +44,13 @@ app.add_middleware(SessionMiddleware, secret_key=ADMIN_SESSION_SECRET)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 templates = Jinja2Templates(directory="templates")
 
+ASSET_STATUS_SELECT_OPTIONS = [
+    ("functional", "Functional"),
+    ("non-functional", "Non-functional"),
+    ("lost", "Lost"),
+    ("disposed", "Disposed"),
+]
+
 
 def get_default_branding_settings() -> dict:
     return {
@@ -542,6 +549,8 @@ def get_assignment_form_context(asset: dict) -> dict:
 
 def get_asset_form_values(asset: Optional[dict] = None) -> dict:
     asset = asset or {}
+    current_status = asset.get("current_status") or ""
+    standard_status_values = {value for value, _ in ASSET_STATUS_SELECT_OPTIONS}
     return {
         "asset_tag_number": asset.get("asset_tag_number") or suggest_next_asset_tag(),
         "item_description": asset.get("item_description") or "",
@@ -553,7 +562,9 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
         "purchase_price": asset.get("purchase_price") or "",
         "currency": asset.get("currency") or "",
         "serial_number": asset.get("serial_number") or "",
-        "current_status": asset.get("current_status") or "",
+        "current_status": current_status,
+        "current_status_select": current_status if current_status in standard_status_values else ("__custom__" if current_status else ""),
+        "current_status_custom": current_status if current_status and current_status not in standard_status_values else "",
         "remarks": asset.get("remarks") or "",
     }
 
@@ -621,7 +632,7 @@ def get_asset_create_options() -> dict:
         currencies = list_distinct_asset_field_values("currency")
 
     return {
-        "status_options": ASSET_STATUS_OPTIONS,
+        "status_options": ASSET_STATUS_SELECT_OPTIONS,
         "classification_options": classifications,
         "sub_classification_options": sub_classifications,
         "currency_options": currencies,
@@ -1184,6 +1195,7 @@ def admin_asset_create(
     currency: str = Form(""),
     serial_number: str = Form(""),
     current_status: str = Form(""),
+    current_status_custom: str = Form(""),
     remarks: str = Form(""),
     confirm_nonstandard_asset_tag: str = Form(""),
 ):
@@ -1191,6 +1203,7 @@ def admin_asset_create(
     if redirect:
         return redirect
 
+    resolved_status = current_status_custom.strip() if current_status == "__custom__" else current_status.strip()
     asset_tag_standard = get_asset_tag_standard()
     asset_form = {
         "asset_tag_number": normalize_asset_tag(asset_tag_number),
@@ -1203,7 +1216,9 @@ def admin_asset_create(
         "purchase_price": purchase_price.strip(),
         "currency": currency.strip(),
         "serial_number": serial_number.strip(),
-        "current_status": current_status.strip(),
+        "current_status": resolved_status,
+        "current_status_select": current_status.strip(),
+        "current_status_custom": current_status_custom.strip(),
         "remarks": remarks.strip(),
     }
 
@@ -1218,6 +1233,23 @@ def admin_asset_create(
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_warning": "",
                 "flash": {"level": "error", "message": format_error},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    if current_status == "__custom__" and not asset_form["current_status_custom"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_warning": "",
+                "flash": {"level": "error", "message": "Enter a custom asset status or choose one from the list."},
                 "active_page": "assets",
                 "page_title": "New Asset",
                 "admin_username": request.session.get("admin_username"),
