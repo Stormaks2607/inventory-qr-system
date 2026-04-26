@@ -516,6 +516,24 @@ def get_assignment_form_context(asset: dict) -> dict:
     }
 
 
+def get_asset_form_values(asset: Optional[dict] = None) -> dict:
+    asset = asset or {}
+    return {
+        "asset_tag_number": asset.get("asset_tag_number") or "",
+        "item_description": asset.get("item_description") or "",
+        "brand_make": asset.get("brand_make") or "",
+        "model": asset.get("model") or "",
+        "asset_classification": asset.get("asset_classification") or "",
+        "asset_sub_classification": asset.get("asset_sub_classification") or "",
+        "quantity": asset.get("quantity") or "",
+        "purchase_price": asset.get("purchase_price") or "",
+        "currency": asset.get("currency") or "",
+        "serial_number": asset.get("serial_number") or "",
+        "current_status": asset.get("current_status") or "",
+        "remarks": asset.get("remarks") or "",
+    }
+
+
 def get_effective_status(asset: dict) -> str:
     assignment = asset.get("current_assignment") or {}
     return assignment.get("status") or asset.get("current_status") or "-"
@@ -948,11 +966,143 @@ def admin_assets(
             "query": q,
             "filters": filters,
             "total_found": len(filtered_assets),
+            "flash": pop_flash(request),
             "active_page": "assets",
             "page_title": "Admin Assets",
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.get("/admin/assets/new", response_class=HTMLResponse)
+def admin_asset_new(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_asset_create.html",
+        context={
+            "asset_form": get_asset_form_values(),
+            "flash": pop_flash(request),
+            "active_page": "assets",
+            "page_title": "New Asset",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.post("/admin/assets/new")
+def admin_asset_create(
+    request: Request,
+    asset_tag_number: str = Form(""),
+    item_description: str = Form(""),
+    brand_make: str = Form(""),
+    model: str = Form(""),
+    asset_classification: str = Form(""),
+    asset_sub_classification: str = Form(""),
+    quantity: str = Form(""),
+    purchase_price: str = Form(""),
+    currency: str = Form(""),
+    serial_number: str = Form(""),
+    current_status: str = Form(""),
+    remarks: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset_form = {
+        "asset_tag_number": asset_tag_number.strip(),
+        "item_description": item_description.strip(),
+        "brand_make": brand_make.strip(),
+        "model": model.strip(),
+        "asset_classification": asset_classification.strip(),
+        "asset_sub_classification": asset_sub_classification.strip(),
+        "quantity": quantity.strip(),
+        "purchase_price": purchase_price.strip(),
+        "currency": currency.strip(),
+        "serial_number": serial_number.strip(),
+        "current_status": current_status.strip(),
+        "remarks": remarks.strip(),
+    }
+
+    if not asset_form["asset_tag_number"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                "flash": {"level": "error", "message": "Asset tag is required."},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    try:
+        insert_data = {
+            "asset_tag_number": asset_form["asset_tag_number"],
+            "item_description": asset_form["item_description"] or None,
+            "brand_make": asset_form["brand_make"] or None,
+            "model": asset_form["model"] or None,
+            "asset_classification": asset_form["asset_classification"] or None,
+            "asset_sub_classification": asset_form["asset_sub_classification"] or None,
+            "quantity": parse_int_field(asset_form["quantity"]),
+            "purchase_price": parse_float_field(asset_form["purchase_price"]),
+            "currency": asset_form["currency"] or None,
+            "serial_number": asset_form["serial_number"] or None,
+            "current_status": asset_form["current_status"] or None,
+            "remarks": asset_form["remarks"] or None,
+        }
+    except ValueError:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                "flash": {"level": "error", "message": "Quantity must be an integer and purchase price must be a number."},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    try:
+        response = (
+            supabase.table("assets")
+            .insert(insert_data)
+            .execute()
+        )
+    except Exception:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                "flash": {"level": "error", "message": "Asset could not be created. Check whether the asset tag already exists."},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    created_asset = (response.data or [{}])[0]
+    created_asset_id = created_asset.get("asset_id")
+    if not created_asset_id:
+        created_asset = get_asset_by_tag(asset_form["asset_tag_number"]) or {}
+        created_asset_id = created_asset.get("asset_id")
+
+    if not created_asset_id:
+        set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
+        return RedirectResponse(url="/admin/assets", status_code=303)
+
+    set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
+    return RedirectResponse(url=f"/admin/assets/{created_asset_id}", status_code=303)
 
 
 @app.get("/admin/people", response_class=HTMLResponse)

@@ -1,0 +1,87 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>New Asset</h2>
+    <p>Create a new asset record in the inventory, then continue in the detail page for assignment and further edits.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="panel">
+    <div class="toolbar">
+        <a class="btn secondary" href="/admin/assets">Back to assets</a>
+    </div>
+
+    <form method="post" action="/admin/assets/new" class="form-grid">
+        <div class="field">
+            <label for="asset_tag_number">Asset tag</label>
+            <input id="asset_tag_number" name="asset_tag_number" type="text" value="{{ asset_form.asset_tag_number }}" required>
+        </div>
+
+        <div class="field">
+            <label for="current_status">Default status</label>
+            <input id="current_status" name="current_status" type="text" value="{{ asset_form.current_status }}">
+        </div>
+
+        <div class="field full">
+            <label for="item_description">Description</label>
+            <input id="item_description" name="item_description" type="text" value="{{ asset_form.item_description }}">
+        </div>
+
+        <div class="field">
+            <label for="brand_make">Brand</label>
+            <input id="brand_make" name="brand_make" type="text" value="{{ asset_form.brand_make }}">
+        </div>
+
+        <div class="field">
+            <label for="model">Model</label>
+            <input id="model" name="model" type="text" value="{{ asset_form.model }}">
+        </div>
+
+        <div class="field">
+            <label for="asset_classification">Classification</label>
+            <input id="asset_classification" name="asset_classification" type="text" value="{{ asset_form.asset_classification }}">
+        </div>
+
+        <div class="field">
+            <label for="asset_sub_classification">Sub-classification</label>
+            <input id="asset_sub_classification" name="asset_sub_classification" type="text" value="{{ asset_form.asset_sub_classification }}">
+        </div>
+
+        <div class="field">
+            <label for="quantity">Quantity</label>
+            <input id="quantity" name="quantity" type="text" value="{{ asset_form.quantity }}">
+        </div>
+
+        <div class="field">
+            <label for="purchase_price">Purchase price</label>
+            <input id="purchase_price" name="purchase_price" type="text" value="{{ asset_form.purchase_price }}">
+        </div>
+
+        <div class="field">
+            <label for="currency">Currency</label>
+            <input id="currency" name="currency" type="text" value="{{ asset_form.currency }}">
+        </div>
+
+        <div class="field">
+            <label for="serial_number">Serial number</label>
+            <input id="serial_number" name="serial_number" type="text" value="{{ asset_form.serial_number }}">
+        </div>
+
+        <div class="field full">
+            <label for="remarks">Remarks</label>
+            <textarea id="remarks" name="remarks">{{ asset_form.remarks }}</textarea>
+        </div>
+
+        <div class="toolbar" style="margin-bottom: 0;">
+            <button class="btn" type="submit">Create asset</button>
+            <a class="btn secondary" href="/admin/assets">Cancel</a>
+        </div>
+    </form>
+</section>
+{% endblock %}
