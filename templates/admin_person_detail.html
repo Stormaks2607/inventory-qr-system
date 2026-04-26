@@ -276,10 +276,14 @@
     }
 
     .help-sheet-title {
-        margin: 2px 0 0;
-        font-size: 19px;
+        margin: 0;
+        font-size: 17px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
+    }
+
+    .help-company-name {
+        margin-bottom: 6px;
     }
 
     .help-brand {
@@ -620,7 +624,7 @@
                         <div class="help-brand-caption">Hilfe zur Selbsthilfe</div>
                     </div>
                     {% endif %}
-                    <div class="muted" style="text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px;">{{ branding.company_name }}</div>
+                    <div class="muted help-company-name" style="text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px;">{{ branding.company_name }}</div>
                     <h1 class="help-sheet-title">Стандартний перелік активів / Standard Asset List</h1>
                     <div class="muted">Додаток до договору про матеріальну відповідальність / Appendix to the agreement on material responsibility.</div>
                 </div>
