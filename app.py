@@ -603,16 +603,47 @@ def list_distinct_asset_field_values(field_name: str) -> list[str]:
     return sorted(values)
 
 
+def canonical_option_key(value: str) -> str:
+    translation = str.maketrans({
+        "0": "o",
+        "1": "i",
+        "3": "e",
+        "4": "i",
+        "5": "s",
+        "7": "t",
+    })
+    return "".join(character for character in value.lower().translate(translation) if character.isalnum())
+
+
+def option_quality_score(value: str) -> tuple[int, int, int]:
+    digit_count = sum(character.isdigit() for character in value)
+    alpha_count = sum(character.isalpha() for character in value)
+    return (-digit_count, alpha_count, -len(value))
+
+
+def merge_preferred_options(primary: list[str], secondary: list[str]) -> list[str]:
+    merged: dict[str, str] = {}
+    for value in [*primary, *secondary]:
+        normalized = (value or "").strip()
+        if not normalized:
+            continue
+        key = canonical_option_key(normalized) or normalized.casefold()
+        existing = merged.get(key)
+        if existing is None or option_quality_score(normalized) > option_quality_score(existing):
+            merged[key] = normalized
+    return sorted(merged.values())
+
+
 def get_asset_create_options() -> dict:
-    classifications = list_lookup_values(
-        "asset_classifications",
-        "classification_name",
-        fallback=list_distinct_asset_field_values("asset_classification"),
+    asset_classifications = list_distinct_asset_field_values("asset_classification")
+    asset_sub_classifications = list_distinct_asset_field_values("asset_sub_classification")
+    classifications = merge_preferred_options(
+        list_lookup_values("asset_classifications", "classification_name"),
+        asset_classifications,
     )
-    sub_classifications = list_lookup_values(
-        "asset_sub_classifications",
-        "sub_classification_name",
-        fallback=list_distinct_asset_field_values("asset_sub_classification"),
+    sub_classifications = merge_preferred_options(
+        list_lookup_values("asset_sub_classifications", "sub_classification_name"),
+        asset_sub_classifications,
     )
 
     currencies = []
