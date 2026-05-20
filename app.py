@@ -7,8 +7,10 @@ import json
 import os
 import re
 from datetime import datetime
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
+import httpx
 import requests
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -21,9 +23,16 @@ from supabase import Client, create_client
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+def clean_env_value(name: str) -> Optional[str]:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    return value.strip().strip("\"'")
+
+
+SUPABASE_URL = clean_env_value("SUPABASE_URL")
+SUPABASE_KEY = clean_env_value("SUPABASE_KEY")
+BOT_TOKEN = clean_env_value("BOT_TOKEN")
 PUBLIC_BASE_URL = "https://inventory-qr-system.onrender.com"
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
@@ -42,6 +51,10 @@ ASSET_STATUS_OPTIONS = [
 
 app = FastAPI(title="Asset API", version="1.0.0")
 app.add_middleware(SessionMiddleware, secret_key=ADMIN_SESSION_SECRET)
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set.")
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 templates = Jinja2Templates(directory="templates")
 
@@ -51,6 +64,30 @@ ASSET_STATUS_SELECT_OPTIONS = [
     ("lost", "Lost"),
     ("disposed", "Disposed"),
 ]
+
+
+class DatabaseConnectionError(RuntimeError):
+    pass
+
+
+def get_supabase_host() -> str:
+    if not SUPABASE_URL:
+        return "missing SUPABASE_URL"
+    parsed = urlparse(SUPABASE_URL)
+    return parsed.netloc or parsed.path or SUPABASE_URL
+
+
+def execute_supabase_query(query, context: str):
+    try:
+        return query.execute()
+    except httpx.ConnectError as exc:
+        host = get_supabase_host()
+        message = (
+            f"Cannot connect to Supabase host '{host}'. "
+            "Check SUPABASE_URL in Render environment variables."
+        )
+        print(f"SUPABASE CONNECTION ERROR ({context}): {message} Original error: {exc}")
+        raise DatabaseConnectionError(message) from exc
 
 
 def get_default_branding_settings() -> dict:
@@ -417,13 +454,13 @@ def enrich_assignment(assignment: dict) -> dict:
 
 
 def get_asset_by_tag(asset_tag: str) -> Optional[dict]:
-    response = (
+    query = (
         supabase.table("assets")
         .select("*")
         .eq("asset_tag_number", asset_tag)
         .limit(1)
-        .execute()
     )
+    response = execute_supabase_query(query, "get_asset_by_tag")
     if not response.data:
         return None
 
@@ -547,9 +584,9 @@ def get_assignment_form_context(asset: dict) -> dict:
         },
     }
 
+
 def get_asset_serial_value(asset: dict) -> str:
     return asset.get("serial_chassis_number") or asset.get("serial_number") or ""
-
 
 
 def get_asset_form_values(asset: Optional[dict] = None) -> dict:
@@ -689,6 +726,7 @@ def asset_tag_exists(asset_tag_number: str) -> bool:
 
     return bool(response.data)
 
+
 def describe_asset_create_error(error: Exception) -> str:
     if not isinstance(error, APIError):
         return "Asset could not be created due to an unexpected database error."
@@ -700,11 +738,16 @@ def describe_asset_create_error(error: Exception) -> str:
     if "asset_tag_number" in combined and ("duplicate" in combined or "unique" in combined):
         return "Asset tag/Inventory No. already exists."
 
+    if "inventory_code" in combined and "null value" in combined:
+        return "Asset could not be created because Inventory Code was not mapped before saving."
+
+    if "inventory_code" in combined and ("duplicate" in combined or "unique" in combined):
+        return "Inventory Code already exists."
+
     if "serial_chassis_number" in combined and ("duplicate" in combined or "unique" in combined):
         return "Serial number already exists."
 
     return f"Asset could not be created: {message}"
-
 
 
 def get_asset_tag_standard() -> dict:
@@ -793,7 +836,7 @@ def list_assets(limit: Optional[int] = None, batch_size: int = 500) -> list[dict
                 break
             query = query.limit(min(batch_size, remaining))
 
-        response = query.execute()
+        response = execute_supabase_query(query, "list_assets")
         batch = response.data or []
         if not batch:
             break
@@ -1150,14 +1193,20 @@ def admin_dashboard(request: Request):
     if redirect:
         return redirect
 
-    assets = list_assets()
-    summary = build_asset_summary(assets)
+    database_error = ""
+    try:
+        assets = list_assets()
+        summary = build_asset_summary(assets)
+    except DatabaseConnectionError as exc:
+        summary = build_asset_summary([])
+        database_error = str(exc)
 
     return templates.TemplateResponse(
         request=request,
         name="admin_dashboard.html",
         context={
             "summary": summary,
+            "database_error": database_error,
             "active_page": "dashboard",
             "page_title": "Admin Dashboard",
             "admin_username": request.session.get("admin_username"),
@@ -1348,6 +1397,7 @@ def admin_asset_create(
     try:
         insert_data = {
             "asset_tag_number": asset_form["asset_tag_number"],
+            "inventory_code": asset_form["asset_tag_number"],
             "item_description": asset_form["item_description"] or None,
             "brand_make": asset_form["brand_make"] or None,
             "model": asset_form["model"] or None,
@@ -1881,7 +1931,15 @@ async def telegram_webhook(update: dict = Body(...)):
             )
             return {"ok": True}
 
-        asset = get_asset_by_tag(text)
+        try:
+            asset = get_asset_by_tag(text)
+        except DatabaseConnectionError:
+            send_telegram_message(
+                chat_id,
+                "Database is temporarily unavailable. Please try again later.",
+            )
+            return {"ok": True}
+
         if not asset:
             send_telegram_message(chat_id, f"Asset {text} was not found.")
             return {"ok": True}
