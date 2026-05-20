@@ -1711,18 +1711,20 @@ def admin_asset_assignment_update(
     assignment_date = assignment_date.strip()
     status = status.strip()
     notes = notes.strip()
+    parsed_person_id = int(person_id) if person_id else None
+    parsed_location_id = int(location_id) if location_id else None
 
     if not assignment_date:
         set_flash(request, "error", "Assignment date is required.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
-    if bool(person_id) != bool(location_id):
-        set_flash(request, "error", "Select both responsible person and location, or leave both empty to unassign.")
+    if parsed_person_id and not parsed_location_id:
+        set_flash(request, "error", "Location is required when a responsible person is selected.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     current_assignment = asset.get("current_assignment")
 
-    if not person_id and not location_id:
+    if not parsed_person_id and not parsed_location_id:
         if current_assignment:
             close_current_assignments(asset_id, assignment_date)
             if status:
@@ -1736,8 +1738,8 @@ def admin_asset_assignment_update(
 
     new_assignment = {
         "asset_id": asset_id,
-        "person_id": int(person_id),
-        "location_id": int(location_id),
+        "person_id": parsed_person_id,
+        "location_id": parsed_location_id,
         "assignment_date": assignment_date,
         "return_date": None,
         "status": status or None,
@@ -1746,8 +1748,8 @@ def admin_asset_assignment_update(
 
     if (
         current_assignment
-        and current_assignment.get("person_id") == int(person_id)
-        and current_assignment.get("location_id") == int(location_id)
+        and current_assignment.get("person_id") == parsed_person_id
+        and current_assignment.get("location_id") == parsed_location_id
     ):
         (
             supabase.table("asset_assignments")
