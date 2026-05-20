@@ -692,7 +692,7 @@
                     </td>
                     <td>{{ asset.brand_make or "-" }}</td>
                     <td>{{ asset.model or "-" }}</td>
-                    <td>{{ asset.serial_number or "-" }}</td>
+                    <td>{{ asset.serial_chassis_number or asset.serial_number or "-" }}</td>
                     <td>{{ asset.asset_tag_number or "-" }}</td>
                     <td>{{ asset.effective_status or "-" }}</td>
                 </tr>

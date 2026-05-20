@@ -13,6 +13,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from postgrest.exceptions import APIError
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.templating import Jinja2Templates
 from supabase import Client, create_client
@@ -546,6 +547,10 @@ def get_assignment_form_context(asset: dict) -> dict:
         },
     }
 
+def get_asset_serial_value(asset: dict) -> str:
+    return asset.get("serial_chassis_number") or asset.get("serial_number") or ""
+
+
 
 def get_asset_form_values(asset: Optional[dict] = None) -> dict:
     asset = asset or {}
@@ -561,7 +566,7 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
         "quantity": asset.get("quantity") or "",
         "purchase_price": asset.get("purchase_price") or "",
         "currency": asset.get("currency") or "",
-        "serial_number": asset.get("serial_number") or "",
+        "serial_number": get_asset_serial_value(asset),
         "current_status": current_status,
         "current_status_select": current_status if current_status in standard_status_values else ("__custom__" if current_status else ""),
         "current_status_custom": current_status if current_status and current_status not in standard_status_values else "",
@@ -683,6 +688,23 @@ def asset_tag_exists(asset_tag_number: str) -> bool:
         return False
 
     return bool(response.data)
+
+def describe_asset_create_error(error: Exception) -> str:
+    if not isinstance(error, APIError):
+        return "Asset could not be created due to an unexpected database error."
+
+    message = error.message or "Database error"
+    details = error.details or ""
+    combined = " ".join(part for part in [message, details] if part).lower()
+
+    if "asset_tag_number" in combined and ("duplicate" in combined or "unique" in combined):
+        return "Asset tag/Inventory No. already exists."
+
+    if "serial_chassis_number" in combined and ("duplicate" in combined or "unique" in combined):
+        return "Serial number already exists."
+
+    return f"Asset could not be created: {message}"
+
 
 
 def get_asset_tag_standard() -> dict:
@@ -1334,7 +1356,7 @@ def admin_asset_create(
             "quantity": parse_int_field(asset_form["quantity"]),
             "purchase_price": parse_float_field(asset_form["purchase_price"]),
             "currency": asset_form["currency"] or None,
-            "serial_number": asset_form["serial_number"] or None,
+            "serial_chassis_number": asset_form["serial_number"] or None,
             "current_status": asset_form["current_status"] or None,
             "remarks": asset_form["remarks"] or None,
         }
@@ -1361,7 +1383,7 @@ def admin_asset_create(
             .insert(insert_data)
             .execute()
         )
-    except Exception:
+    except Exception as exc:
         return templates.TemplateResponse(
             request=request,
             name="admin_asset_create.html",
@@ -1370,7 +1392,7 @@ def admin_asset_create(
                 **get_asset_create_options(),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_warning": asset_tag_warning,
-                "flash": {"level": "error", "message": "Asset could not be created. Check whether the asset tag already exists."},
+                "flash": {"level": "error", "message": describe_asset_create_error(exc)},
                 "active_page": "assets",
                 "page_title": "New Asset",
                 "admin_username": request.session.get("admin_username"),
@@ -1597,7 +1619,7 @@ def admin_asset_edit(
             "quantity": parse_int_field(quantity),
             "purchase_price": parse_float_field(purchase_price),
             "currency": currency.strip() or None,
-            "serial_number": serial_number.strip() or None,
+            "serial_chassis_number": serial_number.strip() or None,
             "current_status": current_status.strip() or None,
             "remarks": remarks.strip() or None,
         }

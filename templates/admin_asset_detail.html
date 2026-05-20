@@ -44,7 +44,7 @@
                 <tr><th>Sub-classification</th><td>{{ asset.asset_sub_classification or "-" }}</td></tr>
                 <tr><th>Quantity</th><td>{{ asset.quantity or "-" }}</td></tr>
                 <tr><th>Price</th><td>{{ asset.purchase_price or "-" }} {{ asset.currency or "" }}</td></tr>
-                <tr><th>Serial number</th><td>{{ asset.serial_number or "-" }}</td></tr>
+                <tr><th>Serial number</th><td>{{ asset.serial_chassis_number or asset.serial_number or "-" }}</td></tr>
                 <tr><th>Asset remarks</th><td>{{ asset.remarks or "-" }}</td></tr>
             </tbody>
         </table>
@@ -121,7 +121,7 @@
 
             <div class="field">
                 <label for="serial_number">Serial number</label>
-                <input id="serial_number" name="serial_number" type="text" value="{{ asset.serial_number or '' }}">
+                <input id="serial_number" name="serial_number" type="text" value="{{ asset.serial_chassis_number or asset.serial_number or '' }}">
             </div>
 
             <div class="field">
