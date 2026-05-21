@@ -408,6 +408,36 @@ def safe_excel_float(value) -> Optional[float]:
         return None
 
 
+def normalize_sync_string(value) -> Optional[str]:
+    value = clean_excel_value(value)
+    if value is None:
+        return None
+    normalized = " ".join(str(value).split())
+    return normalized or None
+
+
+def normalize_sync_number(value) -> Optional[float]:
+    value = clean_excel_value(value)
+    if value is None:
+        return None
+    try:
+        return round(float(value), 2)
+    except Exception:
+        return None
+
+
+def normalize_sync_value(field_name: str, value):
+    if field_name == "purchase_price":
+        return normalize_sync_number(value)
+    if field_name == "quantity":
+        return safe_excel_int(value)
+    return normalize_sync_string(value)
+
+
+def sync_values_equal(field_name: str, current_value, excel_value) -> bool:
+    return normalize_sync_value(field_name, current_value) == normalize_sync_value(field_name, excel_value)
+
+
 def normalize_excel_asset_record(row: dict) -> Optional[dict]:
     asset_tag = normalize_asset_tag(clean_excel_value(row.get("asset_tag_number")) or "")
     if not asset_tag:
@@ -477,7 +507,6 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
         "purchase_price",
         "currency",
         "current_status",
-        "remarks",
     ]
 
     new_records: list[dict] = []
@@ -497,7 +526,7 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
         for field_name in synced_fields:
             current_value = current_asset.get(field_name)
             excel_value = record.get(field_name)
-            if current_value != excel_value:
+            if not sync_values_equal(field_name, current_value, excel_value):
                 changed_fields.append(field_name)
                 current_values[field_name] = current_value
                 excel_values[field_name] = excel_value
