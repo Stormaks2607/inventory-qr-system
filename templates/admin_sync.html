@@ -3,8 +3,14 @@
 {% block content %}
 <section class="hero">
     <h2>Excel Synchronization</h2>
-    <p>The system follows a hybrid model: live operational work happens in Supabase, while the original Excel inventory file remains the official control and reporting file.</p>
+    <p>Upload the official inventory workbook, generate a controlled preview, and apply only reviewed changes to the live asset registry.</p>
 </section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
 
 <section class="two-column">
     <article class="panel">
@@ -20,26 +26,158 @@
         <h3>Official Excel File</h3>
         <ul class="list">
             <li><span>Tracked source file</span><strong>{{ excel_file_name }}</strong></li>
-            <li><span>Current direction</span><strong>Hybrid</strong></li>
-            <li><span>Sync mode</span><strong>Planned controlled sync</strong></li>
-            <li><span>Next step</span><strong>Diff preview screen</strong></li>
+            <li><span>Uploaded at</span><strong>{{ sync_state.uploaded_at or "-" }}</strong></li>
+            <li><span>Current direction</span><strong>Excel to Supabase</strong></li>
+            <li><span>Sync mode</span><strong>Controlled preview apply</strong></li>
         </ul>
     </article>
+ </section>
 
-    <article class="panel">
-        <h3>MVP Sync Workflow</h3>
-        <ul class="list">
-            <li><span>1. Upload or read the official Excel file</span><strong>Planned</strong></li>
-            <li><span>2. Normalize rows into staging data</span><strong>Planned</strong></li>
-            <li><span>3. Compare staging with current Supabase data</span><strong>Planned</strong></li>
-            <li><span>4. Show changes before apply</span><strong>Planned</strong></li>
-            <li><span>5. Export updated official workbook</span><strong>Planned</strong></li>
-        </ul>
+<section class="panel">
+    <h3>Upload Workbook</h3>
+    <p class="muted">Expected sheet: <strong>Standard Asset List Format</strong>. The system reads the workbook, normalizes asset rows, and compares them with the current `assets` table before anything is written.</p>
+    <form method="post" action="/admin/sync/upload" enctype="multipart/form-data" class="toolbar">
+        <input type="file" name="excel_file" accept=".xlsx" required>
+        <button class="btn" type="submit">Generate preview</button>
+    </form>
+</section>
+
+{% if preview %}
+<section class="grid">
+    <article class="stat">
+        <div class="stat-label">Excel rows</div>
+        <div class="stat-value">{{ preview.summary.excel_rows }}</div>
     </article>
-
-    <article class="panel">
-        <h3>Why This Matters</h3>
-        <p class="muted">This approach avoids blind overwrites, preserves audit visibility, and keeps the operational system aligned with the Excel file that the organization still treats as the formal accounting document.</p>
+    <article class="stat">
+        <div class="stat-label">New assets</div>
+        <div class="stat-value">{{ preview.summary.new_records }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Changed assets</div>
+        <div class="stat-value">{{ preview.summary.changed_records }}</div>
+    </article>
+    <article class="stat">
+        <div class="stat-label">Unchanged assets</div>
+        <div class="stat-value">{{ preview.summary.unchanged_records }}</div>
     </article>
 </section>
+
+<section class="panel">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Preview Summary</h3>
+            <p class="muted" style="margin: 0;">Review the diff below. Only `new` and `changed` assets will be written when you apply the sync.</p>
+        </div>
+        <form method="post" action="/admin/sync/apply">
+            <button class="btn" type="submit">Apply to assets</button>
+        </form>
+    </div>
+
+    {% if sync_state.last_apply_result %}
+    <div class="flash" style="margin-top: 18px;">
+        Last apply: inserted {{ sync_state.last_apply_result.inserted }}, updated {{ sync_state.last_apply_result.updated }}.
+        {% if sync_state.last_applied_at %}Completed at {{ sync_state.last_applied_at }}.{% endif %}
+    </div>
+    {% endif %}
+</section>
+
+<section class="two-column">
+    <article class="panel">
+        <h3>New Assets</h3>
+        {% if preview.new_records %}
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Asset tag</th>
+                        <th>Description</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for asset in preview.new_records %}
+                    <tr>
+                        <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                        <td>{{ asset.item_description or "-" }}</td>
+                        <td>{{ asset.current_status or "-" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted">No new assets were found in the uploaded workbook.</p>
+        {% endif %}
+    </article>
+
+    <article class="panel">
+        <h3>Changed Assets</h3>
+        {% if preview.changed_records %}
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Asset tag</th>
+                        <th>Changed fields</th>
+                        <th>Excel values</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in preview.changed_records %}
+                    <tr>
+                        <td><strong>{{ item.asset_tag_number }}</strong></td>
+                        <td>
+                            {% for field_name in item.changed_fields %}
+                            <div>
+                                {% if field_name == "asset_classification" %}Classification
+                                {% elif field_name == "asset_sub_classification" %}Sub-classification
+                                {% elif field_name == "item_description" %}Description
+                                {% elif field_name == "brand_make" %}Brand
+                                {% elif field_name == "serial_chassis_number" %}Serial number
+                                {% elif field_name == "purchase_price" %}Purchase price
+                                {% elif field_name == "current_status" %}Status
+                                {% else %}{{ field_name|replace("_", " ")|title }}
+                                {% endif %}
+                            </div>
+                            {% endfor %}
+                        </td>
+                        <td>
+                            {% for field_name in item.changed_fields %}
+                            <div>
+                                <strong>
+                                    {% if field_name == "asset_classification" %}Classification
+                                    {% elif field_name == "asset_sub_classification" %}Sub-classification
+                                    {% elif field_name == "item_description" %}Description
+                                    {% elif field_name == "brand_make" %}Brand
+                                    {% elif field_name == "serial_chassis_number" %}Serial number
+                                    {% elif field_name == "purchase_price" %}Purchase price
+                                    {% elif field_name == "current_status" %}Status
+                                    {% else %}{{ field_name|replace("_", " ")|title }}
+                                    {% endif %}
+                                </strong>: {{ item.excel[field_name] if item.excel[field_name] is not none else "-" }}
+                            </div>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted">No changed assets were found in the uploaded workbook.</p>
+        {% endif %}
+    </article>
+</section>
+{% else %}
+<section class="panel">
+    <h3>MVP Sync Workflow</h3>
+    <ul class="list">
+        <li><span>1. Upload the official Excel file</span><strong>Ready</strong></li>
+        <li><span>2. Normalize rows into staging data</span><strong>Ready</strong></li>
+        <li><span>3. Compare staging with current `assets` data</span><strong>Ready</strong></li>
+        <li><span>4. Review preview before apply</span><strong>Ready</strong></li>
+        <li><span>5. Apply reviewed inserts and updates</span><strong>Ready</strong></li>
+    </ul>
+</section>
+{% endif %}
 {% endblock %}

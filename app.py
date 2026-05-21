@@ -42,6 +42,27 @@ BRANDING_UPLOAD_DIR = os.path.join("private_docs", "branding")
 ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 BRANDING_SUPABASE_TABLE = "organization_branding"
 DEFAULT_BRANDING_TENANT_KEY = "default"
+SYNC_STORAGE_DIR = os.path.join("private_docs", "sync")
+SYNC_WORKBOOK_PATH = os.path.join(SYNC_STORAGE_DIR, "official_inventory.xlsx")
+SYNC_STATE_PATH = os.path.join(SYNC_STORAGE_DIR, "sync_state.json")
+EXCEL_SYNC_SHEET_NAME = "Standard Asset List Format"
+EXCEL_SYNC_HEADER_ROW = 7
+EXCEL_SYNC_COLUMN_MAP = {
+    "Asset Tag No. / Inventory Code\n(new standardised system)": "asset_tag_number",
+    "Previous inventory code\n(if applicable)": "inventory_code_old",
+    "Asset Classification": "asset_classification",
+    "Asset Sub Classification": "asset_sub_classification",
+    "Item Description": "item_description",
+    "Brand / Make ": "brand_make",
+    "Model": "model",
+    "Serial/ Chassis No.": "serial_number",
+    "Quantity": "quantity",
+    "Date (Year) of Purchase": "purchase_date_raw",
+    "Purchase price": "purchase_price",
+    "Currency": "currency",
+    "Current Status\n(functionality)": "current_status",
+    "Remarks": "remarks",
+}
 ASSET_STATUS_OPTIONS = [
     ("functional", "Функціонуючий / Functional"),
     ("non-functional", "Не функціонуючий / Non-functional"),
@@ -333,6 +354,207 @@ def set_flash(request: Request, level: str, message: str) -> None:
 
 def pop_flash(request: Request) -> Optional[dict]:
     return request.session.pop("admin_flash", None)
+
+
+def ensure_sync_storage() -> None:
+    os.makedirs(SYNC_STORAGE_DIR, exist_ok=True)
+
+
+def load_sync_state() -> dict:
+    ensure_sync_storage()
+    if not os.path.exists(SYNC_STATE_PATH):
+        return {}
+    with open(SYNC_STATE_PATH, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def save_sync_state(state: dict) -> None:
+    ensure_sync_storage()
+    with open(SYNC_STATE_PATH, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=2)
+
+
+def clean_excel_value(value):
+    try:
+        import pandas as pd  # type: ignore
+    except Exception:
+        pd = None
+
+    if pd is not None and pd.isna(value):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value if value else None
+    return value
+
+
+def safe_excel_int(value, default: Optional[int] = None) -> Optional[int]:
+    value = clean_excel_value(value)
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def safe_excel_float(value) -> Optional[float]:
+    value = clean_excel_value(value)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def normalize_excel_asset_record(row: dict) -> Optional[dict]:
+    asset_tag = normalize_asset_tag(clean_excel_value(row.get("asset_tag_number")) or "")
+    if not asset_tag:
+        return None
+
+    remarks = clean_excel_value(row.get("remarks"))
+    purchase_raw = clean_excel_value(row.get("purchase_date_raw"))
+    if purchase_raw:
+        extra = f"Purchase period: {purchase_raw}"
+        remarks = f"{remarks} | {extra}" if remarks else extra
+
+    return {
+        "asset_tag_number": asset_tag,
+        "asset_classification": clean_excel_value(row.get("asset_classification")),
+        "asset_sub_classification": clean_excel_value(row.get("asset_sub_classification")),
+        "item_description": clean_excel_value(row.get("item_description")),
+        "brand_make": clean_excel_value(row.get("brand_make")),
+        "model": clean_excel_value(row.get("model")),
+        "serial_chassis_number": clean_excel_value(row.get("serial_number")),
+        "quantity": safe_excel_int(row.get("quantity"), default=1),
+        "purchase_price": safe_excel_float(row.get("purchase_price")),
+        "currency": clean_excel_value(row.get("currency")),
+        "current_status": clean_excel_value(row.get("current_status")),
+        "remarks": remarks,
+    }
+
+
+def load_excel_sync_rows(file_path: str) -> list[dict]:
+    try:
+        import pandas as pd  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Excel sync requires pandas/openpyxl support: {exc}") from exc
+
+    try:
+        dataframe = pd.read_excel(file_path, sheet_name=EXCEL_SYNC_SHEET_NAME, header=EXCEL_SYNC_HEADER_ROW)
+    except Exception as exc:
+        raise ValueError(f"Could not read Excel sheet '{EXCEL_SYNC_SHEET_NAME}': {exc}") from exc
+
+    dataframe = dataframe.rename(columns=EXCEL_SYNC_COLUMN_MAP)
+    if "asset_tag_number" not in dataframe.columns:
+        raise ValueError("The uploaded workbook does not contain the expected Asset Tag column.")
+
+    dataframe = dataframe[dataframe["asset_tag_number"].notna()].copy()
+    records: list[dict] = []
+    for _, row in dataframe.iterrows():
+        normalized = normalize_excel_asset_record(row.to_dict())
+        if normalized:
+            records.append(normalized)
+    return records
+
+
+def list_asset_records() -> list[dict]:
+    response = supabase.table("assets").select("*").order("asset_tag_number").execute()
+    return response.data or []
+
+
+def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) -> dict:
+    current_by_tag = {
+        normalize_asset_tag(asset.get("asset_tag_number") or ""): asset
+        for asset in current_assets
+        if asset.get("asset_tag_number")
+    }
+    synced_fields = [
+        "asset_classification",
+        "asset_sub_classification",
+        "item_description",
+        "brand_make",
+        "model",
+        "serial_chassis_number",
+        "quantity",
+        "purchase_price",
+        "currency",
+        "current_status",
+        "remarks",
+    ]
+
+    new_records: list[dict] = []
+    changed_records: list[dict] = []
+    unchanged_count = 0
+
+    for record in excel_records:
+        asset_tag = record["asset_tag_number"]
+        current_asset = current_by_tag.get(asset_tag)
+        if not current_asset:
+            new_records.append(record)
+            continue
+
+        changed_fields = []
+        current_values = {}
+        excel_values = {}
+        for field_name in synced_fields:
+            current_value = current_asset.get(field_name)
+            excel_value = record.get(field_name)
+            if current_value != excel_value:
+                changed_fields.append(field_name)
+                current_values[field_name] = current_value
+                excel_values[field_name] = excel_value
+
+        if changed_fields:
+            changed_records.append(
+                {
+                    "asset_id": current_asset.get("asset_id"),
+                    "asset_tag_number": asset_tag,
+                    "changed_fields": changed_fields,
+                    "current": current_values,
+                    "excel": excel_values,
+                    "record": record,
+                }
+            )
+        else:
+            unchanged_count += 1
+
+    return {
+        "summary": {
+            "excel_rows": len(excel_records),
+            "new_records": len(new_records),
+            "changed_records": len(changed_records),
+            "unchanged_records": unchanged_count,
+        },
+        "new_records": new_records,
+        "changed_records": changed_records,
+    }
+
+
+def apply_sync_preview(preview: dict) -> dict:
+    inserted = 0
+    updated = 0
+
+    for record in preview.get("new_records", []):
+        supabase.table("assets").insert(record).execute()
+        inserted += 1
+
+    for item in preview.get("changed_records", []):
+        asset_id = item.get("asset_id")
+        record = item.get("record") or {}
+        if not asset_id:
+            continue
+        update_data = {
+            field_name: record.get(field_name)
+            for field_name in item.get("changed_fields", [])
+        }
+        if not update_data:
+            continue
+        supabase.table("assets").update(update_data).eq("asset_id", asset_id).execute()
+        updated += 1
+
+    return {"inserted": inserted, "updated": updated}
 
 
 def get_current_assignment(asset_id: int) -> Optional[dict]:
@@ -1857,6 +2079,7 @@ def admin_sync(request: Request):
     if redirect:
         return redirect
 
+    sync_state = load_sync_state()
     sync_rules = [
         "Supabase is the operational working database.",
         "The Excel inventory file remains the official control file.",
@@ -1870,12 +2093,86 @@ def admin_sync(request: Request):
         name="admin_sync.html",
         context={
             "sync_rules": sync_rules,
-            "excel_file_name": "Inventory List_example_08.12.2025.xlsx",
+            "excel_file_name": sync_state.get("file_name") or "No workbook uploaded yet",
+            "sync_state": sync_state,
+            "preview": sync_state.get("preview"),
+            "flash": pop_flash(request),
             "active_page": "sync",
             "page_title": "Admin Sync",
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.post("/admin/sync/upload")
+async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    filename = (excel_file.filename or "").strip()
+    if not filename.lower().endswith(".xlsx"):
+        set_flash(request, "error", "Upload an .xlsx workbook for Excel synchronization.")
+        return RedirectResponse(url="/admin/sync", status_code=303)
+
+    ensure_sync_storage()
+    file_bytes = await excel_file.read()
+    if not file_bytes:
+        set_flash(request, "error", "The uploaded Excel file is empty.")
+        return RedirectResponse(url="/admin/sync", status_code=303)
+
+    with open(SYNC_WORKBOOK_PATH, "wb") as file:
+        file.write(file_bytes)
+
+    try:
+        excel_records = load_excel_sync_rows(SYNC_WORKBOOK_PATH)
+        preview = build_sync_preview(excel_records, list_asset_records())
+    except ValueError as error:
+        set_flash(request, "error", str(error))
+        return RedirectResponse(url="/admin/sync", status_code=303)
+    except Exception as error:
+        set_flash(request, "error", f"Excel sync preview failed: {error}")
+        return RedirectResponse(url="/admin/sync", status_code=303)
+
+    save_sync_state(
+        {
+            "file_name": filename,
+            "uploaded_at": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M"),
+            "preview": preview,
+        }
+    )
+    set_flash(
+        request,
+        "success",
+        f"Preview ready: {preview['summary']['new_records']} new, {preview['summary']['changed_records']} changed, {preview['summary']['unchanged_records']} unchanged.",
+    )
+    return RedirectResponse(url="/admin/sync", status_code=303)
+
+
+@app.post("/admin/sync/apply")
+def admin_sync_apply(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    sync_state = load_sync_state()
+    preview = sync_state.get("preview")
+    if not preview:
+        set_flash(request, "error", "No sync preview is available. Upload an Excel file first.")
+        return RedirectResponse(url="/admin/sync", status_code=303)
+
+    try:
+        result = apply_sync_preview(preview)
+    except Exception as error:
+        set_flash(request, "error", f"Could not apply sync changes: {error}")
+        return RedirectResponse(url="/admin/sync", status_code=303)
+
+    sync_state["last_applied_at"] = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M")
+    sync_state["last_apply_result"] = result
+    sync_state["preview"] = None
+    save_sync_state(sync_state)
+    set_flash(request, "success", f"Excel sync applied: {result['inserted']} new assets inserted, {result['updated']} assets updated.")
+    return RedirectResponse(url="/admin/sync", status_code=303)
 
 
 @app.post("/webhook")
