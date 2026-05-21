@@ -732,6 +732,111 @@ def list_people() -> list[dict]:
     return response.data or []
 
 
+def list_projects() -> list[dict]:
+    response = (
+        supabase.table("projects")
+        .select("*")
+        .order("project_number")
+        .execute()
+    )
+    return response.data or []
+
+
+def list_donors() -> list[dict]:
+    response = (
+        supabase.table("donors")
+        .select("*")
+        .order("donor_name")
+        .execute()
+    )
+    return response.data or []
+
+
+def safe_parse_percentage(value: str) -> Optional[float]:
+    normalized = (value or "").strip().replace(",", ".")
+    if not normalized:
+        return None
+    parsed = float(normalized)
+    if parsed < 0:
+        raise ValueError("Allocation percent cannot be negative.")
+    return parsed
+
+
+def describe_asset_project_error(error: Exception) -> str:
+    if not isinstance(error, APIError):
+        return "Project funding could not be saved due to an unexpected database error."
+
+    message = error.message or "Database error"
+    details = error.details or ""
+    combined = " ".join(part for part in [message, details] if part).lower()
+
+    if "allocation_percent" in combined and "column" in combined:
+        return "The database schema is missing allocation_percent for asset project funding."
+    if "allocation_amount" in combined and "column" in combined:
+        return "The database schema is missing allocation_amount for asset project funding."
+    if "funding_note" in combined and "column" in combined:
+        return "The database schema is missing funding_note for asset project funding."
+
+    return f"Project funding could not be saved: {message}"
+
+
+def get_asset_projects(asset_id: int) -> list[dict]:
+    response = (
+        supabase.table("asset_projects")
+        .select("*")
+        .eq("asset_id", asset_id)
+        .order("is_primary", desc=True)
+        .order("asset_project_id")
+        .execute()
+    )
+    rows = response.data or []
+    projects_by_id = {row.get("project_id"): row for row in list_projects()}
+    donors_by_id = {row.get("donor_id"): row for row in list_donors()}
+
+    enriched = []
+    for row in rows:
+        project = projects_by_id.get(row.get("project_id")) or {}
+        donor = donors_by_id.get(row.get("donor_id")) or {}
+        enriched.append(
+            {
+                **row,
+                "project_number": project.get("project_number") or f"Project #{row.get('project_id')}",
+                "project_name": project.get("project_name") or project.get("name") or "",
+                "donor_name": donor.get("donor_name") or "",
+            }
+        )
+    return enriched
+
+
+def get_asset_project_total_percent(asset_id: int, exclude_asset_project_id: Optional[int] = None) -> float:
+    total = 0.0
+    for row in get_asset_projects(asset_id):
+        if exclude_asset_project_id is not None and row.get("asset_project_id") == exclude_asset_project_id:
+            continue
+        value = row.get("allocation_percent")
+        if value is not None:
+            try:
+                total += float(value)
+            except Exception:
+                continue
+    return total
+
+
+def get_asset_project_form_context(asset_id: int) -> dict:
+    asset_projects = get_asset_projects(asset_id)
+    allocated_percent = sum(float(row.get("allocation_percent") or 0) for row in asset_projects)
+    return {
+        "asset_projects": asset_projects,
+        "projects": list_projects(),
+        "donors": list_donors(),
+        "asset_project_summary": {
+            "allocation_count": len(asset_projects),
+            "allocated_percent": round(allocated_percent, 2),
+            "is_complete": abs(allocated_percent - 100.0) < 0.001 if asset_projects else False,
+        },
+    }
+
+
 def get_person_display_name(person: dict) -> str:
     return (
         person.get("name_eng")
@@ -1853,6 +1958,7 @@ def admin_asset_detail(request: Request, asset_id: int):
             "page_title": f"Asset {asset.get('asset_tag_number')}",
             "admin_username": request.session.get("admin_username"),
             **get_assignment_form_context(asset),
+            **get_asset_project_form_context(asset_id),
         },
     )
 
@@ -1993,6 +2099,154 @@ def admin_asset_assignment_update(
     if status:
         supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
     set_flash(request, "success", "Assignment was updated.")
+    return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+
+@app.post("/admin/assets/{asset_id}/funding")
+def admin_asset_project_create(
+    request: Request,
+    asset_id: int,
+    project_id: str = Form(""),
+    donor_id: str = Form(""),
+    allocation_percent: str = Form(""),
+    allocation_amount: str = Form(""),
+    currency: str = Form(""),
+    funding_note: str = Form(""),
+    is_primary: Optional[str] = Form(None),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    project_id = project_id.strip()
+    donor_id = donor_id.strip()
+    currency = currency.strip()
+    funding_note = funding_note.strip()
+
+    if not project_id:
+        set_flash(request, "error", "Project is required for funding allocation.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    try:
+        parsed_percent = safe_parse_percentage(allocation_percent)
+        parsed_amount = parse_float_field(allocation_amount)
+    except ValueError as error:
+        set_flash(request, "error", str(error))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    if parsed_percent is not None and get_asset_project_total_percent(asset_id) + parsed_percent > 100.001:
+        set_flash(request, "error", "Total allocated percent cannot be greater than 100%.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    payload = {
+        "asset_id": asset_id,
+        "project_id": int(project_id),
+        "donor_id": int(donor_id) if donor_id else None,
+        "allocation_percent": parsed_percent,
+        "allocation_amount": parsed_amount,
+        "currency": currency or None,
+        "funding_note": funding_note or None,
+        "is_primary": is_primary == "on",
+        "is_current": True,
+    }
+
+    try:
+        if payload["is_primary"]:
+            supabase.table("asset_projects").update({"is_primary": False}).eq("asset_id", asset_id).execute()
+        supabase.table("asset_projects").insert(payload).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_asset_project_error(error))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    set_flash(request, "success", "Project funding allocation was added.")
+    return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+
+@app.post("/admin/assets/{asset_id}/funding/{asset_project_id}")
+def admin_asset_project_update(
+    request: Request,
+    asset_id: int,
+    asset_project_id: int,
+    project_id: str = Form(""),
+    donor_id: str = Form(""),
+    allocation_percent: str = Form(""),
+    allocation_amount: str = Form(""),
+    currency: str = Form(""),
+    funding_note: str = Form(""),
+    is_primary: Optional[str] = Form(None),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    project_id = project_id.strip()
+    donor_id = donor_id.strip()
+    currency = currency.strip()
+    funding_note = funding_note.strip()
+
+    if not project_id:
+        set_flash(request, "error", "Project is required for funding allocation.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    try:
+        parsed_percent = safe_parse_percentage(allocation_percent)
+        parsed_amount = parse_float_field(allocation_amount)
+    except ValueError as error:
+        set_flash(request, "error", str(error))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    if parsed_percent is not None and get_asset_project_total_percent(asset_id, exclude_asset_project_id=asset_project_id) + parsed_percent > 100.001:
+        set_flash(request, "error", "Total allocated percent cannot be greater than 100%.")
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    payload = {
+        "project_id": int(project_id),
+        "donor_id": int(donor_id) if donor_id else None,
+        "allocation_percent": parsed_percent,
+        "allocation_amount": parsed_amount,
+        "currency": currency or None,
+        "funding_note": funding_note or None,
+        "is_primary": is_primary == "on",
+        "is_current": True,
+    }
+
+    try:
+        if payload["is_primary"]:
+            supabase.table("asset_projects").update({"is_primary": False}).eq("asset_id", asset_id).execute()
+        supabase.table("asset_projects").update(payload).eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_asset_project_error(error))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    set_flash(request, "success", "Project funding allocation was updated.")
+    return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+
+@app.post("/admin/assets/{asset_id}/funding/{asset_project_id}/delete")
+def admin_asset_project_delete(request: Request, asset_id: int, asset_project_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    try:
+        supabase.table("asset_projects").delete().eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_asset_project_error(error))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    set_flash(request, "success", "Project funding allocation was removed.")
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
 

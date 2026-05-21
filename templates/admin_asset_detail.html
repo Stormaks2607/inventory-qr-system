@@ -75,6 +75,176 @@
     </article>
 </section>
 
+<section class="panel" style="margin-top: 24px;">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Project Funding</h3>
+            <p class="muted" style="margin: 0;">One asset can be funded by one or many projects. Use allocations to record split funding shares.</p>
+        </div>
+        <div class="muted">
+            Allocations: <strong>{{ asset_project_summary.allocation_count }}</strong> |
+            Total allocated: <strong>{{ asset_project_summary.allocated_percent }}%</strong>
+            {% if asset_projects and not asset_project_summary.is_complete %}
+            | <span style="color: #8a5710;">Distribution not yet 100%</span>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if asset_projects %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Project</th>
+                    <th>Donor</th>
+                    <th>Share %</th>
+                    <th>Amount</th>
+                    <th>Currency</th>
+                    <th>Primary</th>
+                    <th>Notes</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in asset_projects %}
+                <tr>
+                    <td>
+                        <strong>{{ item.project_number }}</strong>
+                        {% if item.project_name %}<br><span class="muted">{{ item.project_name }}</span>{% endif %}
+                    </td>
+                    <td>{{ item.donor_name or "-" }}</td>
+                    <td>{{ item.allocation_percent if item.allocation_percent is not none else "-" }}</td>
+                    <td>{{ item.allocation_amount if item.allocation_amount is not none else "-" }}</td>
+                    <td>{{ item.currency or "-" }}</td>
+                    <td>{% if item.is_primary %}Yes{% else %}-{% endif %}</td>
+                    <td>{{ item.funding_note or "-" }}</td>
+                    <td>
+                        <details>
+                            <summary>Edit</summary>
+                            <form method="post" action="/admin/assets/{{ asset.asset_id }}/funding/{{ item.asset_project_id }}" class="form-grid" style="margin-top: 12px; min-width: 420px;">
+                                <div class="field">
+                                    <label>Project</label>
+                                    <select name="project_id">
+                                        <option value="">Select project</option>
+                                        {% for project in projects %}
+                                        <option value="{{ project.project_id }}" {% if item.project_id == project.project_id %}selected{% endif %}>
+                                            {{ project.project_number }}{% if project.project_name or project.name %} - {{ project.project_name or project.name }}{% endif %}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+
+                                <div class="field">
+                                    <label>Donor</label>
+                                    <select name="donor_id">
+                                        <option value="">No donor</option>
+                                        {% for donor in donors %}
+                                        <option value="{{ donor.donor_id }}" {% if item.donor_id == donor.donor_id %}selected{% endif %}>
+                                            {{ donor.donor_name }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+
+                                <div class="field">
+                                    <label>Allocation %</label>
+                                    <input name="allocation_percent" type="text" value="{{ item.allocation_percent or '' }}">
+                                </div>
+
+                                <div class="field">
+                                    <label>Allocation amount</label>
+                                    <input name="allocation_amount" type="text" value="{{ item.allocation_amount or '' }}">
+                                </div>
+
+                                <div class="field">
+                                    <label>Currency</label>
+                                    <input name="currency" type="text" value="{{ item.currency or '' }}">
+                                </div>
+
+                                <div class="field" style="align-content: end;">
+                                    <label><input name="is_primary" type="checkbox" {% if item.is_primary %}checked{% endif %}> Primary project</label>
+                                </div>
+
+                                <div class="field full">
+                                    <label>Funding note</label>
+                                    <textarea name="funding_note">{{ item.funding_note or '' }}</textarea>
+                                </div>
+
+                                <div class="toolbar" style="margin-bottom: 0;">
+                                    <button class="btn" type="submit">Save allocation</button>
+                                </div>
+                            </form>
+
+                            <form method="post" action="/admin/assets/{{ asset.asset_id }}/funding/{{ item.asset_project_id }}/delete" style="margin-top: 10px;">
+                                <button class="btn danger" type="submit">Remove allocation</button>
+                            </form>
+                        </details>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">No project funding allocations are currently linked to this asset.</p>
+    {% endif %}
+
+    <div style="margin-top: 24px;">
+        <h3>Add Allocation</h3>
+        <form method="post" action="/admin/assets/{{ asset.asset_id }}/funding" class="form-grid">
+            <div class="field">
+                <label for="funding_project_id">Project</label>
+                <select id="funding_project_id" name="project_id" required>
+                    <option value="">Select project</option>
+                    {% for project in projects %}
+                    <option value="{{ project.project_id }}">
+                        {{ project.project_number }}{% if project.project_name or project.name %} - {{ project.project_name or project.name }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="funding_donor_id">Donor</label>
+                <select id="funding_donor_id" name="donor_id">
+                    <option value="">No donor</option>
+                    {% for donor in donors %}
+                    <option value="{{ donor.donor_id }}">{{ donor.donor_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="allocation_percent">Allocation %</label>
+                <input id="allocation_percent" name="allocation_percent" type="text" placeholder="e.g. 40">
+            </div>
+
+            <div class="field">
+                <label for="allocation_amount">Allocation amount</label>
+                <input id="allocation_amount" name="allocation_amount" type="text" placeholder="e.g. 2500">
+            </div>
+
+            <div class="field">
+                <label for="funding_currency">Currency</label>
+                <input id="funding_currency" name="currency" type="text" placeholder="e.g. USD">
+            </div>
+
+            <div class="field" style="align-content: end;">
+                <label><input name="is_primary" type="checkbox"> Primary project</label>
+            </div>
+
+            <div class="field full">
+                <label for="funding_note">Funding note</label>
+                <textarea id="funding_note" name="funding_note" placeholder="Optional explanation for split funding, donor rule, or accounting note"></textarea>
+            </div>
+
+            <div class="toolbar" style="margin-bottom: 0;">
+                <button class="btn" type="submit">Add allocation</button>
+            </div>
+        </form>
+    </div>
+</section>
+
 <section class="two-column" style="margin-top: 24px;">
     <article class="panel">
         <h3>Edit Asset</h3>
