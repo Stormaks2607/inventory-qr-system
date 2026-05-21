@@ -414,10 +414,6 @@ def normalize_excel_asset_record(row: dict) -> Optional[dict]:
         return None
 
     remarks = clean_excel_value(row.get("remarks"))
-    purchase_raw = clean_excel_value(row.get("purchase_date_raw"))
-    if purchase_raw:
-        extra = f"Purchase period: {purchase_raw}"
-        remarks = f"{remarks} | {extra}" if remarks else extra
 
     return {
         "asset_tag_number": asset_tag,
