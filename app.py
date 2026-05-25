@@ -388,6 +388,39 @@ def clean_excel_value(value):
     return value
 
 
+SYNC_VALUE_ALIASES = {
+    "asset_sub_classification": {
+        "other...": "other",
+        "other…": "other",
+    }
+}
+
+
+def parse_sync_float(value) -> Optional[float]:
+    value = clean_excel_value(value)
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    normalized = str(value).strip().replace(" ", "")
+    if not normalized:
+        return None
+
+    if "," in normalized and "." in normalized:
+        if normalized.rfind(",") > normalized.rfind("."):
+            normalized = normalized.replace(".", "").replace(",", ".")
+        else:
+            normalized = normalized.replace(",", "")
+    elif "," in normalized:
+        normalized = normalized.replace(",", ".")
+
+    try:
+        return float(normalized)
+    except Exception:
+        return None
+
+
 def safe_excel_int(value, default: Optional[int] = None) -> Optional[int]:
     value = clean_excel_value(value)
     if value is None:
@@ -399,13 +432,7 @@ def safe_excel_int(value, default: Optional[int] = None) -> Optional[int]:
 
 
 def safe_excel_float(value) -> Optional[float]:
-    value = clean_excel_value(value)
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except Exception:
-        return None
+    return parse_sync_float(value)
 
 
 def normalize_sync_string(value) -> Optional[str]:
@@ -416,14 +443,22 @@ def normalize_sync_string(value) -> Optional[str]:
     return normalized or None
 
 
+def normalize_sync_lookup_value(field_name: str, value) -> Optional[str]:
+    normalized = normalize_sync_string(value)
+    if normalized is None:
+        return None
+
+    canonical = normalized.lower().replace("…", "...").rstrip(". ").strip()
+    alias_map = SYNC_VALUE_ALIASES.get(field_name, {})
+    canonical = alias_map.get(canonical, canonical)
+    return canonical or None
+
+
 def normalize_sync_number(value) -> Optional[float]:
-    value = clean_excel_value(value)
-    if value is None:
+    parsed = parse_sync_float(value)
+    if parsed is None:
         return None
-    try:
-        return round(float(value), 2)
-    except Exception:
-        return None
+    return round(parsed, 2)
 
 
 def normalize_sync_value(field_name: str, value):
@@ -431,6 +466,8 @@ def normalize_sync_value(field_name: str, value):
         return normalize_sync_number(value)
     if field_name == "quantity":
         return safe_excel_int(value)
+    if field_name in {"asset_classification", "asset_sub_classification"}:
+        return normalize_sync_lookup_value(field_name, value)
     return normalize_sync_string(value)
 
 
