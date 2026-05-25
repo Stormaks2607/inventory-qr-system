@@ -458,7 +458,8 @@ def canonicalize_sync_lookup_value(value) -> Optional[str]:
     normalized = normalize_sync_string(value)
     if normalized is None:
         return None
-    canonical = normalized.lower().replace("...", "").replace(".", "").strip()
+    canonical = normalized.lower().replace("\u2026", "...").replace("вђ¦", "...")
+    canonical = re.sub(r"[.]+", "", canonical)
     canonical = " ".join(canonical.split())
     return canonical or None
 
