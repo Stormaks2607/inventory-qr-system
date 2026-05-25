@@ -635,6 +635,37 @@ def apply_sync_preview(preview: dict) -> dict:
     return {"inserted": inserted, "updated": updated}
 
 
+def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_changed_assets: list[str]) -> dict:
+    selected_new_tags = {normalize_asset_tag(value) for value in selected_new_assets if value}
+    selected_changed_tags = {normalize_asset_tag(value) for value in selected_changed_assets if value}
+
+    filtered_new_records = [
+        record
+        for record in preview.get("new_records", [])
+        if normalize_asset_tag(record.get("asset_tag_number") or "") in selected_new_tags
+    ]
+    filtered_changed_records = [
+        item
+        for item in preview.get("changed_records", [])
+        if normalize_asset_tag(item.get("asset_tag_number") or "") in selected_changed_tags
+    ]
+
+    summary = preview.get("summary", {})
+    unchanged_records = summary.get("unchanged_records", 0)
+    excel_rows = summary.get("excel_rows", unchanged_records + len(filtered_new_records) + len(filtered_changed_records))
+
+    return {
+        "summary": {
+            "excel_rows": excel_rows,
+            "new_records": len(filtered_new_records),
+            "changed_records": len(filtered_changed_records),
+            "unchanged_records": unchanged_records,
+        },
+        "new_records": filtered_new_records,
+        "changed_records": filtered_changed_records,
+    }
+
+
 def get_current_assignment(asset_id: int) -> Optional[dict]:
     assignment_response = (
         supabase.table("asset_assignments")
@@ -2482,7 +2513,11 @@ async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)
 
 
 @app.post("/admin/sync/apply")
-def admin_sync_apply(request: Request):
+def admin_sync_apply(
+    request: Request,
+    selected_new_assets: list[str] = Form([]),
+    selected_changed_assets: list[str] = Form([]),
+):
     redirect = require_admin(request)
     if redirect:
         return redirect
@@ -2493,8 +2528,13 @@ def admin_sync_apply(request: Request):
         set_flash(request, "error", "No sync preview is available. Upload an Excel file first.")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
+    selected_preview = filter_sync_preview(preview, selected_new_assets, selected_changed_assets)
+    if not selected_preview["new_records"] and not selected_preview["changed_records"]:
+        set_flash(request, "error", "No assets were selected for apply.")
+        return RedirectResponse(url="/admin/sync", status_code=303)
+
     try:
-        result = apply_sync_preview(preview)
+        result = apply_sync_preview(selected_preview)
     except Exception as error:
         set_flash(request, "error", f"Could not apply sync changes: {error}")
         return RedirectResponse(url="/admin/sync", status_code=303)

@@ -43,6 +43,7 @@
 </section>
 
 {% if preview %}
+<form method="post" action="/admin/sync/apply">
 <section class="grid">
     <article class="stat">
         <div class="stat-label">Excel rows</div>
@@ -66,12 +67,11 @@
     <div class="toolbar" style="justify-content: space-between; align-items: center;">
         <div>
             <h3 style="margin-bottom: 6px;">Preview Summary</h3>
-            <p class="muted" style="margin: 0;">Review the diff below. Only `new` and `changed` assets will be written when you apply the sync.</p>
+            <p class="muted" style="margin: 0;">Review the diff below. Only checked `new` and `changed` assets will be written when you apply the sync.</p>
         </div>
-        <form method="post" action="/admin/sync/apply">
-            <button class="btn" type="submit">Apply to assets</button>
-        </form>
+        <button class="btn" type="submit">Apply to assets</button>
     </div>
+    <p class="muted" style="margin: 12px 0 0;">All items are selected by default. Uncheck any row you want to skip.</p>
 
     {% if sync_state.last_apply_result %}
     <div class="flash" style="margin-top: 18px;">
@@ -89,6 +89,7 @@
             <table>
                 <thead>
                     <tr>
+                        <th>Apply</th>
                         <th>Asset tag</th>
                         <th>Description</th>
                         <th>Status</th>
@@ -97,6 +98,12 @@
                 <tbody>
                     {% for asset in preview.new_records %}
                     <tr>
+                        <td>
+                            <label style="display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;">
+                                <input type="checkbox" name="selected_new_assets" value="{{ asset.asset_tag_number }}" checked>
+                                <span>Add</span>
+                            </label>
+                        </td>
                         <td><strong>{{ asset.asset_tag_number }}</strong></td>
                         <td>{{ asset.item_description or "-" }}</td>
                         <td>{{ asset.current_status or "-" }}</td>
@@ -117,6 +124,7 @@
             <table>
                 <thead>
                     <tr>
+                        <th>Apply</th>
                         <th>Asset tag</th>
                         <th>Changed fields</th>
                         <th>Excel values</th>
@@ -125,6 +133,12 @@
                 <tbody>
                     {% for item in preview.changed_records %}
                     <tr>
+                        <td>
+                            <label style="display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;">
+                                <input type="checkbox" name="selected_changed_assets" value="{{ item.asset_tag_number }}" checked>
+                                <span>Apply</span>
+                            </label>
+                        </td>
                         <td><strong>{{ item.asset_tag_number }}</strong></td>
                         <td>
                             {% for field_name in item.changed_fields %}
@@ -168,6 +182,7 @@
         {% endif %}
     </article>
 </section>
+</form>
 {% else %}
 <section class="panel">
     <h3>MVP Sync Workflow</h3>
