@@ -454,6 +454,15 @@ def normalize_sync_lookup_value(field_name: str, value) -> Optional[str]:
     return canonical or None
 
 
+def canonicalize_sync_lookup_value(value) -> Optional[str]:
+    normalized = normalize_sync_string(value)
+    if normalized is None:
+        return None
+    canonical = normalized.lower().replace("...", "").replace(".", "").strip()
+    canonical = " ".join(canonical.split())
+    return canonical or None
+
+
 def normalize_sync_number(value) -> Optional[float]:
     parsed = parse_sync_float(value)
     if parsed is None:
@@ -467,11 +476,17 @@ def normalize_sync_value(field_name: str, value):
     if field_name == "quantity":
         return safe_excel_int(value)
     if field_name in {"asset_classification", "asset_sub_classification"}:
-        return normalize_sync_lookup_value(field_name, value)
+        return canonicalize_sync_lookup_value(value)
     return normalize_sync_string(value)
 
 
 def sync_values_equal(field_name: str, current_value, excel_value) -> bool:
+    if field_name == "purchase_price":
+        current_number = parse_sync_float(current_value)
+        excel_number = parse_sync_float(excel_value)
+        if current_number is None or excel_number is None:
+            return current_number == excel_number
+        return abs(current_number - excel_number) < 0.01
     return normalize_sync_value(field_name, current_value) == normalize_sync_value(field_name, excel_value)
 
 
