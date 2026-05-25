@@ -615,7 +615,9 @@ def apply_sync_preview(preview: dict) -> dict:
     updated = 0
 
     for record in preview.get("new_records", []):
-        supabase.table("assets").insert(record).execute()
+        insert_record = dict(record)
+        insert_record["inventory_code"] = insert_record.get("asset_tag_number")
+        supabase.table("assets").insert(insert_record).execute()
         inserted += 1
 
     for item in preview.get("changed_records", []):
