@@ -2005,7 +2005,6 @@ def admin_person_create(
     insert_data = {
         "name": person_form["name"] or None,
         "name_eng": person_form["name_eng"] or None,
-        "full_name": person_form["name"] or person_form["name_eng"] or None,
         "department": person_form["department"] or None,
     }
 
