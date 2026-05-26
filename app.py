@@ -2036,7 +2036,7 @@ def admin_person_create(
             details = (exc.details or "").lower()
             combined = f"{message} {details}"
             if "duplicate" in combined or "unique" in combined:
-                search_name = person_form["name_eng"] or person_form["name"]
+                search_name = person_form["name"] or person_form["name_eng"]
                 set_flash(request, "success", "Employee already exists. Showing matching records in the full People directory.")
                 return RedirectResponse(
                     url=f"/admin/people?show_all=true&q={quote_plus(search_name)}",
