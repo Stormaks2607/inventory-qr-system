@@ -7,7 +7,7 @@ import json
 import os
 import re
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -2036,11 +2036,12 @@ def admin_person_create(
             details = (exc.details or "").lower()
             combined = f"{message} {details}"
             if "duplicate" in combined or "unique" in combined:
-                existing_person = find_existing_person(person_form)
-                if existing_person and existing_person.get("person_id"):
-                    existing_name = get_person_display_name(existing_person)
-                    set_flash(request, "success", f"Employee {existing_name} already exists. Opened the existing record.")
-                    return RedirectResponse(url=f"/admin/people/{existing_person['person_id']}", status_code=303)
+                search_name = person_form["name_eng"] or person_form["name"]
+                set_flash(request, "success", "Employee already exists. Showing matching records in the full People directory.")
+                return RedirectResponse(
+                    url=f"/admin/people?show_all=true&q={quote_plus(search_name)}",
+                    status_code=303,
+                )
 
         return templates.TemplateResponse(
             request=request,
