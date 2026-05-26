@@ -718,6 +718,7 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
         "return_date": assignment.get("return_date"),
         "status": assignment.get("status"),
         "notes": assignment.get("notes"),
+        "handover_condition": assignment.get("handover_condition"),
         "responsible_person": (
             person.get("name_eng")
             or person.get("name")
@@ -770,6 +771,7 @@ def enrich_assignment(assignment: dict) -> dict:
         "return_date": assignment.get("return_date"),
         "status": assignment.get("status"),
         "notes": assignment.get("notes"),
+        "handover_condition": assignment.get("handover_condition"),
         "responsible_person": (
             person.get("name_eng")
             or person.get("name")
@@ -1202,8 +1204,23 @@ def get_assignment_form_context(asset: dict) -> dict:
             "assignment_date": current_assignment.get("assignment_date") or "",
             "status": current_assignment.get("status") or asset.get("current_status") or "",
             "notes": current_assignment.get("notes") or "",
+            "handover_condition": current_assignment.get("handover_condition") or "",
         },
     }
+
+
+def describe_assignment_update_error(error: Exception) -> str:
+    if not isinstance(error, APIError):
+        return "Assignment could not be saved due to an unexpected database error."
+
+    message = error.message or "Database error"
+    details = error.details or ""
+    combined = " ".join(part for part in [message, details] if part).lower()
+
+    if "handover_condition" in combined and "column" in combined:
+        return "The database schema is missing the handover_condition column in asset_assignments."
+
+    return f"Assignment could not be saved: {message}"
 
 
 def get_asset_serial_value(asset: dict) -> str:
@@ -2520,6 +2537,7 @@ def admin_asset_assignment_update(
     assignment_date: str = Form(""),
     status: str = Form(""),
     notes: str = Form(""),
+    handover_condition: str = Form(""),
 ):
     redirect = require_admin(request)
     if redirect:
@@ -2534,6 +2552,7 @@ def admin_asset_assignment_update(
     assignment_date = assignment_date.strip()
     status = status.strip()
     notes = notes.strip()
+    handover_condition = handover_condition.strip()
     parsed_person_id = int(person_id) if person_id else None
     parsed_location_id = int(location_id) if location_id else None
 
@@ -2567,6 +2586,7 @@ def admin_asset_assignment_update(
         "return_date": None,
         "status": status or None,
         "notes": notes or None,
+        "handover_condition": handover_condition or None,
     }
 
     if (
@@ -2580,19 +2600,29 @@ def admin_asset_assignment_update(
                 "assignment_date": assignment_date,
                 "status": status or None,
                 "notes": notes or None,
+                "handover_condition": handover_condition or None,
             })
             .eq("assignment_id", current_assignment["assignment_id"])
             .execute()
         )
-        if status:
-            supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+        try:
+            if status:
+                supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+        except Exception as exc:
+            set_flash(request, "error", describe_assignment_update_error(exc))
+            return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
         set_flash(request, "success", "Current assignment was updated.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
-    close_current_assignments(asset_id, assignment_date)
-    supabase.table("asset_assignments").insert(new_assignment).execute()
-    if status:
-        supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+    try:
+        close_current_assignments(asset_id, assignment_date)
+        supabase.table("asset_assignments").insert(new_assignment).execute()
+        if status:
+            supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+    except Exception as exc:
+        set_flash(request, "error", describe_assignment_update_error(exc))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
     set_flash(request, "success", "Assignment was updated.")
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 

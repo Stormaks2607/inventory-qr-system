@@ -61,6 +61,7 @@
                 <tr><th>Location</th><td>{{ asset.current_assignment.location_name or "-" }}</td></tr>
                 <tr><th>Assignment date</th><td>{{ asset.current_assignment.assignment_date or "-" }}</td></tr>
                 <tr><th>Status</th><td>{{ asset.current_assignment.status or "-" }}</td></tr>
+                <tr><th>Condition on handover</th><td>{{ asset.current_assignment.handover_condition or "-" }}</td></tr>
                 <tr><th>Notes</th><td>{{ asset.current_assignment.notes or "-" }}</td></tr>
             </tbody>
         </table>
@@ -350,6 +351,11 @@
             </div>
 
             <div class="field full">
+                <label for="handover_condition">Asset condition on handover</label>
+                <textarea id="handover_condition" name="handover_condition" rows="3">{{ assignment_form.handover_condition }}</textarea>
+            </div>
+
+            <div class="field full">
                 <label for="notes">Assignment notes</label>
                 <textarea id="notes" name="notes">{{ assignment_form.notes }}</textarea>
             </div>
@@ -372,6 +378,7 @@
                 <th>Department</th>
                 <th>City</th>
                 <th>Status</th>
+                <th>Condition on handover</th>
                 <th>Notes</th>
             </tr>
         </thead>
@@ -388,11 +395,12 @@
                         {{ assignment.status or "-" }}
                     </span>
                 </td>
+                <td>{{ assignment.handover_condition or "-" }}</td>
                 <td>{{ assignment.notes or "-" }}</td>
             </tr>
             {% else %}
             <tr>
-                <td colspan="7" class="muted">No assignment history found for this asset.</td>
+                <td colspan="8" class="muted">No assignment history found for this asset.</td>
             </tr>
             {% endfor %}
         </tbody>
