@@ -7,7 +7,7 @@ import json
 import os
 import re
 from datetime import datetime
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -1017,6 +1017,25 @@ def find_existing_person(person_form: dict) -> Optional[dict]:
         if response.data:
             return response.data[0]
 
+    def normalize_person_lookup(value: Optional[str]) -> str:
+        return " ".join((value or "").strip().casefold().split())
+
+    normalized_candidates = [normalize_person_lookup(local_name), normalize_person_lookup(english_name)]
+    normalized_candidates = [value for value in normalized_candidates if value]
+
+    if normalized_candidates:
+        try:
+            for person in list_people():
+                person_names = [
+                    normalize_person_lookup(person.get("name")),
+                    normalize_person_lookup(person.get("name_eng")),
+                    normalize_person_lookup(person.get("full_name")),
+                ]
+                if any(candidate and candidate in person_names for candidate in normalized_candidates):
+                    return person
+        except Exception:
+            pass
+
     return None
 
 
@@ -1029,7 +1048,9 @@ def describe_person_create_error(error: Exception) -> str:
     combined = " ".join(part for part in [message, details] if part).lower()
 
     if "duplicate" in combined or "unique" in combined:
-        return "An employee with the same unique data already exists."
+        if details:
+            return f"An employee with the same unique data already exists. Database details: {details}"
+        return f"An employee with the same unique data already exists. Database message: {message}"
     if "name" in combined and "null value" in combined:
         return "The database requires an employee name."
 
@@ -2052,13 +2073,6 @@ def admin_person_create(
                     existing_name = get_person_display_name(existing_person)
                     set_flash(request, "success", f"Employee {existing_name} already exists. Opened the existing record.")
                     return RedirectResponse(url=f"/admin/people/{existing_person['person_id']}", status_code=303)
-
-                search_name = person_form["name"] or person_form["name_eng"]
-                set_flash(request, "success", "Employee already exists. Showing matching records in the full People directory.")
-                return RedirectResponse(
-                    url=f"/admin/people?show_all=true&q={quote_plus(search_name)}",
-                    status_code=303,
-                )
 
         return templates.TemplateResponse(
             request=request,
