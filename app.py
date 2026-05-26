@@ -989,6 +989,26 @@ def get_person_form_values(values: Optional[dict] = None) -> dict:
     }
 
 
+def find_existing_person(person_form: dict) -> Optional[dict]:
+    local_name = (person_form.get("name") or "").strip().casefold()
+    english_name = (person_form.get("name_eng") or "").strip().casefold()
+
+    for person in list_people():
+        person_local = (person.get("name") or "").strip().casefold()
+        person_english = (person.get("name_eng") or "").strip().casefold()
+
+        if local_name and person_local and local_name == person_local:
+            return person
+        if english_name and person_english and english_name == person_english:
+            return person
+        if local_name and person_english and local_name == person_english:
+            return person
+        if english_name and person_local and english_name == person_local:
+            return person
+
+    return None
+
+
 def describe_person_create_error(error: Exception) -> str:
     if not isinstance(error, APIError):
         return "Employee could not be created due to an unexpected database error."
@@ -2011,6 +2031,17 @@ def admin_person_create(
     try:
         response = supabase.table("persons").insert(insert_data).execute()
     except Exception as exc:
+        if isinstance(exc, APIError):
+            message = (exc.message or "").lower()
+            details = (exc.details or "").lower()
+            combined = f"{message} {details}"
+            if "duplicate" in combined or "unique" in combined:
+                existing_person = find_existing_person(person_form)
+                if existing_person and existing_person.get("person_id"):
+                    existing_name = get_person_display_name(existing_person)
+                    set_flash(request, "success", f"Employee {existing_name} already exists. Opened the existing record.")
+                    return RedirectResponse(url=f"/admin/people/{existing_person['person_id']}", status_code=303)
+
         return templates.TemplateResponse(
             request=request,
             name="admin_person_create.html",
