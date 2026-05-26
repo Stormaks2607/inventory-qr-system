@@ -1,0 +1,46 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Edit Employee</h2>
+    <p>Update the employee record using the live fields currently available in the `persons` table.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="panel">
+    <div class="toolbar">
+        <a class="btn secondary" href="/admin/people/{{ person.person_id }}">Back to profile</a>
+        <a class="btn secondary" href="/admin/people">Back to people</a>
+    </div>
+
+    <form method="post" action="/admin/people/{{ person.person_id }}/edit" class="form-grid">
+        {% for row in person_field_rows if row.readonly %}
+        <div class="field">
+            <label>{{ row.label }}</label>
+            <input type="text" value="{{ row.value if row.value is not none else '' }}" disabled>
+        </div>
+        {% endfor %}
+
+        {% for field in person_edit_fields %}
+        <div class="field {% if field.multiline %}full{% endif %}">
+            <label for="{{ field.name }}">{{ field.label }}</label>
+            {% if field.multiline %}
+            <textarea id="{{ field.name }}" name="{{ field.name }}" rows="4">{{ field.value }}</textarea>
+            {% else %}
+            <input id="{{ field.name }}" name="{{ field.name }}" type="{{ field.input_type }}" value="{{ field.value }}">
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        <div class="toolbar" style="margin-bottom: 0;">
+            <button class="btn" type="submit">Save employee</button>
+            <a class="btn secondary" href="/admin/people/{{ person.person_id }}">Cancel</a>
+        </div>
+    </form>
+</section>
+{% endblock %}

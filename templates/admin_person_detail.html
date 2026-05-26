@@ -581,10 +581,17 @@
 </style>
 
 <div class="branding-scope theme-{{ branding.report_theme or 'classic' }}" data-print-title="{{ branding.company_name }} Asset Report">
+{% if flash %}
+<div class="flash screen-only {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
 {% if branding.report_theme == 'help_standard' %}
 <div class="help-print-toolbar screen-only">
     <div class="toolbar" style="margin-bottom: 0;">
         <a class="btn secondary" href="/admin/people">Back to people</a>
+        <a class="btn secondary" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
         <button class="btn" type="button" data-print-report>Print report</button>
     </div>
 </div>
@@ -597,6 +604,7 @@
         </div>
         <div class="toolbar screen-only" style="margin-bottom: 0;">
             <a class="btn secondary" href="/admin/people">Back to people</a>
+            <a class="btn secondary" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
             <button class="btn" type="button" data-print-report>Print report</button>
         </div>
     </div>
@@ -821,6 +829,35 @@
                     {% else %}
                     <tr>
                         <td colspan="7" class="muted">No active assets are currently assigned to this employee.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel screen-only">
+        <div class="toolbar" style="justify-content: space-between; align-items: center;">
+            <div>
+                <h3 style="margin-bottom: 6px;">Employee Record</h3>
+                <p class="muted" style="margin: 0;">Live fields loaded from the `persons` table in Supabase.</p>
+            </div>
+            <a class="btn" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in person_field_rows %}
+                    <tr>
+                        <td><strong>{{ row.label }}</strong></td>
+                        <td>{{ row.value if row.value is not none and row.value != "" else "-" }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>

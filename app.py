@@ -980,6 +980,87 @@ def get_person_by_id(person_id: int) -> Optional[dict]:
     return response.data[0]
 
 
+PERSON_FIELD_LABELS = {
+    "person_id": "Person ID",
+    "name": "Employee name (local)",
+    "name_eng": "Employee name (English)",
+    "full_name": "Full name",
+    "position": "Position",
+    "department": "Department",
+    "email": "Email",
+    "phone": "Phone",
+    "telegram": "Telegram",
+    "notes": "Notes",
+    "comment": "Comment",
+}
+
+PERSON_FIELD_ORDER = [
+    "person_id",
+    "name",
+    "name_eng",
+    "full_name",
+    "position",
+    "department",
+    "email",
+    "phone",
+    "telegram",
+    "notes",
+    "comment",
+]
+
+READONLY_PERSON_FIELDS = {"person_id"}
+
+
+def format_person_field_label(field_name: str) -> str:
+    return PERSON_FIELD_LABELS.get(field_name, field_name.replace("_", " ").title())
+
+
+def get_person_field_names(person: dict) -> list[str]:
+    keys = list(person.keys())
+    ordered = [field for field in PERSON_FIELD_ORDER if field in keys]
+    remaining = sorted(field for field in keys if field not in ordered)
+    return ordered + remaining
+
+
+def build_person_field_rows(person: dict) -> list[dict]:
+    rows = []
+    for field_name in get_person_field_names(person):
+        rows.append(
+            {
+                "name": field_name,
+                "label": format_person_field_label(field_name),
+                "value": person.get(field_name),
+                "readonly": field_name in READONLY_PERSON_FIELDS,
+            }
+        )
+    return rows
+
+
+def build_person_edit_fields(person: dict) -> list[dict]:
+    fields = []
+    for row in build_person_field_rows(person):
+        if row["readonly"]:
+            continue
+        value = row["value"]
+        as_text = "" if value is None else str(value)
+        multiline = (
+            "\n" in as_text
+            or row["name"] in {"notes", "comment"}
+            or len(as_text) > 120
+        )
+        input_type = "email" if row["name"] == "email" else "text"
+        fields.append(
+            {
+                "name": row["name"],
+                "label": row["label"],
+                "value": as_text,
+                "multiline": multiline,
+                "input_type": input_type,
+            }
+        )
+    return fields
+
+
 def get_person_form_values(values: Optional[dict] = None) -> dict:
     values = values or {}
     return {
@@ -2163,6 +2244,7 @@ def admin_person_detail(request: Request, person_id: int):
         name="admin_person_detail.html",
         context={
             "person": person,
+            "person_field_rows": build_person_field_rows(person),
             "display_name": display_name,
             "report_display_name": report_display_name,
             "assigned_assets": assigned_assets,
@@ -2171,11 +2253,95 @@ def admin_person_detail(request: Request, person_id: int):
             "branding_storage": branding_storage,
             "tenant_key": tenant_key,
             "branding_logo_url": get_branding_logo_url(branding),
+            "flash": pop_flash(request),
             "active_page": "people",
             "page_title": display_name,
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.get("/admin/people/{person_id}/edit", response_class=HTMLResponse)
+def admin_person_edit(request: Request, person_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    person = get_person_by_id(person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_person_edit.html",
+        context={
+            "person": person,
+            "display_name": get_person_display_name(person),
+            "person_field_rows": build_person_field_rows(person),
+            "person_edit_fields": build_person_edit_fields(person),
+            "flash": pop_flash(request),
+            "active_page": "people",
+            "page_title": f"Edit {get_person_display_name(person)}",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.post("/admin/people/{person_id}/edit")
+async def admin_person_edit_submit(request: Request, person_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    person = get_person_by_id(person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    form = await request.form()
+    update_data = {}
+    for field in build_person_edit_fields(person):
+        raw_value = form.get(field["name"], "")
+        normalized = str(raw_value).strip() if raw_value is not None else ""
+        update_data[field["name"]] = normalized or None
+
+    if not update_data.get("name") and not update_data.get("name_eng"):
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_person_edit.html",
+            context={
+                "person": {**person, **update_data},
+                "display_name": get_person_display_name({**person, **update_data}),
+                "person_field_rows": build_person_field_rows({**person, **update_data}),
+                "person_edit_fields": build_person_edit_fields({**person, **update_data}),
+                "flash": {"level": "error", "message": "Keep at least one employee name: local or English."},
+                "active_page": "people",
+                "page_title": f"Edit {get_person_display_name(person)}",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    try:
+        supabase.table("persons").update(update_data).eq("person_id", person_id).execute()
+    except Exception as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_person_edit.html",
+            context={
+                "person": {**person, **update_data},
+                "display_name": get_person_display_name({**person, **update_data}),
+                "person_field_rows": build_person_field_rows({**person, **update_data}),
+                "person_edit_fields": build_person_edit_fields({**person, **update_data}),
+                "flash": {"level": "error", "message": f"Employee could not be updated: {exc}"},
+                "active_page": "people",
+                "page_title": f"Edit {get_person_display_name(person)}",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    set_flash(request, "success", f"Employee {get_person_display_name({**person, **update_data})} was updated.")
+    return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
 
 
 @app.get("/admin/branding/logo")
