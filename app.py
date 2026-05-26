@@ -980,6 +980,31 @@ def get_person_by_id(person_id: int) -> Optional[dict]:
     return response.data[0]
 
 
+def get_person_form_values(values: Optional[dict] = None) -> dict:
+    values = values or {}
+    return {
+        "name": values.get("name", ""),
+        "name_eng": values.get("name_eng", ""),
+        "department": values.get("department", ""),
+    }
+
+
+def describe_person_create_error(error: Exception) -> str:
+    if not isinstance(error, APIError):
+        return "Employee could not be created due to an unexpected database error."
+
+    message = error.message or "Database error"
+    details = error.details or ""
+    combined = " ".join(part for part in [message, details] if part).lower()
+
+    if "duplicate" in combined or "unique" in combined:
+        return "An employee with the same unique data already exists."
+    if "name" in combined and "null value" in combined:
+        return "The database requires an employee name."
+
+    return f"Employee could not be created: {message}"
+
+
 def list_locations() -> list[dict]:
     response = (
         supabase.table("locations")
@@ -1917,11 +1942,97 @@ def admin_people(request: Request, q: str = "", show_all: bool = False):
             "people": people,
             "query": q,
             "show_all": show_all,
+            "flash": pop_flash(request),
             "active_page": "people",
             "page_title": "People",
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.get("/admin/people/new", response_class=HTMLResponse)
+def admin_person_new(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_person_create.html",
+        context={
+            "person_form": get_person_form_values(),
+            "flash": pop_flash(request),
+            "active_page": "people",
+            "page_title": "New Employee",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.post("/admin/people/new")
+def admin_person_create(
+    request: Request,
+    name: str = Form(""),
+    name_eng: str = Form(""),
+    department: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    person_form = get_person_form_values(
+        {
+            "name": name.strip(),
+            "name_eng": name_eng.strip(),
+            "department": department.strip(),
+        }
+    )
+
+    if not person_form["name"] and not person_form["name_eng"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_person_create.html",
+            context={
+                "person_form": person_form,
+                "flash": {"level": "error", "message": "Enter at least one employee name: local or English."},
+                "active_page": "people",
+                "page_title": "New Employee",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    insert_data = {
+        "name": person_form["name"] or None,
+        "name_eng": person_form["name_eng"] or None,
+        "full_name": person_form["name"] or person_form["name_eng"] or None,
+        "department": person_form["department"] or None,
+    }
+
+    try:
+        response = supabase.table("persons").insert(insert_data).execute()
+    except Exception as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_person_create.html",
+            context={
+                "person_form": person_form,
+                "flash": {"level": "error", "message": describe_person_create_error(exc)},
+                "active_page": "people",
+                "page_title": "New Employee",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    created_person = (response.data or [{}])[0]
+    created_person_id = created_person.get("person_id")
+    created_name = person_form["name_eng"] or person_form["name"]
+
+    set_flash(request, "success", f"Employee {created_name} was created.")
+    if created_person_id:
+        return RedirectResponse(url=f"/admin/people/{created_person_id}", status_code=303)
+    return RedirectResponse(url="/admin/people?show_all=true", status_code=303)
 
 
 @app.get("/admin/people/{person_id}", response_class=HTMLResponse)

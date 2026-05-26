@@ -21,8 +21,15 @@
     <p>Find an employee quickly, open their card, and review everything currently assigned to them.</p>
 </section>
 
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
 <section class="panel">
     <div class="toolbar">
+        <a class="btn" href="/admin/people/new">Add employee</a>
         <form method="get" class="search compact" style="width: 100%;">
             <input type="text" name="q" value="{{ query }}" placeholder="Search by employee name or department">
             <label style="display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 14px;">

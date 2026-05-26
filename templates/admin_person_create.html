@@ -1,0 +1,42 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>New Employee</h2>
+    <p>Create a new employee record so the person appears in People and becomes available for asset assignment.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="panel">
+    <div class="toolbar">
+        <a class="btn secondary" href="/admin/people">Back to people</a>
+    </div>
+
+    <form method="post" action="/admin/people/new" class="form-grid">
+        <div class="field">
+            <label for="name">Employee name (local)</label>
+            <input id="name" name="name" type="text" value="{{ person_form.name }}" placeholder="For example: Viktoriia Yehorova">
+        </div>
+
+        <div class="field">
+            <label for="name_eng">Employee name (English)</label>
+            <input id="name_eng" name="name_eng" type="text" value="{{ person_form.name_eng }}" placeholder="For example: Viktoriia Iegorova">
+        </div>
+
+        <div class="field full">
+            <label for="department">Department</label>
+            <input id="department" name="department" type="text" value="{{ person_form.department }}" placeholder="For example: Finance HLF">
+        </div>
+
+        <div class="toolbar" style="margin-bottom: 0;">
+            <button class="btn" type="submit">Create employee</button>
+            <a class="btn secondary" href="/admin/people">Cancel</a>
+        </div>
+    </form>
+</section>
+{% endblock %}
