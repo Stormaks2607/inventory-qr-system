@@ -1039,6 +1039,29 @@ def find_existing_person(person_form: dict) -> Optional[dict]:
     return None
 
 
+def get_next_person_id() -> int:
+    response = (
+        supabase.table("persons")
+        .select("person_id")
+        .order("person_id", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = response.data or []
+    if not rows:
+        return 1
+    return int(rows[0].get("person_id") or 0) + 1
+
+
+def is_person_id_sequence_conflict(error: Exception) -> bool:
+    if not isinstance(error, APIError):
+        return False
+    message = (error.message or "").lower()
+    details = (error.details or "").lower()
+    combined = f"{message} {details}"
+    return "person_id" in combined and "already exists" in combined
+
+
 def describe_person_create_error(error: Exception) -> str:
     if not isinstance(error, APIError):
         return "Employee could not be created due to an unexpected database error."
@@ -1047,6 +1070,8 @@ def describe_person_create_error(error: Exception) -> str:
     details = error.details or ""
     combined = " ".join(part for part in [message, details] if part).lower()
 
+    if is_person_id_sequence_conflict(error):
+        return "The employee ID sequence in the database is out of sync. The application could not assign a new person_id automatically."
     if "duplicate" in combined or "unique" in combined:
         if details:
             return f"An employee with the same unique data already exists. Database details: {details}"
@@ -2063,6 +2088,26 @@ def admin_person_create(
     try:
         response = supabase.table("persons").insert(insert_data).execute()
     except Exception as exc:
+        if is_person_id_sequence_conflict(exc):
+            retry_data = dict(insert_data)
+            try:
+                retry_data["person_id"] = get_next_person_id()
+                response = supabase.table("persons").insert(retry_data).execute()
+            except Exception as retry_exc:
+                exc = retry_exc
+            else:
+                exc = None
+
+        if exc is None:
+            created_person = (response.data or [{}])[0]
+            created_person_id = created_person.get("person_id")
+            created_name = person_form["name_eng"] or person_form["name"]
+
+            set_flash(request, "success", f"Employee {created_name} was created.")
+            if created_person_id:
+                return RedirectResponse(url=f"/admin/people/{created_person_id}", status_code=303)
+            return RedirectResponse(url="/admin/people?show_all=true", status_code=303)
+
         if isinstance(exc, APIError):
             message = (exc.message or "").lower()
             details = (exc.details or "").lower()
