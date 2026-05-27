@@ -123,7 +123,15 @@
     </article>
 
     <article class="panel">
-        <h3>Changed Assets</h3>
+        <div class="toolbar" style="justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">Changed Assets</h3>
+            {% if preview.changed_records %}
+            <label style="display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;">
+                <input id="toggle_changed_assets" type="checkbox" checked>
+                <span>Select all changed assets</span>
+            </label>
+            {% endif %}
+        </div>
         {% if preview.changed_records %}
         <div class="table-wrap">
             <table>
@@ -141,7 +149,7 @@
                     <tr>
                         <td>
                             <label style="display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;">
-                                <input type="checkbox" name="selected_changed_assets" value="{{ item.asset_tag_number }}" checked>
+                                <input class="changed-asset-checkbox" type="checkbox" name="selected_changed_assets" value="{{ item.asset_tag_number }}" checked>
                                 <span>Apply</span>
                             </label>
                         </td>
@@ -219,6 +227,34 @@
     </article>
 </section>
 </form>
+<script>
+    (function () {
+        const toggle = document.getElementById("toggle_changed_assets");
+        const checkboxes = Array.from(document.querySelectorAll(".changed-asset-checkbox"));
+        if (!toggle || checkboxes.length === 0) {
+            return;
+        }
+
+        function syncToggleState() {
+            const checkedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+            toggle.checked = checkedCount === checkboxes.length;
+            toggle.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+        }
+
+        toggle.addEventListener("change", () => {
+            checkboxes.forEach((checkbox) => {
+                checkbox.checked = toggle.checked;
+            });
+            toggle.indeterminate = false;
+        });
+
+        checkboxes.forEach((checkbox) => {
+            checkbox.addEventListener("change", syncToggleState);
+        });
+
+        syncToggleState();
+    })();
+</script>
 {% else %}
 <section class="panel">
     <h3>MVP Sync Workflow</h3>
