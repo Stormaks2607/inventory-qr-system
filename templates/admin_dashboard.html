@@ -6,6 +6,13 @@
     <p>This admin area is the foundation for asset operations, reporting, and hybrid Excel synchronization. Supabase is used for live work, while the Excel inventory file remains the official control copy.</p>
 </section>
 
+{% if database_error %}
+<section class="panel alert-panel">
+    <h3>Database connection problem</h3>
+    <p>{{ database_error }}</p>
+</section>
+{% endif %}
+
 <section class="grid">
     <article class="stat">
         <div class="stat-label">Total assets</div>
