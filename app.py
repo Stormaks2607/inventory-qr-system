@@ -57,11 +57,19 @@ EXCEL_SYNC_COLUMN_MAP = {
     "Model": "model",
     "Serial/ Chassis No.": "serial_number",
     "Quantity": "quantity",
+    "Location": "location_name",
+    "Department ": "department_name",
+    "Name of Recipient": "recipient_name",
+    "Position of Recipient": "recipient_position",
     "Date (Year) of Purchase": "purchase_date_raw",
     "Purchase price": "purchase_price",
     "Currency": "currency",
+    "Purchased to Project No.": "purchased_project_no",
+    "Donor ": "donor_name",
+    "Transferred to Project No.": "transferred_project_no",
     "Current Status\n(functionality)": "current_status",
     "Remarks": "remarks",
+    "Last date of transfer": "last_transfer_date",
 }
 ASSET_STATUS_OPTIONS = [
     ("functional", "Функціонуючий / Functional"),
@@ -491,6 +499,39 @@ def sync_values_equal(field_name: str, current_value, excel_value) -> bool:
     return normalize_sync_value(field_name, current_value) == normalize_sync_value(field_name, excel_value)
 
 
+def normalize_sync_match_key(value) -> Optional[str]:
+    normalized = normalize_sync_string(value)
+    if normalized is None:
+        return None
+    normalized = normalized.replace("`", "'").replace("\u2019", "'")
+    normalized = normalized.replace("\u2013", "-").replace("\u2014", "-")
+    return normalized.casefold()
+
+
+def parse_excel_sync_date(value) -> Optional[str]:
+    value = clean_excel_value(value)
+    if value is None:
+        return None
+
+    try:
+        import pandas as pd  # type: ignore
+    except Exception:
+        pd = None
+
+    if pd is not None and isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+
+    normalized = str(value).strip()
+    for date_format in ("%d.%m.%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(normalized, date_format).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return None
+
+
 def normalize_excel_asset_record(row: dict) -> Optional[dict]:
     asset_tag = normalize_asset_tag(clean_excel_value(row.get("asset_tag_number")) or "")
     if not asset_tag:
@@ -511,6 +552,14 @@ def normalize_excel_asset_record(row: dict) -> Optional[dict]:
         "currency": clean_excel_value(row.get("currency")),
         "current_status": clean_excel_value(row.get("current_status")),
         "remarks": remarks,
+        "location_name": clean_excel_value(row.get("location_name")),
+        "department_name": clean_excel_value(row.get("department_name")),
+        "recipient_name": clean_excel_value(row.get("recipient_name")),
+        "recipient_position": clean_excel_value(row.get("recipient_position")),
+        "purchased_project_no": clean_excel_value(row.get("purchased_project_no")),
+        "transferred_project_no": clean_excel_value(row.get("transferred_project_no")),
+        "donor_name": clean_excel_value(row.get("donor_name")),
+        "last_transfer_date": parse_excel_sync_date(row.get("last_transfer_date")),
     }
 
 
@@ -529,11 +578,16 @@ def load_excel_sync_rows(file_path: str) -> list[dict]:
     if "asset_tag_number" not in dataframe.columns:
         raise ValueError("The uploaded workbook does not contain the expected Asset Tag column.")
 
+    has_recipient_column = "recipient_name" in dataframe.columns
+    has_project_column = "purchased_project_no" in dataframe.columns or "transferred_project_no" in dataframe.columns
+
     dataframe = dataframe[dataframe["asset_tag_number"].notna()].copy()
     records: list[dict] = []
     for _, row in dataframe.iterrows():
         normalized = normalize_excel_asset_record(row.to_dict())
         if normalized:
+            normalized["_has_recipient_column"] = has_recipient_column
+            normalized["_has_project_column"] = has_project_column
             records.append(normalized)
     return records
 
@@ -543,7 +597,146 @@ def list_asset_records() -> list[dict]:
     return response.data or []
 
 
+def list_current_assignment_records() -> list[dict]:
+    response = (
+        supabase.table("asset_assignments")
+        .select("*")
+        .is_("return_date", "null")
+        .order("assignment_date", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
+def list_asset_project_records() -> list[dict]:
+    response = (
+        supabase.table("asset_projects")
+        .select("*")
+        .order("is_primary", desc=True)
+        .order("asset_project_id")
+        .execute()
+    )
+    return response.data or []
+
+
+def build_person_lookup(people: list[dict]) -> dict[str, dict]:
+    lookup = {}
+    for person in people:
+        for field_name in ("name_eng", "name", "full_name"):
+            key = normalize_sync_match_key(person.get(field_name))
+            if key and key not in lookup:
+                lookup[key] = person
+    return lookup
+
+
+def build_location_lookup(locations: list[dict]) -> dict[tuple[Optional[str], Optional[str]], dict]:
+    lookup = {}
+    for location in locations:
+        city_key = normalize_sync_match_key(location.get("city") or location.get("name"))
+        department_key = normalize_sync_match_key(location.get("department"))
+        if city_key:
+            lookup[(city_key, department_key)] = location
+            lookup.setdefault((city_key, None), location)
+    return lookup
+
+
+def build_project_lookup(projects: list[dict]) -> dict[str, dict]:
+    lookup = {}
+    for project in projects:
+        for field_name in ("project_number", "project_name", "name"):
+            key = normalize_sync_match_key(project.get(field_name))
+            if key and key not in lookup:
+                lookup[key] = project
+    return lookup
+
+
+def build_donor_lookup(donors: list[dict]) -> dict[str, dict]:
+    return {
+        key: donor
+        for donor in donors
+        for key in [normalize_sync_match_key(donor.get("donor_name"))]
+        if key
+    }
+
+
+def resolve_excel_person(record: dict, person_lookup: dict[str, dict]) -> Optional[dict]:
+    recipient_key = normalize_sync_match_key(record.get("recipient_name"))
+    return person_lookup.get(recipient_key) if recipient_key else None
+
+
+def resolve_excel_location(record: dict, person: Optional[dict], location_lookup: dict[tuple[Optional[str], Optional[str]], dict]) -> Optional[dict]:
+    city_key = normalize_sync_match_key(record.get("location_name"))
+    department_key = normalize_sync_match_key(record.get("department_name") or (person or {}).get("department"))
+    if not city_key:
+        return None
+    return location_lookup.get((city_key, department_key)) or location_lookup.get((city_key, None))
+
+
+def get_excel_current_project_number(record: dict) -> Optional[str]:
+    return normalize_sync_string(record.get("transferred_project_no") or record.get("purchased_project_no"))
+
+
+def select_current_project(asset_projects: list[dict]) -> Optional[dict]:
+    current_projects = [row for row in asset_projects if row.get("is_current") is True]
+    if current_projects:
+        return current_projects[0]
+    primary_projects = [row for row in asset_projects if row.get("is_primary") is True]
+    if primary_projects:
+        return primary_projects[0]
+    return asset_projects[0] if asset_projects else None
+
+
+def build_sync_context() -> dict:
+    people = list_people()
+    locations = list_locations()
+    projects = list_projects()
+    donors = list_donors()
+    assignments = list_current_assignment_records()
+    asset_projects = list_asset_project_records()
+
+    people_by_id = {row.get("person_id"): row for row in people}
+    locations_by_id = {row.get("location_id"): row for row in locations}
+    projects_by_id = {row.get("project_id"): row for row in projects}
+    donors_by_id = {row.get("donor_id"): row for row in donors}
+
+    assignment_by_asset_id = {}
+    for assignment in assignments:
+        asset_id = assignment.get("asset_id")
+        if asset_id not in assignment_by_asset_id:
+            person = people_by_id.get(assignment.get("person_id")) or {}
+            location = locations_by_id.get(assignment.get("location_id")) or {}
+            assignment_by_asset_id[asset_id] = {
+                **assignment,
+                "responsible_person": get_person_display_name(person) if person else None,
+                "department": person.get("department") or location.get("department"),
+                "city": location.get("city") or location.get("name"),
+            }
+
+    projects_by_asset_id: dict[int, list[dict]] = {}
+    for asset_project in asset_projects:
+        project = projects_by_id.get(asset_project.get("project_id")) or {}
+        donor = donors_by_id.get(asset_project.get("donor_id")) or {}
+        projects_by_asset_id.setdefault(asset_project.get("asset_id"), []).append(
+            {
+                **asset_project,
+                "project_number": project.get("project_number"),
+                "project_name": project.get("project_name") or project.get("name"),
+                "donor_name": donor.get("donor_name"),
+            }
+        )
+
+    return {
+        "person_lookup": build_person_lookup(people),
+        "location_lookup": build_location_lookup(locations),
+        "project_lookup": build_project_lookup(projects),
+        "donor_lookup": build_donor_lookup(donors),
+        "assignment_by_asset_id": assignment_by_asset_id,
+        "projects_by_asset_id": projects_by_asset_id,
+    }
+
+
 def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) -> dict:
+    sync_context = build_sync_context()
     current_by_tag = {
         normalize_asset_tag(asset.get("asset_tag_number") or ""): asset
         for asset in current_assets
@@ -576,6 +769,7 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
         changed_fields = []
         current_values = {}
         excel_values = {}
+        warnings = []
         for field_name in synced_fields:
             current_value = current_asset.get(field_name)
             excel_value = record.get(field_name)
@@ -583,6 +777,40 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
                 changed_fields.append(field_name)
                 current_values[field_name] = current_value
                 excel_values[field_name] = excel_value
+
+        if record.get("_has_recipient_column"):
+            current_assignment = sync_context["assignment_by_asset_id"].get(current_asset.get("asset_id")) or {}
+            excel_person = resolve_excel_person(record, sync_context["person_lookup"])
+            excel_recipient = normalize_sync_string(record.get("recipient_name"))
+            current_person_name = current_assignment.get("responsible_person")
+
+            if not sync_values_equal("responsible_person", current_person_name, excel_recipient):
+                changed_fields.append("responsible_person")
+                current_values["responsible_person"] = current_person_name
+                excel_values["responsible_person"] = excel_recipient
+                if excel_recipient and not excel_person:
+                    warnings.append(f"Responsible person not found in People: {excel_recipient}")
+
+            excel_location = resolve_excel_location(record, excel_person, sync_context["location_lookup"])
+            if excel_recipient and excel_person and not excel_location:
+                warnings.append(
+                    "Location not found for assignment: "
+                    f"{record.get('location_name') or '-'} / "
+                    f"{record.get('department_name') or excel_person.get('department') or '-'}"
+                )
+
+        if record.get("_has_project_column"):
+            current_project = select_current_project(sync_context["projects_by_asset_id"].get(current_asset.get("asset_id"), [])) or {}
+            excel_project_number = get_excel_current_project_number(record)
+            current_project_number = current_project.get("project_number")
+
+            if excel_project_number and not sync_values_equal("project_number", current_project_number, excel_project_number):
+                changed_fields.append("project_number")
+                current_values["project_number"] = current_project_number
+                excel_values["project_number"] = excel_project_number
+                project_key = normalize_sync_match_key(excel_project_number)
+                if excel_project_number and not sync_context["project_lookup"].get(project_key):
+                    warnings.append(f"Project not found: {excel_project_number}")
 
         if changed_fields:
             changed_records.append(
@@ -593,6 +821,7 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
                     "current": current_values,
                     "excel": excel_values,
                     "record": record,
+                    "warnings": warnings,
                 }
             )
         else:
@@ -610,15 +839,128 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
     }
 
 
+def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> int:
+    excel_recipient = normalize_sync_string(record.get("recipient_name"))
+    assignment_date = record.get("last_transfer_date") or datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
+
+    if not excel_recipient:
+        close_current_assignments(asset_id, assignment_date)
+        return 1
+
+    person = resolve_excel_person(record, sync_context["person_lookup"])
+    if not person:
+        return 0
+
+    location = resolve_excel_location(record, person, sync_context["location_lookup"])
+    if not location:
+        return 0
+
+    existing = sync_context.get("assignment_by_asset_id", {}).get(asset_id) or {}
+    if (
+        existing
+        and existing.get("person_id") == person.get("person_id")
+        and existing.get("location_id") == location.get("location_id")
+    ):
+        return 0
+
+    notes_parts = []
+    if record.get("recipient_position"):
+        notes_parts.append(f"Position from Excel: {record.get('recipient_position')}")
+    if record.get("current_status"):
+        notes_parts.append(f"Asset status: {record.get('current_status')}")
+    if record.get("remarks"):
+        notes_parts.append(f"Remarks: {record.get('remarks')}")
+
+    close_current_assignments(asset_id, assignment_date)
+    supabase.table("asset_assignments").insert(
+        {
+            "asset_id": asset_id,
+            "person_id": person.get("person_id"),
+            "location_id": location.get("location_id"),
+            "assignment_date": assignment_date,
+            "return_date": None,
+            "status": record.get("current_status"),
+            "notes": " | ".join(notes_parts) if notes_parts else None,
+        }
+    ).execute()
+    return 1
+
+
+def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
+    excel_project_number = get_excel_current_project_number(record)
+    if not excel_project_number:
+        return 0
+
+    project = sync_context["project_lookup"].get(normalize_sync_match_key(excel_project_number))
+    if not project:
+        return 0
+
+    donor = None
+    donor_key = normalize_sync_match_key(record.get("donor_name"))
+    if donor_key:
+        donor = sync_context["donor_lookup"].get(donor_key)
+
+    project_rows = sync_context.get("projects_by_asset_id", {}).get(asset_id, [])
+    existing = None
+    for row in project_rows:
+        if row.get("project_id") == project.get("project_id"):
+            existing = row
+            break
+
+    supabase.table("asset_projects").update({"is_current": False, "is_primary": False}).eq("asset_id", asset_id).execute()
+
+    payload = {
+        "project_id": project.get("project_id"),
+        "donor_id": donor.get("donor_id") if donor else None,
+        "is_current": True,
+        "is_primary": True,
+        "transfer_date": record.get("last_transfer_date") if record.get("transferred_project_no") else None,
+        "transfer_reason": "Excel synchronization" if record.get("transferred_project_no") else None,
+        "condition_at_transfer": record.get("current_status"),
+    }
+
+    if existing:
+        supabase.table("asset_projects").update(payload).eq("asset_project_id", existing["asset_project_id"]).execute()
+    else:
+        supabase.table("asset_projects").insert({"asset_id": asset_id, **payload}).execute()
+
+    return 1
+
+
 def apply_sync_preview(preview: dict) -> dict:
     inserted = 0
     updated = 0
+    assignment_updated = 0
+    project_updated = 0
+    skipped_relationships = 0
+    sync_context = build_sync_context()
+    asset_fields = {
+        "asset_classification",
+        "asset_sub_classification",
+        "item_description",
+        "brand_make",
+        "model",
+        "serial_chassis_number",
+        "quantity",
+        "purchase_price",
+        "currency",
+        "current_status",
+        "remarks",
+    }
 
     for record in preview.get("new_records", []):
-        insert_record = dict(record)
+        insert_record = {field_name: record.get(field_name) for field_name in asset_fields}
+        insert_record["asset_tag_number"] = record.get("asset_tag_number")
         insert_record["inventory_code"] = insert_record.get("asset_tag_number")
-        supabase.table("assets").insert(insert_record).execute()
+        insert_response = supabase.table("assets").insert(insert_record).execute()
+        inserted_asset = (insert_response.data or [{}])[0]
+        asset_id = inserted_asset.get("asset_id")
         inserted += 1
+        if asset_id:
+            if record.get("_has_recipient_column") and normalize_sync_string(record.get("recipient_name")):
+                assignment_updated += apply_sync_assignment(asset_id, record, sync_context)
+            if record.get("_has_project_column") and get_excel_current_project_number(record):
+                project_updated += apply_sync_project(asset_id, record, sync_context)
 
     for item in preview.get("changed_records", []):
         asset_id = item.get("asset_id")
@@ -628,13 +970,27 @@ def apply_sync_preview(preview: dict) -> dict:
         update_data = {
             field_name: record.get(field_name)
             for field_name in item.get("changed_fields", [])
+            if field_name in asset_fields
         }
-        if not update_data:
-            continue
-        supabase.table("assets").update(update_data).eq("asset_id", asset_id).execute()
-        updated += 1
+        if update_data:
+            supabase.table("assets").update(update_data).eq("asset_id", asset_id).execute()
+            updated += 1
+        if "responsible_person" in item.get("changed_fields", []):
+            applied = apply_sync_assignment(asset_id, record, sync_context)
+            assignment_updated += applied
+            skipped_relationships += 0 if applied else 1
+        if "project_number" in item.get("changed_fields", []):
+            applied = apply_sync_project(asset_id, record, sync_context)
+            project_updated += applied
+            skipped_relationships += 0 if applied else 1
 
-    return {"inserted": inserted, "updated": updated}
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "assignment_updated": assignment_updated,
+        "project_updated": project_updated,
+        "skipped_relationships": skipped_relationships,
+    }
 
 
 def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_changed_assets: list[str]) -> dict:
@@ -2959,7 +3315,16 @@ def admin_sync_apply(
     sync_state["last_apply_result"] = result
     sync_state["preview"] = None
     save_sync_state(sync_state)
-    set_flash(request, "success", f"Excel sync applied: {result['inserted']} new assets inserted, {result['updated']} assets updated.")
+    set_flash(
+        request,
+        "success",
+        (
+            f"Excel sync applied: {result['inserted']} new assets inserted, "
+            f"{result['updated']} assets updated, "
+            f"{result['assignment_updated']} assignment changes, "
+            f"{result['project_updated']} project changes."
+        ),
+    )
     return RedirectResponse(url="/admin/sync", status_code=303)
 
 

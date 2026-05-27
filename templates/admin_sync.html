@@ -75,7 +75,12 @@
 
     {% if sync_state.last_apply_result %}
     <div class="flash" style="margin-top: 18px;">
-        Last apply: inserted {{ sync_state.last_apply_result.inserted }}, updated {{ sync_state.last_apply_result.updated }}.
+        Last apply: inserted {{ sync_state.last_apply_result.inserted }}, updated {{ sync_state.last_apply_result.updated }},
+        assignments {{ sync_state.last_apply_result.assignment_updated or 0 }},
+        projects {{ sync_state.last_apply_result.project_updated or 0 }}.
+        {% if sync_state.last_apply_result.skipped_relationships %}
+        Skipped relationship updates: {{ sync_state.last_apply_result.skipped_relationships }}.
+        {% endif %}
         {% if sync_state.last_applied_at %}Completed at {{ sync_state.last_applied_at }}.{% endif %}
     </div>
     {% endif %}
@@ -127,6 +132,7 @@
                         <th>Apply</th>
                         <th>Asset tag</th>
                         <th>Changed fields</th>
+                        <th>Current values</th>
                         <th>Excel values</th>
                     </tr>
                 </thead>
@@ -150,8 +156,36 @@
                                 {% elif field_name == "serial_chassis_number" %}Serial number
                                 {% elif field_name == "purchase_price" %}Purchase price
                                 {% elif field_name == "current_status" %}Status
+                                {% elif field_name == "responsible_person" %}Responsible person
+                                {% elif field_name == "project_number" %}Project
                                 {% else %}{{ field_name|replace("_", " ")|title }}
                                 {% endif %}
+                            </div>
+                            {% endfor %}
+                            {% if item.warnings %}
+                            <div class="muted" style="margin-top: 8px;">
+                                {% for warning in item.warnings %}
+                                <div>{{ warning }}</div>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% for field_name in item.changed_fields %}
+                            <div>
+                                <strong>
+                                    {% if field_name == "asset_classification" %}Classification
+                                    {% elif field_name == "asset_sub_classification" %}Sub-classification
+                                    {% elif field_name == "item_description" %}Description
+                                    {% elif field_name == "brand_make" %}Brand
+                                    {% elif field_name == "serial_chassis_number" %}Serial number
+                                    {% elif field_name == "purchase_price" %}Purchase price
+                                    {% elif field_name == "current_status" %}Status
+                                    {% elif field_name == "responsible_person" %}Responsible person
+                                    {% elif field_name == "project_number" %}Project
+                                    {% else %}{{ field_name|replace("_", " ")|title }}
+                                    {% endif %}
+                                </strong>: {{ item.current[field_name] if item.current[field_name] is not none else "-" }}
                             </div>
                             {% endfor %}
                         </td>
@@ -166,6 +200,8 @@
                                     {% elif field_name == "serial_chassis_number" %}Serial number
                                     {% elif field_name == "purchase_price" %}Purchase price
                                     {% elif field_name == "current_status" %}Status
+                                    {% elif field_name == "responsible_person" %}Responsible person
+                                    {% elif field_name == "project_number" %}Project
                                     {% else %}{{ field_name|replace("_", " ")|title }}
                                     {% endif %}
                                 </strong>: {{ item.excel[field_name] if item.excel[field_name] is not none else "-" }}
