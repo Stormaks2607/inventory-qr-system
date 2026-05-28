@@ -1301,6 +1301,67 @@ def list_donors() -> list[dict]:
     return response.data or []
 
 
+def get_project_by_id(project_id: int) -> Optional[dict]:
+    response = (
+        supabase.table("projects")
+        .select("*")
+        .eq("project_id", project_id)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        return None
+    return response.data[0]
+
+
+def get_donor_by_id(donor_id: int) -> Optional[dict]:
+    response = (
+        supabase.table("donors")
+        .select("*")
+        .eq("donor_id", donor_id)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        return None
+    return response.data[0]
+
+
+def get_project_form_values(project: Optional[dict] = None) -> dict:
+    project = project or {}
+    return {
+        "project_number": project.get("project_number") or "",
+        "project_name": project.get("project_name") or project.get("name") or "",
+        "start_date": project.get("start_date") or "",
+        "end_date": project.get("end_date") or "",
+        "status": project.get("status") or "",
+    }
+
+
+def get_donor_form_values(donor: Optional[dict] = None) -> dict:
+    donor = donor or {}
+    return {
+        "donor_name": donor.get("donor_name") or "",
+        "contact_person": donor.get("contact_person") or "",
+        "contact_email": donor.get("contact_email") or "",
+    }
+
+
+def describe_reference_data_error(error: Exception, entity_label: str, unique_field: str) -> str:
+    if not isinstance(error, APIError):
+        return f"{entity_label} could not be saved due to an unexpected database error."
+
+    message = error.message or "Database error"
+    details = error.details or ""
+    combined = " ".join(part for part in [message, details] if part).lower()
+
+    if unique_field in combined and ("duplicate" in combined or "unique" in combined):
+        field_label = "Project number" if unique_field == "project_number" else "Donor name"
+        return f"{field_label} already exists."
+
+    return f"{entity_label} could not be saved: {message}"
+
+
 def safe_parse_percentage(value: str) -> Optional[float]:
     normalized = (value or "").strip().replace(",", ".")
     if not normalized:
@@ -2881,6 +2942,185 @@ def admin_branding_save(
     storage_backend = save_branding_settings(tenant_key, branding)
     set_flash(request, "success", f"Branding settings were updated for tenant '{tenant_key}' using {storage_backend} storage.")
     return RedirectResponse(url="/admin/branding", status_code=303)
+
+
+@app.get("/admin/reference-data", response_class=HTMLResponse)
+def admin_reference_data(
+    request: Request,
+    edit_project_id: Optional[int] = None,
+    edit_donor_id: Optional[int] = None,
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    projects = list_projects()
+    donors = list_donors()
+    edit_project = get_project_by_id(edit_project_id) if edit_project_id else None
+    edit_donor = get_donor_by_id(edit_donor_id) if edit_donor_id else None
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_reference_data.html",
+        context={
+            "projects": projects,
+            "donors": donors,
+            "edit_project": edit_project,
+            "edit_donor": edit_donor,
+            "project_form": get_project_form_values(edit_project),
+            "donor_form": get_donor_form_values(edit_donor),
+            "flash": pop_flash(request),
+            "active_page": "reference_data",
+            "page_title": "Reference Data",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.post("/admin/reference-data/projects")
+def admin_reference_data_project_create(
+    request: Request,
+    project_number: str = Form(""),
+    project_name: str = Form(""),
+    start_date: str = Form(""),
+    end_date: str = Form(""),
+    status: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    project_number = project_number.strip().upper()
+    if not project_number:
+        set_flash(request, "error", "Project number is required.")
+        return RedirectResponse(url="/admin/reference-data#projects", status_code=303)
+
+    payload = {
+        "project_number": project_number,
+        "project_name": project_name.strip() or None,
+        "start_date": start_date.strip() or None,
+        "end_date": end_date.strip() or None,
+        "status": status.strip() or None,
+    }
+
+    try:
+        supabase.table("projects").insert(payload).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_reference_data_error(error, "Project", "project_number"))
+        return RedirectResponse(url="/admin/reference-data#projects", status_code=303)
+
+    set_flash(request, "success", f"Project {project_number} was added.")
+    return RedirectResponse(url="/admin/reference-data#projects", status_code=303)
+
+
+@app.post("/admin/reference-data/projects/{project_id}")
+def admin_reference_data_project_update(
+    request: Request,
+    project_id: int,
+    project_number: str = Form(""),
+    project_name: str = Form(""),
+    start_date: str = Form(""),
+    end_date: str = Form(""),
+    status: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    project = get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_number = project_number.strip().upper()
+    if not project_number:
+        set_flash(request, "error", "Project number is required.")
+        return RedirectResponse(url=f"/admin/reference-data?edit_project_id={project_id}#projects", status_code=303)
+
+    payload = {
+        "project_number": project_number,
+        "project_name": project_name.strip() or None,
+        "start_date": start_date.strip() or None,
+        "end_date": end_date.strip() or None,
+        "status": status.strip() or None,
+    }
+
+    try:
+        supabase.table("projects").update(payload).eq("project_id", project_id).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_reference_data_error(error, "Project", "project_number"))
+        return RedirectResponse(url=f"/admin/reference-data?edit_project_id={project_id}#projects", status_code=303)
+
+    set_flash(request, "success", f"Project {project_number} was updated.")
+    return RedirectResponse(url="/admin/reference-data#projects", status_code=303)
+
+
+@app.post("/admin/reference-data/donors")
+def admin_reference_data_donor_create(
+    request: Request,
+    donor_name: str = Form(""),
+    contact_person: str = Form(""),
+    contact_email: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    donor_name = donor_name.strip()
+    if not donor_name:
+        set_flash(request, "error", "Donor name is required.")
+        return RedirectResponse(url="/admin/reference-data#donors", status_code=303)
+
+    payload = {
+        "donor_name": donor_name,
+        "contact_person": contact_person.strip() or None,
+        "contact_email": contact_email.strip() or None,
+    }
+
+    try:
+        supabase.table("donors").insert(payload).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_reference_data_error(error, "Donor", "donor_name"))
+        return RedirectResponse(url="/admin/reference-data#donors", status_code=303)
+
+    set_flash(request, "success", f"Donor {donor_name} was added.")
+    return RedirectResponse(url="/admin/reference-data#donors", status_code=303)
+
+
+@app.post("/admin/reference-data/donors/{donor_id}")
+def admin_reference_data_donor_update(
+    request: Request,
+    donor_id: int,
+    donor_name: str = Form(""),
+    contact_person: str = Form(""),
+    contact_email: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    donor = get_donor_by_id(donor_id)
+    if not donor:
+        raise HTTPException(status_code=404, detail="Donor not found")
+
+    donor_name = donor_name.strip()
+    if not donor_name:
+        set_flash(request, "error", "Donor name is required.")
+        return RedirectResponse(url=f"/admin/reference-data?edit_donor_id={donor_id}#donors", status_code=303)
+
+    payload = {
+        "donor_name": donor_name,
+        "contact_person": contact_person.strip() or None,
+        "contact_email": contact_email.strip() or None,
+    }
+
+    try:
+        supabase.table("donors").update(payload).eq("donor_id", donor_id).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_reference_data_error(error, "Donor", "donor_name"))
+        return RedirectResponse(url=f"/admin/reference-data?edit_donor_id={donor_id}#donors", status_code=303)
+
+    set_flash(request, "success", f"Donor {donor_name} was updated.")
+    return RedirectResponse(url="/admin/reference-data#donors", status_code=303)
 
 
 @app.get("/admin/assets/{asset_id}", response_class=HTMLResponse)

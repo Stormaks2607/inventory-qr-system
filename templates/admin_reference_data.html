@@ -1,0 +1,153 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Reference Data</h2>
+    <p>Manage low-frequency reference records used across the asset system. Projects and donors configured here become available in asset funding allocations.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="two-column">
+    <article class="panel" id="projects">
+        <div class="toolbar" style="justify-content: space-between; align-items: center;">
+            <div>
+                <h3 style="margin-bottom: 6px;">Projects</h3>
+                <p class="muted" style="margin: 0;">Project numbers, names, active windows, and status values used for funding and reporting.</p>
+            </div>
+            <div class="badge">{{ projects|length }} total</div>
+        </div>
+
+        <form method="post" action="{% if edit_project %}/admin/reference-data/projects/{{ edit_project.project_id }}{% else %}/admin/reference-data/projects{% endif %}" class="form-grid">
+            <div class="field">
+                <label for="project_number">Project number</label>
+                <input id="project_number" name="project_number" type="text" value="{{ project_form.project_number }}" required>
+            </div>
+
+            <div class="field">
+                <label for="project_name">Project name</label>
+                <input id="project_name" name="project_name" type="text" value="{{ project_form.project_name }}">
+            </div>
+
+            <div class="field">
+                <label for="project_start_date">Start date</label>
+                <input id="project_start_date" name="start_date" type="date" value="{{ project_form.start_date }}">
+            </div>
+
+            <div class="field">
+                <label for="project_end_date">End date</label>
+                <input id="project_end_date" name="end_date" type="date" value="{{ project_form.end_date }}">
+            </div>
+
+            <div class="field full">
+                <label for="project_status">Status</label>
+                <input id="project_status" name="status" type="text" value="{{ project_form.status }}" placeholder="e.g. Active, Closed, Pipeline">
+            </div>
+
+            <div class="toolbar" style="margin-bottom: 0;">
+                <button class="btn" type="submit">{% if edit_project %}Save project{% else %}Add project{% endif %}</button>
+                {% if edit_project %}
+                <a class="btn secondary" href="/admin/reference-data#projects">Cancel edit</a>
+                {% endif %}
+            </div>
+        </form>
+
+        <div class="table-wrap" style="margin-top: 22px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Project number</th>
+                        <th>Project name</th>
+                        <th>Dates</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for project in projects %}
+                    <tr>
+                        <td><strong>{{ project.project_number or "-" }}</strong></td>
+                        <td>{{ project.project_name or project.name or "-" }}</td>
+                        <td>
+                            {{ project.start_date or "-" }}<br>
+                            <span class="muted">{{ project.end_date or "-" }}</span>
+                        </td>
+                        <td>{{ project.status or "-" }}</td>
+                        <td><a href="/admin/reference-data?edit_project_id={{ project.project_id }}#projects">Edit</a></td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5" class="muted">No projects have been added yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+    <article class="panel" id="donors">
+        <div class="toolbar" style="justify-content: space-between; align-items: center;">
+            <div>
+                <h3 style="margin-bottom: 6px;">Donors</h3>
+                <p class="muted" style="margin: 0;">Maintain donor names and contact details used in project funding allocations and administrative follow-up.</p>
+            </div>
+            <div class="badge">{{ donors|length }} total</div>
+        </div>
+
+        <form method="post" action="{% if edit_donor %}/admin/reference-data/donors/{{ edit_donor.donor_id }}{% else %}/admin/reference-data/donors{% endif %}" class="form-grid">
+            <div class="field">
+                <label for="donor_name">Donor name</label>
+                <input id="donor_name" name="donor_name" type="text" value="{{ donor_form.donor_name }}" required>
+            </div>
+
+            <div class="field">
+                <label for="contact_person">Contact person</label>
+                <input id="contact_person" name="contact_person" type="text" value="{{ donor_form.contact_person }}">
+            </div>
+
+            <div class="field full">
+                <label for="contact_email">Contact email</label>
+                <input id="contact_email" name="contact_email" type="email" value="{{ donor_form.contact_email }}">
+            </div>
+
+            <div class="toolbar" style="margin-bottom: 0;">
+                <button class="btn" type="submit">{% if edit_donor %}Save donor{% else %}Add donor{% endif %}</button>
+                {% if edit_donor %}
+                <a class="btn secondary" href="/admin/reference-data#donors">Cancel edit</a>
+                {% endif %}
+            </div>
+        </form>
+
+        <div class="table-wrap" style="margin-top: 22px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Donor name</th>
+                        <th>Contact person</th>
+                        <th>Contact email</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for donor in donors %}
+                    <tr>
+                        <td><strong>{{ donor.donor_name or "-" }}</strong></td>
+                        <td>{{ donor.contact_person or "-" }}</td>
+                        <td>{{ donor.contact_email or "-" }}</td>
+                        <td><a href="/admin/reference-data?edit_donor_id={{ donor.donor_id }}#donors">Edit</a></td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4" class="muted">No donors have been added yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+</section>
+{% endblock %}

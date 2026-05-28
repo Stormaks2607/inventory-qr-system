@@ -191,7 +191,13 @@
     {% endif %}
 
     <div style="margin-top: 24px;">
-        <h3>Add Allocation</h3>
+        <div class="toolbar" style="justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">Add Allocation</h3>
+            <div class="toolbar" style="margin-bottom: 0;">
+                <a class="btn secondary" href="/admin/reference-data#projects">Manage projects</a>
+                <a class="btn secondary" href="/admin/reference-data#donors">Manage donors</a>
+            </div>
+        </div>
         <form method="post" action="/admin/assets/{{ asset.asset_id }}/funding" class="form-grid">
             <div class="field">
                 <label for="funding_project_id">Project</label>
