@@ -472,6 +472,13 @@ def canonicalize_sync_lookup_value(value) -> Optional[str]:
     return canonical or None
 
 
+def normalize_sync_casefold_string(value) -> Optional[str]:
+    normalized = normalize_sync_string(value)
+    if normalized is None:
+        return None
+    return normalized.casefold()
+
+
 def normalize_sync_number(value) -> Optional[float]:
     parsed = parse_sync_float(value)
     if parsed is None:
@@ -486,6 +493,8 @@ def normalize_sync_value(field_name: str, value):
         return safe_excel_int(value)
     if field_name in {"asset_classification", "asset_sub_classification"}:
         return canonicalize_sync_lookup_value(value)
+    if field_name in {"responsible_person", "department", "city", "location_name", "current_status", "currency"}:
+        return normalize_sync_casefold_string(value)
     return normalize_sync_string(value)
 
 
