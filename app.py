@@ -1301,6 +1301,20 @@ def list_donors() -> list[dict]:
     return response.data or []
 
 
+def get_next_numeric_id(table_name: str, id_column: str) -> int:
+    response = (
+        supabase.table(table_name)
+        .select(id_column)
+        .order(id_column, desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        return 1
+    current_max = response.data[0].get(id_column) or 0
+    return int(current_max) + 1
+
+
 def get_project_by_id(project_id: int) -> Optional[dict]:
     response = (
         supabase.table("projects")
@@ -1358,6 +1372,12 @@ def describe_reference_data_error(error: Exception, entity_label: str, unique_fi
     if unique_field in combined and ("duplicate" in combined or "unique" in combined):
         field_label = "Project number" if unique_field == "project_number" else "Donor name"
         return f"{field_label} already exists."
+
+    if entity_label == "Project" and "projects_pkey" in combined:
+        return "Project could not be saved because the database project_id sequence is out of sync."
+
+    if entity_label == "Donor" and "donors_pkey" in combined:
+        return "Donor could not be saved because the database donor_id sequence is out of sync."
 
     return f"{entity_label} could not be saved: {message}"
 
@@ -2996,6 +3016,7 @@ def admin_reference_data_project_create(
         return RedirectResponse(url="/admin/reference-data#projects", status_code=303)
 
     payload = {
+        "project_id": get_next_numeric_id("projects", "project_id"),
         "project_number": project_number,
         "project_name": project_name.strip() or None,
         "start_date": start_date.strip() or None,
@@ -3071,6 +3092,7 @@ def admin_reference_data_donor_create(
         return RedirectResponse(url="/admin/reference-data#donors", status_code=303)
 
     payload = {
+        "donor_id": get_next_numeric_id("donors", "donor_id"),
         "donor_name": donor_name,
         "contact_person": contact_person.strip() or None,
         "contact_email": contact_email.strip() or None,
