@@ -735,7 +735,21 @@ def split_excel_project_numbers(value) -> list[str]:
     normalized = normalize_sync_string(value)
     if not normalized:
         return []
-    return [part.strip() for part in normalized.split("/") if part.strip()]
+    return re.findall(r"\bUKR-\d+\b", normalized.upper())
+
+
+def split_excel_project_percentages(value, expected_count: int) -> list[Optional[float]]:
+    normalized = normalize_sync_string(value)
+    if not normalized or expected_count <= 0:
+        return []
+
+    percentages = [
+        float(match.replace(",", "."))
+        for match in re.findall(r"(\d+(?:[.,]\d+)?)\s*%", normalized)
+    ]
+    if len(percentages) == expected_count:
+        return percentages
+    return []
 
 
 def get_project_allocations_from_value(value) -> list[dict]:
@@ -743,13 +757,14 @@ def get_project_allocations_from_value(value) -> list[dict]:
     if not project_numbers:
         return []
 
-    allocation_percent = round(100 / len(project_numbers), 2)
+    explicit_percentages = split_excel_project_percentages(value, len(project_numbers))
+    fallback_percent = round(100 / len(project_numbers), 2)
     return [
         {
             "project_number": project_number,
-            "allocation_percent": allocation_percent,
+            "allocation_percent": explicit_percentages[index] if explicit_percentages else fallback_percent,
         }
-        for project_number in project_numbers
+        for index, project_number in enumerate(project_numbers)
     ]
 
 
