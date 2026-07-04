@@ -2,6 +2,7 @@ from typing import Optional
 import base64
 import csv
 import io
+from copy import copy
 import secrets
 import json
 import os
@@ -44,6 +45,7 @@ BRANDING_SUPABASE_TABLE = "organization_branding"
 DEFAULT_BRANDING_TENANT_KEY = "default"
 SYNC_STORAGE_DIR = os.path.join("private_docs", "sync")
 SYNC_WORKBOOK_PATH = os.path.join(SYNC_STORAGE_DIR, "official_inventory.xlsx")
+SYNC_EXPORT_PATH = os.path.join(SYNC_STORAGE_DIR, "supabase_inventory_export.xlsx")
 SYNC_STATE_PATH = os.path.join(SYNC_STORAGE_DIR, "sync_state.json")
 EXCEL_SYNC_SHEET_NAME = "Standard Asset List Format"
 EXCEL_SYNC_HEADER_ROW = 7
@@ -1079,6 +1081,178 @@ def apply_sync_preview(preview: dict) -> dict:
         "assignment_updated": assignment_updated,
         "project_updated": project_updated,
         "skipped_relationships": skipped_relationships,
+    }
+
+
+def normalize_excel_header(value) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def get_excel_header_columns(sheet) -> dict[str, int]:
+    header_row_number = EXCEL_SYNC_HEADER_ROW + 1
+    expected_headers = {
+        normalize_excel_header(excel_header): field_name
+        for excel_header, field_name in EXCEL_SYNC_COLUMN_MAP.items()
+    }
+    columns = {}
+
+    for cell in sheet[header_row_number]:
+        field_name = expected_headers.get(normalize_excel_header(cell.value))
+        if field_name:
+            columns[field_name] = cell.column
+
+    return columns
+
+
+def get_export_project_numbers(asset_projects: list[dict]) -> str:
+    allocations = get_current_project_allocations(asset_projects)
+    project_numbers = [allocation.get("project_number") for allocation in allocations if allocation.get("project_number")]
+    return "/".join(project_numbers)
+
+
+def get_export_donor_name(asset_projects: list[dict]) -> Optional[str]:
+    current_projects = [row for row in asset_projects if row.get("is_current") is True]
+    selected_projects = current_projects or asset_projects
+    for row in selected_projects:
+        if row.get("donor_name"):
+            return row.get("donor_name")
+    return None
+
+
+def get_export_transfer_date(asset_projects: list[dict]) -> Optional[str]:
+    current_projects = [row for row in asset_projects if row.get("is_current") is True]
+    selected_projects = current_projects or asset_projects
+    dates = [row.get("transfer_date") for row in selected_projects if row.get("transfer_date")]
+    return max(dates) if dates else None
+
+
+def build_database_excel_records() -> list[dict]:
+    assets = list_asset_records()
+    sync_context = build_sync_context()
+    records = []
+
+    for asset in assets:
+        asset_id = asset.get("asset_id")
+        assignment = sync_context["assignment_by_asset_id"].get(asset_id) or {}
+        asset_projects = sync_context["projects_by_asset_id"].get(asset_id, [])
+        project_numbers = get_export_project_numbers(asset_projects)
+
+        records.append(
+            {
+                "asset_tag_number": asset.get("asset_tag_number"),
+                "inventory_code_old": asset.get("inventory_code"),
+                "asset_classification": asset.get("asset_classification"),
+                "asset_sub_classification": asset.get("asset_sub_classification"),
+                "item_description": asset.get("item_description"),
+                "brand_make": asset.get("brand_make"),
+                "model": asset.get("model"),
+                "serial_number": asset.get("serial_chassis_number") or asset.get("serial_number"),
+                "quantity": asset.get("quantity"),
+                "location_name": assignment.get("city") or assignment.get("location_name"),
+                "department_name": assignment.get("department"),
+                "recipient_name": assignment.get("responsible_person"),
+                "recipient_position": None,
+                "purchase_price": asset.get("purchase_price"),
+                "currency": asset.get("currency"),
+                "purchased_project_no": project_numbers,
+                "donor_name": get_export_donor_name(asset_projects),
+                "transferred_project_no": project_numbers,
+                "current_status": assignment.get("status") or asset.get("current_status"),
+                "remarks": asset.get("remarks"),
+                "last_transfer_date": get_export_transfer_date(asset_projects) or assignment.get("assignment_date"),
+            }
+        )
+
+    return records
+
+
+def copy_excel_row_style(sheet, source_row: int, target_row: int) -> None:
+    for column_index in range(1, sheet.max_column + 1):
+        source_cell = sheet.cell(row=source_row, column=column_index)
+        target_cell = sheet.cell(row=target_row, column=column_index)
+        if source_cell.has_style:
+            target_cell._style = copy(source_cell._style)
+        if source_cell.number_format:
+            target_cell.number_format = source_cell.number_format
+        if source_cell.alignment:
+            target_cell.alignment = copy(source_cell.alignment)
+        if source_cell.font:
+            target_cell.font = copy(source_cell.font)
+        if source_cell.fill:
+            target_cell.fill = copy(source_cell.fill)
+        if source_cell.border:
+            target_cell.border = copy(source_cell.border)
+    sheet.row_dimensions[target_row].height = sheet.row_dimensions[source_row].height
+
+
+def write_excel_record(sheet, row_number: int, columns: dict[str, int], record: dict) -> int:
+    written = 0
+    for field_name, column_number in columns.items():
+        if field_name in {"purchase_date_raw"}:
+            continue
+        if field_name not in record:
+            continue
+        sheet.cell(row=row_number, column=column_number).value = record.get(field_name)
+        written += 1
+    return written
+
+
+def export_supabase_to_excel() -> dict:
+    if not os.path.exists(SYNC_WORKBOOK_PATH):
+        raise ValueError("No official workbook is available. Upload an Excel file first.")
+
+    try:
+        from openpyxl import load_workbook  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Excel export requires openpyxl support: {exc}") from exc
+
+    workbook = load_workbook(SYNC_WORKBOOK_PATH)
+    if EXCEL_SYNC_SHEET_NAME not in workbook.sheetnames:
+        raise ValueError(f"The workbook does not contain the expected sheet '{EXCEL_SYNC_SHEET_NAME}'.")
+
+    sheet = workbook[EXCEL_SYNC_SHEET_NAME]
+    columns = get_excel_header_columns(sheet)
+    if "asset_tag_number" not in columns:
+        raise ValueError("The workbook does not contain the expected Asset Tag column.")
+
+    data_start_row = EXCEL_SYNC_HEADER_ROW + 2
+    asset_tag_column = columns["asset_tag_number"]
+    row_by_tag = {}
+    for row_number in range(data_start_row, sheet.max_row + 1):
+        asset_tag = normalize_asset_tag(sheet.cell(row=row_number, column=asset_tag_column).value or "")
+        if asset_tag and asset_tag not in row_by_tag:
+            row_by_tag[asset_tag] = row_number
+
+    records = build_database_excel_records()
+    updated_rows = 0
+    appended_rows = 0
+    written_cells = 0
+    template_row = max(data_start_row, sheet.max_row)
+
+    for record in records:
+        asset_tag = normalize_asset_tag(record.get("asset_tag_number") or "")
+        if not asset_tag:
+            continue
+        row_number = row_by_tag.get(asset_tag)
+        if row_number:
+            updated_rows += 1
+        else:
+            row_number = sheet.max_row + 1
+            copy_excel_row_style(sheet, template_row, row_number)
+            row_by_tag[asset_tag] = row_number
+            appended_rows += 1
+        written_cells += write_excel_record(sheet, row_number, columns, record)
+
+    ensure_sync_storage()
+    workbook.save(SYNC_EXPORT_PATH)
+
+    return {
+        "path": SYNC_EXPORT_PATH,
+        "updated_rows": updated_rows,
+        "appended_rows": appended_rows,
+        "written_cells": written_cells,
+        "exported_records": len(records),
+        "exported_at": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M"),
     }
 
 
@@ -3570,7 +3744,7 @@ def admin_sync(request: Request):
         "Supabase is the operational working database.",
         "The Excel inventory file remains the official control file.",
         "Imports from Excel should go through controlled sync steps, not direct blind overwrite.",
-        "Exports to Excel should preserve the official reporting structure.",
+        "Exports to Excel should use the official workbook as a formatting template.",
         "Before applying sync changes, the system should show a comparison preview.",
     ]
 
@@ -3677,6 +3851,39 @@ def admin_sync_apply(
         ),
     )
     return RedirectResponse(url="/admin/sync", status_code=303)
+
+
+@app.post("/admin/sync/export")
+def admin_sync_export(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    sync_state = load_sync_state()
+    try:
+        result = export_supabase_to_excel()
+    except ValueError as error:
+        set_flash(request, "error", str(error))
+        return RedirectResponse(url="/admin/sync", status_code=303)
+    except Exception as error:
+        set_flash(request, "error", f"Could not export Supabase data to Excel: {error}")
+        return RedirectResponse(url="/admin/sync", status_code=303)
+
+    sync_state["last_exported_at"] = result["exported_at"]
+    sync_state["last_export_result"] = {
+        "updated_rows": result["updated_rows"],
+        "appended_rows": result["appended_rows"],
+        "written_cells": result["written_cells"],
+        "exported_records": result["exported_records"],
+    }
+    save_sync_state(sync_state)
+
+    filename = f"supabase_inventory_export_{datetime.now(ZoneInfo('Europe/Kyiv')).strftime('%Y%m%d_%H%M')}.xlsx"
+    return FileResponse(
+        result["path"],
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
+    )
 
 
 @app.post("/webhook")

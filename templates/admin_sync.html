@@ -27,8 +27,8 @@
         <ul class="list">
             <li><span>Tracked source file</span><strong>{{ excel_file_name }}</strong></li>
             <li><span>Uploaded at</span><strong>{{ sync_state.uploaded_at or "-" }}</strong></li>
-            <li><span>Current direction</span><strong>Excel to Supabase</strong></li>
-            <li><span>Sync mode</span><strong>Controlled preview apply</strong></li>
+            <li><span>Current direction</span><strong>Bidirectional</strong></li>
+            <li><span>Sync mode</span><strong>Controlled import and generated export</strong></li>
         </ul>
     </article>
  </section>
@@ -40,6 +40,22 @@
         <input type="file" name="excel_file" accept=".xlsx" required>
         <button class="btn" type="submit">Generate preview</button>
     </form>
+</section>
+
+<section class="panel">
+    <h3>Export Workbook</h3>
+    <p class="muted">Generate a workbook from the current Supabase asset registry using the tracked official Excel file as the template.</p>
+    <form method="post" action="/admin/sync/export" class="toolbar">
+        <button class="btn secondary" type="submit">Download Supabase to Excel</button>
+    </form>
+    {% if sync_state.last_export_result %}
+    <div class="flash" style="margin-top: 18px;">
+        Last export: updated {{ sync_state.last_export_result.updated_rows }},
+        appended {{ sync_state.last_export_result.appended_rows }},
+        records {{ sync_state.last_export_result.exported_records }}.
+        {% if sync_state.last_exported_at %}Completed at {{ sync_state.last_exported_at }}.{% endif %}
+    </div>
+    {% endif %}
 </section>
 
 {% if preview %}
