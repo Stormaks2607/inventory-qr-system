@@ -67,7 +67,8 @@ EXCEL_SYNC_COLUMN_MAP = {
     "Purchase price": "purchase_price",
     "Currency": "currency",
     "Purchased to Project No.": "purchased_project_no",
-    "Donor ": "donor_name",
+    "Donor ": "purchased_donor_name",
+    "Donor .1": "transferred_donor_name",
     "Transferred to Project No.": "transferred_project_no",
     "Current Status\n(functionality)": "current_status",
     "Remarks": "remarks",
@@ -569,7 +570,9 @@ def normalize_excel_asset_record(row: dict) -> Optional[dict]:
         "recipient_position": clean_excel_value(row.get("recipient_position")),
         "purchased_project_no": clean_excel_value(row.get("purchased_project_no")),
         "transferred_project_no": clean_excel_value(row.get("transferred_project_no")),
-        "donor_name": clean_excel_value(row.get("donor_name")),
+        "purchased_donor_name": clean_excel_value(row.get("purchased_donor_name") or row.get("donor_name")),
+        "transferred_donor_name": clean_excel_value(row.get("transferred_donor_name") or row.get("donor_name")),
+        "donor_name": clean_excel_value(row.get("transferred_donor_name") or row.get("purchased_donor_name") or row.get("donor_name")),
         "last_transfer_date": parse_excel_sync_date(row.get("last_transfer_date")),
     }
 
@@ -608,26 +611,44 @@ def list_asset_records() -> list[dict]:
     return response.data or []
 
 
-def list_current_assignment_records() -> list[dict]:
-    response = (
-        supabase.table("asset_assignments")
-        .select("*")
-        .is_("return_date", "null")
-        .order("assignment_date", desc=True)
-        .execute()
-    )
-    return response.data or []
+def list_current_assignment_records(batch_size: int = 1000) -> list[dict]:
+    rows: list[dict] = []
+    start = 0
+    while True:
+        response = (
+            supabase.table("asset_assignments")
+            .select("*")
+            .is_("return_date", "null")
+            .order("assignment_date", desc=True)
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        start += len(batch)
+    return rows
 
 
-def list_asset_project_records() -> list[dict]:
-    response = (
-        supabase.table("asset_projects")
-        .select("*")
-        .order("is_primary", desc=True)
-        .order("asset_project_id")
-        .execute()
-    )
-    return response.data or []
+def list_asset_project_records(batch_size: int = 1000) -> list[dict]:
+    rows: list[dict] = []
+    start = 0
+    while True:
+        response = (
+            supabase.table("asset_projects")
+            .select("*")
+            .order("is_primary", desc=True)
+            .order("asset_project_id")
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        start += len(batch)
+    return rows
 
 
 def build_person_lookup(people: list[dict]) -> dict[str, dict]:
@@ -694,8 +715,8 @@ def split_excel_project_numbers(value) -> list[str]:
     return [part.strip() for part in normalized.split("/") if part.strip()]
 
 
-def get_excel_project_allocations(record: dict) -> list[dict]:
-    project_numbers = split_excel_project_numbers(record.get("transferred_project_no") or record.get("purchased_project_no"))
+def get_project_allocations_from_value(value) -> list[dict]:
+    project_numbers = split_excel_project_numbers(value)
     if not project_numbers:
         return []
 
@@ -707,6 +728,18 @@ def get_excel_project_allocations(record: dict) -> list[dict]:
         }
         for project_number in project_numbers
     ]
+
+
+def get_excel_purchased_project_allocations(record: dict) -> list[dict]:
+    return get_project_allocations_from_value(record.get("purchased_project_no"))
+
+
+def get_excel_transferred_project_allocations(record: dict) -> list[dict]:
+    return get_project_allocations_from_value(record.get("transferred_project_no"))
+
+
+def get_excel_project_allocations(record: dict) -> list[dict]:
+    return get_excel_transferred_project_allocations(record) or get_excel_purchased_project_allocations(record)
 
 
 def format_project_allocations(allocations: list[dict]) -> Optional[str]:
@@ -739,18 +772,38 @@ def project_allocation_signature(allocations: list[dict]) -> tuple:
 
 
 def get_current_project_allocations(asset_projects: list[dict]) -> list[dict]:
-    current_projects = [row for row in asset_projects if row.get("is_current") is True]
-    selected_projects = current_projects
-    if not selected_projects:
-        primary_project = select_current_project(asset_projects)
-        selected_projects = [primary_project] if primary_project else []
-
     return [
         {
             "project_number": row.get("project_number"),
             "allocation_percent": normalize_sync_number(row.get("allocation_percent")),
         }
-        for row in selected_projects
+        for row in get_current_project_rows(asset_projects)
+        if row and row.get("project_number")
+    ]
+
+
+def get_current_project_rows(asset_projects: list[dict]) -> list[dict]:
+    current_projects = [row for row in asset_projects if row.get("is_current") is True]
+    if current_projects:
+        return current_projects
+    primary_project = select_current_project(asset_projects)
+    return [primary_project] if primary_project else []
+
+
+def get_purchased_project_rows(asset_projects: list[dict]) -> list[dict]:
+    if not asset_projects:
+        return []
+    non_current_projects = [row for row in asset_projects if row.get("is_current") is not True]
+    return non_current_projects or get_current_project_rows(asset_projects)
+
+
+def get_project_allocations_from_rows(asset_projects: list[dict]) -> list[dict]:
+    return [
+        {
+            "project_number": row.get("project_number"),
+            "allocation_percent": normalize_sync_number(row.get("allocation_percent")),
+        }
+        for row in asset_projects
         if row and row.get("project_number")
     ]
 
@@ -879,20 +932,31 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
                 )
 
         if record.get("_has_project_column"):
-            current_project_allocations = get_current_project_allocations(
-                sync_context["projects_by_asset_id"].get(current_asset.get("asset_id"), [])
-            )
-            excel_project_allocations = get_excel_project_allocations(record)
+            current_asset_projects = sync_context["projects_by_asset_id"].get(current_asset.get("asset_id"), [])
+            current_purchased_allocations = get_project_allocations_from_rows(get_purchased_project_rows(current_asset_projects))
+            current_transferred_allocations = get_project_allocations_from_rows(get_current_project_rows(current_asset_projects))
+            excel_purchased_allocations = get_excel_purchased_project_allocations(record)
+            excel_transferred_allocations = get_excel_transferred_project_allocations(record)
 
-            if excel_project_allocations and project_allocation_signature(current_project_allocations) != project_allocation_signature(excel_project_allocations):
-                changed_fields.append("project_number")
-                current_values["project_number"] = format_project_allocations(current_project_allocations)
-                excel_values["project_number"] = format_project_allocations(excel_project_allocations)
-                for allocation in excel_project_allocations:
+            if excel_purchased_allocations and project_allocation_signature(current_purchased_allocations) != project_allocation_signature(excel_purchased_allocations):
+                changed_fields.append("purchased_project_number")
+                current_values["purchased_project_number"] = format_project_allocations(current_purchased_allocations)
+                excel_values["purchased_project_number"] = format_project_allocations(excel_purchased_allocations)
+                for allocation in excel_purchased_allocations:
                     project_number = allocation.get("project_number")
                     project_key = normalize_sync_match_key(project_number)
                     if project_number and not sync_context["project_lookup"].get(project_key):
-                        warnings.append(f"Project not found: {project_number}")
+                        warnings.append(f"Purchased project not found: {project_number}")
+
+            if excel_transferred_allocations and project_allocation_signature(current_transferred_allocations) != project_allocation_signature(excel_transferred_allocations):
+                changed_fields.append("transferred_project_number")
+                current_values["transferred_project_number"] = format_project_allocations(current_transferred_allocations)
+                excel_values["transferred_project_number"] = format_project_allocations(excel_transferred_allocations)
+                for allocation in excel_transferred_allocations:
+                    project_number = allocation.get("project_number")
+                    project_key = normalize_sync_match_key(project_number)
+                    if project_number and not sync_context["project_lookup"].get(project_key):
+                        warnings.append(f"Transferred project not found: {project_number}")
 
         if changed_fields:
             changed_records.append(
@@ -969,43 +1033,84 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
 
 
 def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
-    excel_project_allocations = get_excel_project_allocations(record)
-    if not excel_project_allocations:
+    purchased_allocations = get_excel_purchased_project_allocations(record)
+    transferred_allocations = get_excel_transferred_project_allocations(record)
+    if not purchased_allocations and not transferred_allocations:
         return 0
 
-    donor = None
-    donor_key = normalize_sync_match_key(record.get("donor_name"))
-    if donor_key:
-        donor = sync_context["donor_lookup"].get(donor_key)
+    purchased_donor = None
+    purchased_donor_key = normalize_sync_match_key(record.get("purchased_donor_name") or record.get("donor_name"))
+    if purchased_donor_key:
+        purchased_donor = sync_context["donor_lookup"].get(purchased_donor_key)
+
+    transferred_donor = None
+    transferred_donor_key = normalize_sync_match_key(record.get("transferred_donor_name") or record.get("donor_name"))
+    if transferred_donor_key:
+        transferred_donor = sync_context["donor_lookup"].get(transferred_donor_key)
 
     project_rows = sync_context.get("projects_by_asset_id", {}).get(asset_id, [])
-    resolved_allocations = []
-    for allocation in excel_project_allocations:
-        project_number = allocation.get("project_number")
-        project = sync_context["project_lookup"].get(normalize_sync_match_key(project_number))
-        if not project:
-            return 0
-        resolved_allocations.append({**allocation, "project": project})
+    existing_by_project_id = {row.get("project_id"): row for row in project_rows}
+
+    def resolve_allocations(allocations: list[dict]) -> Optional[list[dict]]:
+        resolved = []
+        for allocation in allocations:
+            project_number = allocation.get("project_number")
+            project = sync_context["project_lookup"].get(normalize_sync_match_key(project_number))
+            if not project:
+                return None
+            resolved.append({**allocation, "project": project})
+        return resolved
+
+    resolved_purchased = resolve_allocations(purchased_allocations)
+    if resolved_purchased is None:
+        return 0
+
+    resolved_transferred = resolve_allocations(transferred_allocations)
+    if resolved_transferred is None:
+        return 0
 
     supabase.table("asset_projects").update({"is_current": False, "is_primary": False}).eq("asset_id", asset_id).execute()
 
     applied = 0
-    for index, allocation in enumerate(resolved_allocations):
+    has_transferred_project = bool(resolved_transferred)
+    rows_to_apply = []
+    for index, allocation in enumerate(resolved_purchased or []):
+        rows_to_apply.append(
+            {
+                "allocation": allocation,
+                "donor": purchased_donor,
+                "is_current": not has_transferred_project,
+                "is_primary": not has_transferred_project and index == 0,
+                "transfer_date": None,
+                "transfer_reason": None,
+            }
+        )
+    for index, allocation in enumerate(resolved_transferred or []):
+        rows_to_apply.append(
+            {
+                "allocation": allocation,
+                "donor": transferred_donor,
+                "is_current": True,
+                "is_primary": index == 0,
+                "transfer_date": record.get("last_transfer_date"),
+                "transfer_reason": "Excel synchronization",
+            }
+        )
+
+    for item in rows_to_apply:
+        allocation = item["allocation"]
         project = allocation["project"]
-        existing = None
-        for row in project_rows:
-            if row.get("project_id") == project.get("project_id"):
-                existing = row
-                break
+        donor = item["donor"]
+        existing = existing_by_project_id.get(project.get("project_id"))
 
         payload = {
             "project_id": project.get("project_id"),
             "donor_id": donor.get("donor_id") if donor else None,
             "allocation_percent": allocation.get("allocation_percent"),
-            "is_current": True,
-            "is_primary": index == 0,
-            "transfer_date": record.get("last_transfer_date") if record.get("transferred_project_no") else None,
-            "transfer_reason": "Excel synchronization" if record.get("transferred_project_no") else None,
+            "is_current": item["is_current"],
+            "is_primary": item["is_primary"],
+            "transfer_date": item["transfer_date"],
+            "transfer_reason": item["transfer_reason"],
             "condition_at_transfer": record.get("current_status"),
         }
 
@@ -1070,7 +1175,7 @@ def apply_sync_preview(preview: dict) -> dict:
             applied = apply_sync_assignment(asset_id, record, sync_context)
             assignment_updated += applied
             skipped_relationships += 0 if applied else 1
-        if "project_number" in item.get("changed_fields", []):
+        if any(field_name in item.get("changed_fields", []) for field_name in ["project_number", "purchased_project_number", "transferred_project_number"]):
             applied = apply_sync_project(asset_id, record, sync_context)
             project_updated += applied
             skipped_relationships += 0 if applied else 1
@@ -1147,24 +1252,34 @@ def resolve_excel_header_field(header_value) -> Optional[str]:
 def get_excel_header_columns(sheet) -> dict[str, list[int]]:
     header_row_number = EXCEL_SYNC_HEADER_ROW + 1
     columns = {}
+    donor_column_count = 0
 
     for cell in sheet[header_row_number]:
-        field_name = resolve_excel_header_field(cell.value)
+        if normalize_excel_header(cell.value) == "donor":
+            donor_column_count += 1
+            field_name = "purchased_donor_name" if donor_column_count == 1 else "transferred_donor_name"
+        else:
+            field_name = resolve_excel_header_field(cell.value)
         if field_name:
             columns.setdefault(field_name, []).append(cell.column)
 
     return columns
 
 
-def get_export_project_numbers(asset_projects: list[dict]) -> str:
-    allocations = get_current_project_allocations(asset_projects)
+def get_export_project_numbers(asset_projects: list[dict], mode: str) -> str:
+    if mode == "purchased":
+        allocations = get_project_allocations_from_rows(get_purchased_project_rows(asset_projects))
+    else:
+        allocations = get_project_allocations_from_rows(get_current_project_rows(asset_projects))
     project_numbers = [allocation.get("project_number") for allocation in allocations if allocation.get("project_number")]
     return "/".join(project_numbers)
 
 
-def get_export_donor_name(asset_projects: list[dict]) -> Optional[str]:
-    current_projects = [row for row in asset_projects if row.get("is_current") is True]
-    selected_projects = current_projects or asset_projects
+def get_export_donor_name(asset_projects: list[dict], mode: str) -> Optional[str]:
+    if mode == "purchased":
+        selected_projects = get_purchased_project_rows(asset_projects)
+    else:
+        selected_projects = get_current_project_rows(asset_projects)
     for row in selected_projects:
         if row.get("donor_name"):
             return row.get("donor_name")
@@ -1187,7 +1302,8 @@ def build_database_excel_records() -> list[dict]:
         asset_id = asset.get("asset_id")
         assignment = sync_context["assignment_by_asset_id"].get(asset_id) or {}
         asset_projects = sync_context["projects_by_asset_id"].get(asset_id, [])
-        project_numbers = get_export_project_numbers(asset_projects)
+        purchased_project_numbers = get_export_project_numbers(asset_projects, "purchased")
+        transferred_project_numbers = get_export_project_numbers(asset_projects, "transferred")
 
         records.append(
             {
@@ -1206,9 +1322,10 @@ def build_database_excel_records() -> list[dict]:
                 "recipient_position": None,
                 "purchase_price": asset.get("purchase_price"),
                 "currency": asset.get("currency"),
-                "purchased_project_no": project_numbers,
-                "donor_name": get_export_donor_name(asset_projects),
-                "transferred_project_no": project_numbers,
+                "purchased_project_no": purchased_project_numbers,
+                "purchased_donor_name": get_export_donor_name(asset_projects, "purchased"),
+                "transferred_project_no": transferred_project_numbers,
+                "transferred_donor_name": get_export_donor_name(asset_projects, "transferred"),
                 "current_status": assignment.get("status") or asset.get("current_status"),
                 "remarks": asset.get("remarks"),
                 "last_transfer_date": get_export_transfer_date(asset_projects) or assignment.get("assignment_date"),

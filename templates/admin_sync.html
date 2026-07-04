@@ -182,6 +182,8 @@
                                 {% elif field_name == "current_status" %}Status
                                 {% elif field_name == "responsible_person" %}Responsible person
                                 {% elif field_name == "project_number" %}Project
+                                {% elif field_name == "purchased_project_number" %}Purchased project
+                                {% elif field_name == "transferred_project_number" %}Transferred project
                                 {% else %}{{ field_name|replace("_", " ")|title }}
                                 {% endif %}
                             </div>
@@ -207,6 +209,8 @@
                                     {% elif field_name == "current_status" %}Status
                                     {% elif field_name == "responsible_person" %}Responsible person
                                     {% elif field_name == "project_number" %}Project
+                                    {% elif field_name == "purchased_project_number" %}Purchased project
+                                    {% elif field_name == "transferred_project_number" %}Transferred project
                                     {% else %}{{ field_name|replace("_", " ")|title }}
                                     {% endif %}
                                 </strong>: {{ item.current[field_name] if item.current[field_name] is not none else "-" }}
@@ -226,6 +230,8 @@
                                     {% elif field_name == "current_status" %}Status
                                     {% elif field_name == "responsible_person" %}Responsible person
                                     {% elif field_name == "project_number" %}Project
+                                    {% elif field_name == "purchased_project_number" %}Purchased project
+                                    {% elif field_name == "transferred_project_number" %}Transferred project
                                     {% else %}{{ field_name|replace("_", " ")|title }}
                                     {% endif %}
                                 </strong>: {{ item.excel[field_name] if item.excel[field_name] is not none else "-" }}
