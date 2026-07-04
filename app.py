@@ -651,6 +651,29 @@ def list_asset_project_records(batch_size: int = 1000) -> list[dict]:
     return rows
 
 
+_ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED: Optional[bool] = None
+
+
+def asset_project_purchase_origin_supported() -> bool:
+    global _ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED
+    if _ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED is not None:
+        return _ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED
+
+    try:
+        supabase.table("asset_projects").select("is_purchase_origin").limit(1).execute()
+    except Exception as error:
+        if isinstance(error, APIError):
+            message = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
+            if "is_purchase_origin" in message and "column" in message:
+                _ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED = False
+                return False
+        _ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED = False
+        return False
+
+    _ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED = True
+    return True
+
+
 def build_person_lookup(people: list[dict]) -> dict[str, dict]:
     lookup = {}
     for person in people:
@@ -793,6 +816,9 @@ def get_current_project_rows(asset_projects: list[dict]) -> list[dict]:
 def get_purchased_project_rows(asset_projects: list[dict]) -> list[dict]:
     if not asset_projects:
         return []
+    if any("is_purchase_origin" in row for row in asset_projects):
+        purchase_origin_projects = [row for row in asset_projects if row.get("is_purchase_origin") is True]
+        return purchase_origin_projects or get_current_project_rows(asset_projects)
     non_current_projects = [row for row in asset_projects if row.get("is_current") is not True]
     return non_current_projects or get_current_project_rows(asset_projects)
 
@@ -864,6 +890,7 @@ def build_sync_context() -> dict:
         "donor_lookup": build_donor_lookup(donors),
         "assignment_by_asset_id": assignment_by_asset_id,
         "projects_by_asset_id": projects_by_asset_id,
+        "supports_asset_project_purchase_origin": asset_project_purchase_origin_supported(),
     }
 
 
@@ -1050,6 +1077,7 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
 
     project_rows = sync_context.get("projects_by_asset_id", {}).get(asset_id, [])
     existing_by_project_id = {row.get("project_id"): row for row in project_rows}
+    supports_purchase_origin = sync_context.get("supports_asset_project_purchase_origin") is True
 
     def resolve_allocations(allocations: list[dict]) -> Optional[list[dict]]:
         resolved = []
@@ -1069,50 +1097,74 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
     if resolved_transferred is None:
         return 0
 
-    supabase.table("asset_projects").update({"is_current": False, "is_primary": False}).eq("asset_id", asset_id).execute()
+    reset_payload = {"is_current": False, "is_primary": False}
+    if supports_purchase_origin:
+        reset_payload["is_purchase_origin"] = False
+    supabase.table("asset_projects").update(reset_payload).eq("asset_id", asset_id).execute()
 
     applied = 0
     has_transferred_project = bool(resolved_transferred)
-    rows_to_apply = []
-    for index, allocation in enumerate(resolved_purchased or []):
-        rows_to_apply.append(
+    rows_by_project_id = {}
+
+    def merge_project_payload(
+        allocation: dict,
+        donor: Optional[dict],
+        is_purchase_origin: bool,
+        is_current: bool,
+        is_primary: bool,
+        transfer_date: Optional[str],
+        transfer_reason: Optional[str],
+    ) -> None:
+        project = allocation["project"]
+        project_id = project.get("project_id")
+        payload = rows_by_project_id.setdefault(
+            project_id,
             {
-                "allocation": allocation,
-                "donor": purchased_donor,
-                "is_current": not has_transferred_project,
-                "is_primary": not has_transferred_project and index == 0,
+                "project_id": project_id,
+                "donor_id": donor.get("donor_id") if donor else None,
+                "allocation_percent": allocation.get("allocation_percent"),
+                "is_current": False,
+                "is_primary": False,
                 "transfer_date": None,
                 "transfer_reason": None,
-            }
+                "condition_at_transfer": record.get("current_status"),
+            },
+        )
+        if donor:
+            payload["donor_id"] = donor.get("donor_id")
+        payload["allocation_percent"] = allocation.get("allocation_percent")
+        payload["is_current"] = payload["is_current"] or is_current
+        payload["is_primary"] = payload["is_primary"] or is_primary
+        if transfer_date:
+            payload["transfer_date"] = transfer_date
+        if transfer_reason:
+            payload["transfer_reason"] = transfer_reason
+        if supports_purchase_origin:
+            payload["is_purchase_origin"] = payload.get("is_purchase_origin", False) or is_purchase_origin
+
+    for index, allocation in enumerate(resolved_purchased or []):
+        merge_project_payload(
+            allocation=allocation,
+            donor=purchased_donor,
+            is_purchase_origin=True,
+            is_current=not has_transferred_project,
+            is_primary=not has_transferred_project and index == 0,
+            transfer_date=None,
+            transfer_reason=None,
         )
     for index, allocation in enumerate(resolved_transferred or []):
-        rows_to_apply.append(
-            {
-                "allocation": allocation,
-                "donor": transferred_donor,
-                "is_current": True,
-                "is_primary": index == 0,
-                "transfer_date": record.get("last_transfer_date"),
-                "transfer_reason": "Excel synchronization",
-            }
+        merge_project_payload(
+            allocation=allocation,
+            donor=transferred_donor,
+            is_purchase_origin=False,
+            is_current=True,
+            is_primary=index == 0,
+            transfer_date=record.get("last_transfer_date"),
+            transfer_reason="Excel synchronization",
         )
 
-    for item in rows_to_apply:
-        allocation = item["allocation"]
-        project = allocation["project"]
-        donor = item["donor"]
-        existing = existing_by_project_id.get(project.get("project_id"))
-
-        payload = {
-            "project_id": project.get("project_id"),
-            "donor_id": donor.get("donor_id") if donor else None,
-            "allocation_percent": allocation.get("allocation_percent"),
-            "is_current": item["is_current"],
-            "is_primary": item["is_primary"],
-            "transfer_date": item["transfer_date"],
-            "transfer_reason": item["transfer_reason"],
-            "condition_at_transfer": record.get("current_status"),
-        }
+    for project_id, payload in rows_by_project_id.items():
+        existing = existing_by_project_id.get(project_id)
 
         if existing:
             supabase.table("asset_projects").update(payload).eq("asset_project_id", existing["asset_project_id"]).execute()
@@ -1796,6 +1848,8 @@ def describe_asset_project_error(error: Exception) -> str:
         return "The database schema is missing allocation_amount for asset project funding."
     if "funding_note" in combined and "column" in combined:
         return "The database schema is missing funding_note for asset project funding."
+    if "is_purchase_origin" in combined and "column" in combined:
+        return "The database schema is missing is_purchase_origin for asset project funding."
 
     return f"Project funding could not be saved: {message}"
 
@@ -1833,6 +1887,8 @@ def get_asset_project_total_percent(asset_id: int, exclude_asset_project_id: Opt
     for row in get_asset_projects(asset_id):
         if exclude_asset_project_id is not None and row.get("asset_project_id") == exclude_asset_project_id:
             continue
+        if row.get("is_current") is False and row.get("is_purchase_origin") is True:
+            continue
         value = row.get("allocation_percent")
         if value is not None:
             try:
@@ -1844,15 +1900,23 @@ def get_asset_project_total_percent(asset_id: int, exclude_asset_project_id: Opt
 
 def get_asset_project_form_context(asset_id: int) -> dict:
     asset_projects = get_asset_projects(asset_id)
-    allocated_percent = sum(float(row.get("allocation_percent") or 0) for row in asset_projects)
+    current_project_rows = get_current_project_rows(asset_projects)
+    purchased_project_rows = get_purchased_project_rows(asset_projects)
+    allocated_percent = sum(float(row.get("allocation_percent") or 0) for row in current_project_rows)
     return {
         "asset_projects": asset_projects,
         "projects": list_projects(),
         "donors": list_donors(),
         "asset_project_summary": {
             "allocation_count": len(asset_projects),
+            "purchase_origin_count": len(purchased_project_rows),
+            "current_count": len(current_project_rows),
             "allocated_percent": round(allocated_percent, 2),
-            "is_complete": abs(allocated_percent - 100.0) < 0.001 if asset_projects else False,
+            "is_complete": abs(allocated_percent - 100.0) < 0.001 if current_project_rows else False,
+        },
+        "asset_project_roles": {
+            "purchased": purchased_project_rows,
+            "current": current_project_rows,
         },
     }
 
@@ -3726,6 +3790,8 @@ def admin_asset_project_create(
     currency: str = Form(""),
     funding_note: str = Form(""),
     is_primary: Optional[str] = Form(None),
+    is_current: Optional[str] = Form(None),
+    is_purchase_origin: Optional[str] = Form(None),
 ):
     redirect = require_admin(request)
     if redirect:
@@ -3764,8 +3830,11 @@ def admin_asset_project_create(
         "currency": currency or None,
         "funding_note": funding_note or None,
         "is_primary": is_primary == "on",
-        "is_current": True,
+        "is_current": is_current == "on",
+        "is_purchase_origin": is_purchase_origin == "on",
     }
+    if not asset_project_purchase_origin_supported():
+        payload.pop("is_purchase_origin", None)
 
     try:
         if payload["is_primary"]:
@@ -3791,6 +3860,8 @@ def admin_asset_project_update(
     currency: str = Form(""),
     funding_note: str = Form(""),
     is_primary: Optional[str] = Form(None),
+    is_current: Optional[str] = Form(None),
+    is_purchase_origin: Optional[str] = Form(None),
 ):
     redirect = require_admin(request)
     if redirect:
@@ -3828,8 +3899,11 @@ def admin_asset_project_update(
         "currency": currency or None,
         "funding_note": funding_note or None,
         "is_primary": is_primary == "on",
-        "is_current": True,
+        "is_current": is_current == "on",
+        "is_purchase_origin": is_purchase_origin == "on",
     }
+    if not asset_project_purchase_origin_supported():
+        payload.pop("is_purchase_origin", None)
 
     try:
         if payload["is_primary"]:

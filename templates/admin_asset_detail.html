@@ -79,19 +79,69 @@
 <section class="panel" style="margin-top: 24px;">
     <div class="toolbar" style="justify-content: space-between; align-items: center;">
         <div>
-            <h3 style="margin-bottom: 6px;">Project Funding</h3>
-            <p class="muted" style="margin: 0;">One asset can be funded by one or many projects. Use allocations to record split funding shares.</p>
+            <h3 style="margin-bottom: 6px;">Project Assignment</h3>
+            <p class="muted" style="margin: 0;">Track the project that originally purchased the asset separately from the project that currently uses it.</p>
         </div>
         <div class="muted">
-            Allocations: <strong>{{ asset_project_summary.allocation_count }}</strong> |
-            Total allocated: <strong>{{ asset_project_summary.allocated_percent }}%</strong>
-            {% if asset_projects and not asset_project_summary.is_complete %}
-            | <span style="color: #8a5710;">Distribution not yet 100%</span>
-            {% endif %}
+            Purchase records: <strong>{{ asset_project_summary.purchase_origin_count }}</strong> |
+            Current records: <strong>{{ asset_project_summary.current_count }}</strong>
         </div>
     </div>
 
+    <section class="two-column" style="margin-top: 18px;">
+        <div>
+            <h3>Purchased Under</h3>
+            {% if asset_project_roles.purchased %}
+            <ul class="list">
+                {% for item in asset_project_roles.purchased %}
+                <li>
+                    <span>
+                        <strong>{{ item.project_number }}</strong>
+                        {% if item.project_name %}<br><span class="muted">{{ item.project_name }}</span>{% endif %}
+                    </span>
+                    <strong>{{ item.donor_name or "-" }}</strong>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="muted">No purchase-origin project is linked to this asset.</p>
+            {% endif %}
+        </div>
+
+        <div>
+            <h3>Current Project</h3>
+            {% if asset_project_roles.current %}
+            <ul class="list">
+                {% for item in asset_project_roles.current %}
+                <li>
+                    <span>
+                        <strong>{{ item.project_number }}</strong>
+                        {% if item.project_name %}<br><span class="muted">{{ item.project_name }}</span>{% endif %}
+                    </span>
+                    <strong>{{ item.donor_name or "-" }}</strong>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="muted">No current project is linked to this asset.</p>
+            {% endif %}
+        </div>
+    </section>
+
     {% if asset_projects %}
+    <div class="toolbar" style="justify-content: space-between; align-items: center; margin-top: 24px;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Project History And Funding Details</h3>
+            <p class="muted" style="margin: 0;">Detailed allocation records used for audit, split funding, and Excel synchronization.</p>
+        </div>
+        <div class="muted">
+            Allocations: <strong>{{ asset_project_summary.allocation_count }}</strong> |
+            Current total: <strong>{{ asset_project_summary.allocated_percent }}%</strong>
+            {% if asset_project_roles.current and not asset_project_summary.is_complete %}
+            | <span style="color: #8a5710;">Current distribution not yet 100%</span>
+            {% endif %}
+        </div>
+    </div>
     <div class="table-wrap">
         <table>
             <thead>
@@ -101,6 +151,7 @@
                     <th>Share %</th>
                     <th>Amount</th>
                     <th>Currency</th>
+                    <th>Role</th>
                     <th>Primary</th>
                     <th>Notes</th>
                     <th>Actions</th>
@@ -117,6 +168,11 @@
                     <td>{{ item.allocation_percent if item.allocation_percent is not none else "-" }}</td>
                     <td>{{ item.allocation_amount if item.allocation_amount is not none else "-" }}</td>
                     <td>{{ item.currency or "-" }}</td>
+                    <td>
+                        {% if item.is_purchase_origin %}<div>Purchased</div>{% endif %}
+                        {% if item.is_current %}<div>Current</div>{% endif %}
+                        {% if not item.is_purchase_origin and not item.is_current %}-{% endif %}
+                    </td>
                     <td>{% if item.is_primary %}Yes{% else %}-{% endif %}</td>
                     <td>{{ item.funding_note or "-" }}</td>
                     <td>
@@ -164,6 +220,14 @@
 
                                 <div class="field" style="align-content: end;">
                                     <label><input name="is_primary" type="checkbox" {% if item.is_primary %}checked{% endif %}> Primary project</label>
+                                </div>
+
+                                <div class="field" style="align-content: end;">
+                                    <label><input name="is_purchase_origin" type="checkbox" {% if item.is_purchase_origin %}checked{% endif %}> Purchase origin</label>
+                                </div>
+
+                                <div class="field" style="align-content: end;">
+                                    <label><input name="is_current" type="checkbox" {% if item.is_current %}checked{% endif %}> Current project</label>
                                 </div>
 
                                 <div class="field full">
@@ -238,6 +302,14 @@
 
             <div class="field" style="align-content: end;">
                 <label><input name="is_primary" type="checkbox"> Primary project</label>
+            </div>
+
+            <div class="field" style="align-content: end;">
+                <label><input name="is_purchase_origin" type="checkbox" checked> Purchase origin</label>
+            </div>
+
+            <div class="field" style="align-content: end;">
+                <label><input name="is_current" type="checkbox" checked> Current project</label>
             </div>
 
             <div class="field full">
