@@ -1088,18 +1088,70 @@ def normalize_excel_header(value) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
-def get_excel_header_columns(sheet) -> dict[str, int]:
-    header_row_number = EXCEL_SYNC_HEADER_ROW + 1
+def resolve_excel_header_field(header_value) -> Optional[str]:
+    normalized = normalize_excel_header(header_value)
     expected_headers = {
         normalize_excel_header(excel_header): field_name
         for excel_header, field_name in EXCEL_SYNC_COLUMN_MAP.items()
     }
+    if normalized in expected_headers:
+        return expected_headers[normalized]
+
+    if "asset tag" in normalized and ("inventory" in normalized or "code" in normalized):
+        return "asset_tag_number"
+    if normalized.startswith("previous inventory"):
+        return "inventory_code_old"
+    if normalized == "asset classification":
+        return "asset_classification"
+    if normalized == "asset sub classification":
+        return "asset_sub_classification"
+    if normalized == "item description":
+        return "item_description"
+    if normalized.startswith("brand"):
+        return "brand_make"
+    if normalized == "model":
+        return "model"
+    if normalized.startswith("serial"):
+        return "serial_number"
+    if normalized == "quantity":
+        return "quantity"
+    if normalized == "location":
+        return "location_name"
+    if normalized == "department":
+        return "department_name"
+    if normalized == "name of recipient":
+        return "recipient_name"
+    if normalized == "position of recipient":
+        return "recipient_position"
+    if normalized.startswith("date") and "purchase" in normalized:
+        return "purchase_date_raw"
+    if normalized == "purchase price":
+        return "purchase_price"
+    if normalized == "currency":
+        return "currency"
+    if normalized.startswith("purchased to proj"):
+        return "purchased_project_no"
+    if normalized == "donor":
+        return "donor_name"
+    if normalized.startswith("transferred to proj"):
+        return "transferred_project_no"
+    if normalized.startswith("current status"):
+        return "current_status"
+    if normalized == "remarks":
+        return "remarks"
+    if normalized.startswith("last date"):
+        return "last_transfer_date"
+    return None
+
+
+def get_excel_header_columns(sheet) -> dict[str, list[int]]:
+    header_row_number = EXCEL_SYNC_HEADER_ROW + 1
     columns = {}
 
     for cell in sheet[header_row_number]:
-        field_name = expected_headers.get(normalize_excel_header(cell.value))
+        field_name = resolve_excel_header_field(cell.value)
         if field_name:
-            columns[field_name] = cell.column
+            columns.setdefault(field_name, []).append(cell.column)
 
     return columns
 
@@ -1185,16 +1237,46 @@ def copy_excel_row_style(sheet, source_row: int, target_row: int) -> None:
     sheet.row_dimensions[target_row].height = sheet.row_dimensions[source_row].height
 
 
-def write_excel_record(sheet, row_number: int, columns: dict[str, int], record: dict) -> int:
+def get_first_excel_column(columns: dict[str, list[int]], field_name: str) -> Optional[int]:
+    column_numbers = columns.get(field_name) or []
+    return column_numbers[0] if column_numbers else None
+
+
+def write_excel_record(sheet, row_number: int, columns: dict[str, list[int]], record: dict) -> int:
     written = 0
-    for field_name, column_number in columns.items():
+    for field_name, column_numbers in columns.items():
         if field_name in {"purchase_date_raw"}:
             continue
         if field_name not in record:
             continue
-        sheet.cell(row=row_number, column=column_number).value = record.get(field_name)
-        written += 1
+        for column_number in column_numbers:
+            sheet.cell(row=row_number, column=column_number).value = record.get(field_name)
+            written += 1
     return written
+
+
+def expand_excel_data_ranges(sheet, header_row_number: int, last_data_row: int) -> None:
+    try:
+        from openpyxl.utils import get_column_letter, range_boundaries  # type: ignore
+    except Exception:
+        return
+
+    for table in sheet.tables.values():
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        if min_row <= header_row_number <= max_row and last_data_row > max_row:
+            table.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{last_data_row}"
+            )
+
+    auto_filter_ref = getattr(sheet.auto_filter, "ref", None)
+    if auto_filter_ref:
+        min_col, min_row, max_col, max_row = range_boundaries(auto_filter_ref)
+        if min_row <= header_row_number <= max_row and last_data_row > max_row:
+            sheet.auto_filter.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{last_data_row}"
+            )
 
 
 def export_supabase_to_excel() -> dict:
@@ -1215,8 +1297,11 @@ def export_supabase_to_excel() -> dict:
     if "asset_tag_number" not in columns:
         raise ValueError("The workbook does not contain the expected Asset Tag column.")
 
+    header_row_number = EXCEL_SYNC_HEADER_ROW + 1
     data_start_row = EXCEL_SYNC_HEADER_ROW + 2
-    asset_tag_column = columns["asset_tag_number"]
+    asset_tag_column = get_first_excel_column(columns, "asset_tag_number")
+    if not asset_tag_column:
+        raise ValueError("The workbook does not contain the expected Asset Tag column.")
     row_by_tag = {}
     for row_number in range(data_start_row, sheet.max_row + 1):
         asset_tag = normalize_asset_tag(sheet.cell(row=row_number, column=asset_tag_column).value or "")
@@ -1227,7 +1312,8 @@ def export_supabase_to_excel() -> dict:
     updated_rows = 0
     appended_rows = 0
     written_cells = 0
-    template_row = max(data_start_row, sheet.max_row)
+    last_data_row = max(row_by_tag.values(), default=data_start_row - 1)
+    template_row = max(data_start_row, last_data_row)
 
     for record in records:
         asset_tag = normalize_asset_tag(record.get("asset_tag_number") or "")
@@ -1237,11 +1323,15 @@ def export_supabase_to_excel() -> dict:
         if row_number:
             updated_rows += 1
         else:
-            row_number = sheet.max_row + 1
+            row_number = last_data_row + 1
             copy_excel_row_style(sheet, template_row, row_number)
             row_by_tag[asset_tag] = row_number
+            last_data_row = row_number
+            template_row = row_number
             appended_rows += 1
         written_cells += write_excel_record(sheet, row_number, columns, record)
+
+    expand_excel_data_ranges(sheet, header_row_number, last_data_row)
 
     ensure_sync_storage()
     workbook.save(SYNC_EXPORT_PATH)
