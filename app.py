@@ -2420,7 +2420,78 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
         "current_status_select": current_status if current_status in standard_status_values else ("__custom__" if current_status else ""),
         "current_status_custom": current_status if current_status and current_status not in standard_status_values else "",
         "remarks": asset.get("remarks") or "",
+        "payment_date": "",
+        "payment_amount": "",
+        "payment_currency": asset.get("currency") or "",
+        "payment_status": "paid",
+        "payment_notes": "",
     }
+
+
+def parse_payment_date_field(value: str) -> Optional[str]:
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}", normalized):
+        normalized = f"{normalized}-01"
+    for date_format in ("%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(normalized, date_format).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    raise ValueError("Payment date must be a valid date.")
+
+
+def get_next_payment_number(asset_id: int) -> int:
+    response = (
+        supabase.table("asset_payments")
+        .select("payment_number")
+        .eq("asset_id", asset_id)
+        .order("payment_number", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        return 1
+    return int(response.data[0].get("payment_number") or 0) + 1
+
+
+def build_asset_payment_payload(
+    asset_id: int,
+    payment_number: Optional[int],
+    payment_date: str,
+    payment_amount: str,
+    currency: str,
+    payment_status: str,
+    notes: str,
+    fallback_amount: Optional[float] = None,
+) -> dict:
+    parsed_date = parse_payment_date_field(payment_date)
+    parsed_amount = parse_float_field(payment_amount)
+    if parsed_amount is None:
+        parsed_amount = fallback_amount
+    if not parsed_date:
+        raise ValueError("Payment date is required.")
+    if parsed_amount is None:
+        raise ValueError("Payment amount is required.")
+
+    return {
+        "asset_id": asset_id,
+        "payment_number": payment_number if payment_number is not None else get_next_payment_number(asset_id),
+        "payment_date": parsed_date,
+        "payment_amount": parsed_amount,
+        "currency": currency.strip() or "EUR",
+        "payment_status": payment_status.strip() or "paid",
+        "notes": notes.strip() or None,
+    }
+
+
+def describe_asset_payment_error(error: Exception) -> str:
+    if isinstance(error, ValueError):
+        return str(error)
+    if not isinstance(error, APIError):
+        return "Payment could not be saved due to an unexpected database error."
+    return f"Payment could not be saved: {error.message or 'Database error'}"
 
 
 def list_lookup_values(table_name: str, column_name: str, fallback: Optional[list[str]] = None) -> list[str]:
@@ -3111,6 +3182,11 @@ def admin_asset_create(
     current_status: str = Form(""),
     current_status_custom: str = Form(""),
     remarks: str = Form(""),
+    payment_date: str = Form(""),
+    payment_amount: str = Form(""),
+    payment_currency: str = Form(""),
+    payment_status: str = Form("paid"),
+    payment_notes: str = Form(""),
     confirm_nonstandard_asset_tag: str = Form(""),
 ):
     redirect = require_admin(request)
@@ -3134,6 +3210,11 @@ def admin_asset_create(
         "current_status_select": current_status.strip(),
         "current_status_custom": current_status_custom.strip(),
         "remarks": remarks.strip(),
+        "payment_date": payment_date.strip(),
+        "payment_amount": payment_amount.strip(),
+        "payment_currency": payment_currency.strip() or currency.strip(),
+        "payment_status": payment_status.strip() or "paid",
+        "payment_notes": payment_notes.strip(),
     }
 
     format_error = validate_asset_tag_format(asset_form["asset_tag_number"])
@@ -3239,6 +3320,35 @@ def admin_asset_create(
             status_code=400,
         )
 
+    if asset_form["payment_date"] or asset_form["payment_amount"]:
+        try:
+            build_asset_payment_payload(
+                asset_id=0,
+                payment_number=1,
+                payment_date=asset_form["payment_date"],
+                payment_amount=asset_form["payment_amount"],
+                currency=asset_form["payment_currency"],
+                payment_status=asset_form["payment_status"],
+                notes=asset_form["payment_notes"],
+                fallback_amount=insert_data.get("purchase_price"),
+            )
+        except Exception as error:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin_asset_create.html",
+                context={
+                    "asset_form": asset_form,
+                    **get_asset_create_options(),
+                    "asset_tag_standard": asset_tag_standard,
+                    "asset_tag_warning": asset_tag_warning,
+                    "flash": {"level": "error", "message": describe_asset_payment_error(error)},
+                    "active_page": "assets",
+                    "page_title": "New Asset",
+                    "admin_username": request.session.get("admin_username"),
+                },
+                status_code=400,
+            )
+
     try:
         response = (
             supabase.table("assets")
@@ -3271,6 +3381,23 @@ def admin_asset_create(
     if not created_asset_id:
         set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
         return RedirectResponse(url="/admin/assets", status_code=303)
+
+    if asset_form["payment_date"] or asset_form["payment_amount"]:
+        try:
+            payment_payload = build_asset_payment_payload(
+                asset_id=created_asset_id,
+                payment_number=1,
+                payment_date=asset_form["payment_date"],
+                payment_amount=asset_form["payment_amount"],
+                currency=asset_form["payment_currency"],
+                payment_status=asset_form["payment_status"],
+                notes=asset_form["payment_notes"],
+                fallback_amount=parse_float_field(asset_form["purchase_price"]),
+            )
+            supabase.table("asset_payments").insert(payment_payload).execute()
+        except Exception as error:
+            set_flash(request, "error", f"Asset was created, but payment was not saved: {describe_asset_payment_error(error)}")
+            return RedirectResponse(url=f"/admin/assets/{created_asset_id}", status_code=303)
 
     set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
     return RedirectResponse(url=f"/admin/assets/{created_asset_id}", status_code=303)
@@ -3980,6 +4107,104 @@ def admin_asset_assignment_update(
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     set_flash(request, "success", "Assignment was updated.")
+    return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+
+@app.post("/admin/assets/{asset_id}/payments")
+def admin_asset_payment_create(
+    request: Request,
+    asset_id: int,
+    payment_date: str = Form(""),
+    payment_amount: str = Form(""),
+    currency: str = Form(""),
+    payment_status: str = Form("paid"),
+    notes: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    try:
+        payload = build_asset_payment_payload(
+            asset_id=asset_id,
+            payment_number=None,
+            payment_date=payment_date,
+            payment_amount=payment_amount,
+            currency=currency or asset.get("currency") or "EUR",
+            payment_status=payment_status,
+            notes=notes,
+        )
+        supabase.table("asset_payments").insert(payload).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_asset_payment_error(error))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    set_flash(request, "success", "Payment was added.")
+    return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+
+@app.post("/admin/assets/{asset_id}/payments/{payment_id}")
+def admin_asset_payment_update(
+    request: Request,
+    asset_id: int,
+    payment_id: int,
+    payment_number: str = Form(""),
+    payment_date: str = Form(""),
+    payment_amount: str = Form(""),
+    currency: str = Form(""),
+    payment_status: str = Form("paid"),
+    notes: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    try:
+        parsed_number = int(payment_number.strip()) if payment_number.strip() else get_next_payment_number(asset_id)
+        payload = build_asset_payment_payload(
+            asset_id=asset_id,
+            payment_number=parsed_number,
+            payment_date=payment_date,
+            payment_amount=payment_amount,
+            currency=currency or asset.get("currency") or "EUR",
+            payment_status=payment_status,
+            notes=notes,
+        )
+        payload.pop("asset_id", None)
+        supabase.table("asset_payments").update(payload).eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_asset_payment_error(error))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    set_flash(request, "success", "Payment was updated.")
+    return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+
+@app.post("/admin/assets/{asset_id}/payments/{payment_id}/delete")
+def admin_asset_payment_delete(request: Request, asset_id: int, payment_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    try:
+        supabase.table("asset_payments").delete().eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_asset_payment_error(error))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+
+    set_flash(request, "success", "Payment was removed.")
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
 

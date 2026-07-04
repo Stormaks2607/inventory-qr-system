@@ -163,6 +163,40 @@
             <textarea id="remarks" name="remarks" rows="3">{{ asset_form.remarks }}</textarea>
         </div>
 
+        <div class="field full">
+            <h3 style="margin: 0;">First Payment</h3>
+        </div>
+
+        <div class="field">
+            <label for="payment_date">Payment date</label>
+            <input id="payment_date" name="payment_date" type="date" value="{{ asset_form.payment_date }}">
+        </div>
+
+        <div class="field">
+            <label for="payment_amount">Payment amount</label>
+            <input id="payment_amount" name="payment_amount" type="text" value="{{ asset_form.payment_amount }}" placeholder="Defaults to purchase price">
+        </div>
+
+        <div class="field">
+            <label for="payment_currency">Payment currency</label>
+            <select id="payment_currency" name="payment_currency">
+                <option value="">Use asset currency</option>
+                {% for option in currency_options %}
+                <option value="{{ option }}" {% if asset_form.payment_currency == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="payment_status">Payment status</label>
+            <input id="payment_status" name="payment_status" type="text" value="{{ asset_form.payment_status }}">
+        </div>
+
+        <div class="field full">
+            <label for="payment_notes">Payment notes</label>
+            <textarea id="payment_notes" name="payment_notes" rows="2">{{ asset_form.payment_notes }}</textarea>
+        </div>
+
         <div class="toolbar" style="margin-bottom: 0;">
             <button class="btn" type="submit">Create asset</button>
             <a class="btn secondary" href="/admin/assets">Cancel</a>

@@ -101,6 +101,7 @@
                     <th>Currency</th>
                     <th>Status</th>
                     <th>Notes</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -113,6 +114,50 @@
                     <td>{{ payment.currency or "-" }}</td>
                     <td>{{ payment.payment_status or "-" }}</td>
                     <td>{{ payment.notes or "-" }}</td>
+                    <td>
+                        <details>
+                            <summary>Edit</summary>
+                            <form method="post" action="/admin/assets/{{ asset.asset_id }}/payments/{{ payment.payment_id }}" class="form-grid" style="margin-top: 12px; min-width: 420px;">
+                                <div class="field">
+                                    <label>Payment #</label>
+                                    <input name="payment_number" type="text" value="{{ payment.payment_number or '' }}">
+                                </div>
+
+                                <div class="field">
+                                    <label>Payment date</label>
+                                    <input name="payment_date" type="date" value="{{ payment.payment_date or '' }}">
+                                </div>
+
+                                <div class="field">
+                                    <label>Amount</label>
+                                    <input name="payment_amount" type="text" value="{{ payment.payment_amount or '' }}">
+                                </div>
+
+                                <div class="field">
+                                    <label>Currency</label>
+                                    <input name="currency" type="text" value="{{ payment.currency or '' }}">
+                                </div>
+
+                                <div class="field">
+                                    <label>Status</label>
+                                    <input name="payment_status" type="text" value="{{ payment.payment_status or '' }}">
+                                </div>
+
+                                <div class="field full">
+                                    <label>Notes</label>
+                                    <textarea name="notes">{{ payment.notes or '' }}</textarea>
+                                </div>
+
+                                <div class="toolbar" style="margin-bottom: 0;">
+                                    <button class="btn" type="submit">Save payment</button>
+                                </div>
+                            </form>
+
+                            <form method="post" action="/admin/assets/{{ asset.asset_id }}/payments/{{ payment.payment_id }}/delete" style="margin-top: 10px;">
+                                <button class="btn danger" type="submit">Remove payment</button>
+                            </form>
+                        </details>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -121,6 +166,40 @@
     {% else %}
     <p class="muted">No payment records are linked to this asset yet.</p>
     {% endif %}
+
+    <div style="margin-top: 24px;">
+        <h3>Add Payment</h3>
+        <form method="post" action="/admin/assets/{{ asset.asset_id }}/payments" class="form-grid">
+            <div class="field">
+                <label for="new_payment_date">Payment date</label>
+                <input id="new_payment_date" name="payment_date" type="date" required>
+            </div>
+
+            <div class="field">
+                <label for="new_payment_amount">Amount</label>
+                <input id="new_payment_amount" name="payment_amount" type="text" required>
+            </div>
+
+            <div class="field">
+                <label for="new_payment_currency">Currency</label>
+                <input id="new_payment_currency" name="currency" type="text" value="{{ asset.currency or 'EUR' }}">
+            </div>
+
+            <div class="field">
+                <label for="new_payment_status">Status</label>
+                <input id="new_payment_status" name="payment_status" type="text" value="paid">
+            </div>
+
+            <div class="field full">
+                <label for="new_payment_notes">Notes</label>
+                <textarea id="new_payment_notes" name="notes"></textarea>
+            </div>
+
+            <div class="toolbar" style="margin-bottom: 0;">
+                <button class="btn" type="submit">Add payment</button>
+            </div>
+        </form>
+    </div>
 </section>
 
 <section class="panel" style="margin-top: 24px;">
