@@ -544,6 +544,101 @@ def parse_excel_sync_date(value) -> Optional[str]:
     return None
 
 
+def parse_excel_purchase_period(value) -> Optional[str]:
+    parsed_date = parse_excel_sync_date(value)
+    if parsed_date:
+        return parsed_date
+
+    normalized = normalize_sync_string(value)
+    if not normalized:
+        return None
+
+    match = re.search(r"\b(\d{1,2})[.\-/](\d{4})\b", normalized)
+    if match:
+        month = int(match.group(1))
+        year = int(match.group(2))
+        if 1 <= month <= 12:
+            return f"{year:04d}-{month:02d}-01"
+
+    match = re.search(r"\b(\d{4})[.\-/](\d{1,2})\b", normalized)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        if 1 <= month <= 12:
+            return f"{year:04d}-{month:02d}-01"
+
+    return None
+
+
+def format_purchase_period(payment_date: Optional[str]) -> Optional[str]:
+    if not payment_date:
+        return None
+    try:
+        parsed = datetime.strptime(str(payment_date)[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+    return parsed.strftime("%m-%Y")
+
+
+def parse_payment_amount(value: str) -> Optional[float]:
+    normalized = value.replace(" ", "").replace(",", ".")
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def get_excel_payment_records(record: dict) -> list[dict]:
+    remarks = normalize_sync_string(record.get("remarks")) or ""
+    payments = []
+    amount_pattern = r"(?:\d{1,3}(?:[\s\u00a0]\d{3})+|\d+)(?:[,.]\d{1,2})?"
+    pattern = re.compile(
+        rf"(?P<amount>{amount_pattern})\s*"
+        r"(?P<currency>[A-Z]{3})\s*-\s*"
+        r"(?P<date>\d{1,2}[./-]\d{1,2}[./-]\d{4})"
+        rf"(?P<note>.*?)(?={amount_pattern}\s*[A-Z]{{3}}\s*-\s*\d{{1,2}}[./-]\d{{1,2}}[./-]\d{{4}}|$)",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(remarks):
+        payment_date = parse_excel_sync_date(match.group("date"))
+        payment_amount = parse_payment_amount(match.group("amount"))
+        if not payment_date or payment_amount is None:
+            continue
+        payments.append(
+            {
+                "payment_date": payment_date,
+                "payment_amount": payment_amount,
+                "currency": match.group("currency").upper(),
+                "payment_status": "paid",
+                "notes": (match.group("note") or "").strip() or None,
+            }
+        )
+
+    if payments:
+        return payments
+
+    purchase_date = parse_excel_purchase_period(record.get("purchase_date_raw"))
+    if not purchase_date:
+        return []
+
+    return [
+        {
+            "payment_date": purchase_date,
+            "payment_amount": record.get("purchase_price"),
+            "currency": record.get("currency"),
+            "payment_status": "paid",
+            "notes": "Imported from Excel purchase period",
+        }
+    ]
+
+
+def get_latest_payment_period(payments: list[dict]) -> Optional[str]:
+    payment_dates = [payment.get("payment_date") for payment in payments if payment.get("payment_date")]
+    if not payment_dates:
+        return None
+    return format_purchase_period(max(str(date_value)[:10] for date_value in payment_dates))
+
+
 def normalize_excel_asset_record(row: dict) -> Optional[dict]:
     asset_tag = normalize_asset_tag(clean_excel_value(row.get("asset_tag_number")) or "")
     if not asset_tag:
@@ -561,6 +656,7 @@ def normalize_excel_asset_record(row: dict) -> Optional[dict]:
         "serial_chassis_number": clean_excel_value(row.get("serial_number")),
         "quantity": safe_excel_int(row.get("quantity"), default=1),
         "purchase_price": safe_excel_float(row.get("purchase_price")),
+        "purchase_date_raw": clean_excel_value(row.get("purchase_date_raw")),
         "currency": clean_excel_value(row.get("currency")),
         "current_status": clean_excel_value(row.get("current_status")),
         "remarks": remarks,
@@ -640,6 +736,26 @@ def list_asset_project_records(batch_size: int = 1000) -> list[dict]:
             .select("*")
             .order("is_primary", desc=True)
             .order("asset_project_id")
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        start += len(batch)
+    return rows
+
+
+def list_asset_payment_records(batch_size: int = 1000) -> list[dict]:
+    rows: list[dict] = []
+    start = 0
+    while True:
+        response = (
+            supabase.table("asset_payments")
+            .select("*")
+            .order("asset_id")
+            .order("payment_date")
             .range(start, start + batch_size - 1)
             .execute()
         )
@@ -866,6 +982,7 @@ def build_sync_context() -> dict:
     donors = list_donors()
     assignments = list_current_assignment_records()
     asset_projects = list_asset_project_records()
+    asset_payments = list_asset_payment_records()
 
     people_by_id = {row.get("person_id"): row for row in people}
     locations_by_id = {row.get("location_id"): row for row in locations}
@@ -898,6 +1015,10 @@ def build_sync_context() -> dict:
             }
         )
 
+    payments_by_asset_id: dict[int, list[dict]] = {}
+    for payment in asset_payments:
+        payments_by_asset_id.setdefault(payment.get("asset_id"), []).append(payment)
+
     return {
         "person_lookup": build_person_lookup(people),
         "location_lookup": build_location_lookup(locations),
@@ -905,6 +1026,7 @@ def build_sync_context() -> dict:
         "donor_lookup": build_donor_lookup(donors),
         "assignment_by_asset_id": assignment_by_asset_id,
         "projects_by_asset_id": projects_by_asset_id,
+        "payments_by_asset_id": payments_by_asset_id,
         "supports_asset_project_purchase_origin": asset_project_purchase_origin_supported(),
     }
 
@@ -999,6 +1121,15 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
                     project_key = normalize_sync_match_key(project_number)
                     if project_number and not sync_context["project_lookup"].get(project_key):
                         warnings.append(f"Transferred project not found: {project_number}")
+
+        excel_payments = get_excel_payment_records(record)
+        excel_payment_period = get_latest_payment_period(excel_payments)
+        current_payments = sync_context["payments_by_asset_id"].get(current_asset.get("asset_id"), [])
+        current_payment_period = get_latest_payment_period(current_payments)
+        if excel_payment_period and current_payment_period != excel_payment_period:
+            changed_fields.append("purchase_date_raw")
+            current_values["purchase_date_raw"] = current_payment_period
+            excel_values["purchase_date_raw"] = excel_payment_period
 
         if changed_fields:
             changed_records.append(
@@ -1190,11 +1321,36 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
     return applied
 
 
+def apply_sync_payments(asset_id: int, record: dict) -> int:
+    payments = get_excel_payment_records(record)
+    if not payments:
+        return 0
+
+    supabase.table("asset_payments").delete().eq("asset_id", asset_id).execute()
+    payloads = []
+    for index, payment in enumerate(payments, start=1):
+        payloads.append(
+            {
+                "asset_id": asset_id,
+                "payment_number": index,
+                "payment_date": payment.get("payment_date"),
+                "payment_amount": payment.get("payment_amount") or 0,
+                "currency": payment.get("currency") or record.get("currency") or "EUR",
+                "payment_status": payment.get("payment_status") or "paid",
+                "notes": payment.get("notes"),
+            }
+        )
+
+    supabase.table("asset_payments").insert(payloads).execute()
+    return len(payloads)
+
+
 def apply_sync_preview(preview: dict) -> dict:
     inserted = 0
     updated = 0
     assignment_updated = 0
     project_updated = 0
+    payment_updated = 0
     skipped_relationships = 0
     sync_context = build_sync_context()
     asset_fields = {
@@ -1224,6 +1380,7 @@ def apply_sync_preview(preview: dict) -> dict:
                 assignment_updated += apply_sync_assignment(asset_id, record, sync_context)
             if record.get("_has_project_column") and get_excel_current_project_number(record):
                 project_updated += apply_sync_project(asset_id, record, sync_context)
+            payment_updated += apply_sync_payments(asset_id, record)
 
     for item in preview.get("changed_records", []):
         asset_id = item.get("asset_id")
@@ -1246,12 +1403,17 @@ def apply_sync_preview(preview: dict) -> dict:
             applied = apply_sync_project(asset_id, record, sync_context)
             project_updated += applied
             skipped_relationships += 0 if applied else 1
+        if "purchase_date_raw" in item.get("changed_fields", []) or "remarks" in item.get("changed_fields", []):
+            applied = apply_sync_payments(asset_id, record)
+            payment_updated += applied
+            skipped_relationships += 0 if applied else 1
 
     return {
         "inserted": inserted,
         "updated": updated,
         "assignment_updated": assignment_updated,
         "project_updated": project_updated,
+        "payment_updated": payment_updated,
         "skipped_relationships": skipped_relationships,
     }
 
@@ -1369,6 +1531,7 @@ def build_database_excel_records() -> list[dict]:
         asset_id = asset.get("asset_id")
         assignment = sync_context["assignment_by_asset_id"].get(asset_id) or {}
         asset_projects = sync_context["projects_by_asset_id"].get(asset_id, [])
+        asset_payments = sync_context["payments_by_asset_id"].get(asset_id, [])
         purchased_project_numbers = get_export_project_numbers(asset_projects, "purchased")
         transferred_project_numbers = get_export_project_numbers(asset_projects, "transferred")
 
@@ -1387,6 +1550,7 @@ def build_database_excel_records() -> list[dict]:
                 "department_name": assignment.get("department"),
                 "recipient_name": assignment.get("responsible_person"),
                 "recipient_position": None,
+                "purchase_date_raw": get_latest_payment_period(asset_payments),
                 "purchase_price": asset.get("purchase_price"),
                 "currency": asset.get("currency"),
                 "purchased_project_no": purchased_project_numbers,
@@ -1429,8 +1593,6 @@ def get_first_excel_column(columns: dict[str, list[int]], field_name: str) -> Op
 def write_excel_record(sheet, row_number: int, columns: dict[str, list[int]], record: dict) -> int:
     written = 0
     for field_name, column_numbers in columns.items():
-        if field_name in {"purchase_date_raw"}:
-            continue
         if field_name not in record:
             continue
         for column_number in column_numbers:
@@ -1932,6 +2094,32 @@ def get_asset_project_form_context(asset_id: int) -> dict:
         "asset_project_roles": {
             "purchased": purchased_project_rows,
             "current": current_project_rows,
+        },
+    }
+
+
+def get_asset_payments(asset_id: int) -> list[dict]:
+    response = (
+        supabase.table("asset_payments")
+        .select("*")
+        .eq("asset_id", asset_id)
+        .order("payment_date")
+        .order("payment_number")
+        .execute()
+    )
+    rows = response.data or []
+    for row in rows:
+        row["purchase_period"] = format_purchase_period(row.get("payment_date"))
+    return rows
+
+
+def get_asset_payment_context(asset_id: int) -> dict:
+    payments = get_asset_payments(asset_id)
+    return {
+        "asset_payments": payments,
+        "asset_payment_summary": {
+            "payment_count": len(payments),
+            "purchase_period": get_latest_payment_period(payments),
         },
     }
 
@@ -3638,6 +3826,7 @@ def admin_asset_detail(request: Request, asset_id: int):
             "admin_username": request.session.get("admin_username"),
             **get_assignment_form_context(asset),
             **get_asset_project_form_context(asset_id),
+            **get_asset_payment_context(asset_id),
         },
     )
 
@@ -4143,7 +4332,8 @@ def admin_sync_apply(
             f"Excel sync applied: {result['inserted']} new assets inserted, "
             f"{result['updated']} assets updated, "
             f"{result['assignment_updated']} assignment changes, "
-            f"{result['project_updated']} project changes."
+            f"{result['project_updated']} project changes, "
+            f"{result['payment_updated']} payment records."
         ),
     )
     return RedirectResponse(url="/admin/sync", status_code=303)

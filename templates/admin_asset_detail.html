@@ -43,6 +43,7 @@
                 <tr><th>Classification</th><td>{{ asset.asset_classification or "-" }}</td></tr>
                 <tr><th>Sub-classification</th><td>{{ asset.asset_sub_classification or "-" }}</td></tr>
                 <tr><th>Quantity</th><td>{{ asset.quantity or "-" }}</td></tr>
+                <tr><th>Purchase period</th><td>{{ asset_payment_summary.purchase_period or "-" }}</td></tr>
                 <tr><th>Price</th><td>{{ asset.purchase_price or "-" }} {{ asset.currency or "" }}</td></tr>
                 <tr><th>Serial number</th><td>{{ asset.serial_chassis_number or asset.serial_number or "-" }}</td></tr>
                 <tr><th>Asset remarks</th><td>{{ asset.remarks or "-" }}</td></tr>
@@ -74,6 +75,52 @@
             <a class="btn secondary" href="/asset/{{ asset.asset_tag_number }}">Raw JSON</a>
         </div>
     </article>
+</section>
+
+<section class="panel" style="margin-top: 24px;">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Payment History</h3>
+            <p class="muted" style="margin: 0;">Purchase period is calculated from the latest payment date.</p>
+        </div>
+        <div class="muted">
+            Payments: <strong>{{ asset_payment_summary.payment_count }}</strong> |
+            Purchase period: <strong>{{ asset_payment_summary.purchase_period or "-" }}</strong>
+        </div>
+    </div>
+
+    {% if asset_payments %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Payment date</th>
+                    <th>Period</th>
+                    <th>Amount</th>
+                    <th>Currency</th>
+                    <th>Status</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for payment in asset_payments %}
+                <tr>
+                    <td>{{ payment.payment_number }}</td>
+                    <td>{{ payment.payment_date or "-" }}</td>
+                    <td>{{ payment.purchase_period or "-" }}</td>
+                    <td>{{ payment.payment_amount if payment.payment_amount is not none else "-" }}</td>
+                    <td>{{ payment.currency or "-" }}</td>
+                    <td>{{ payment.payment_status or "-" }}</td>
+                    <td>{{ payment.notes or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">No payment records are linked to this asset yet.</p>
+    {% endif %}
 </section>
 
 <section class="panel" style="margin-top: 24px;">

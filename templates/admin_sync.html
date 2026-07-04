@@ -93,7 +93,8 @@
     <div class="flash" style="margin-top: 18px;">
         Last apply: inserted {{ sync_state.last_apply_result.inserted }}, updated {{ sync_state.last_apply_result.updated }},
         assignments {{ sync_state.last_apply_result.assignment_updated or 0 }},
-        projects {{ sync_state.last_apply_result.project_updated or 0 }}.
+        projects {{ sync_state.last_apply_result.project_updated or 0 }},
+        payments {{ sync_state.last_apply_result.payment_updated or 0 }}.
         {% if sync_state.last_apply_result.skipped_relationships %}
         Skipped relationship updates: {{ sync_state.last_apply_result.skipped_relationships }}.
         {% endif %}
@@ -178,6 +179,7 @@
                                 {% elif field_name == "item_description" %}Description
                                 {% elif field_name == "brand_make" %}Brand
                                 {% elif field_name == "serial_chassis_number" %}Serial number
+                                {% elif field_name == "purchase_date_raw" %}Date (Year) of Purchase
                                 {% elif field_name == "purchase_price" %}Purchase price
                                 {% elif field_name == "current_status" %}Status
                                 {% elif field_name == "responsible_person" %}Responsible person
@@ -205,6 +207,7 @@
                                     {% elif field_name == "item_description" %}Description
                                     {% elif field_name == "brand_make" %}Brand
                                     {% elif field_name == "serial_chassis_number" %}Serial number
+                                    {% elif field_name == "purchase_date_raw" %}Date (Year) of Purchase
                                     {% elif field_name == "purchase_price" %}Purchase price
                                     {% elif field_name == "current_status" %}Status
                                     {% elif field_name == "responsible_person" %}Responsible person
@@ -226,6 +229,7 @@
                                     {% elif field_name == "item_description" %}Description
                                     {% elif field_name == "brand_make" %}Brand
                                     {% elif field_name == "serial_chassis_number" %}Serial number
+                                    {% elif field_name == "purchase_date_raw" %}Date (Year) of Purchase
                                     {% elif field_name == "purchase_price" %}Purchase price
                                     {% elif field_name == "current_status" %}Status
                                     {% elif field_name == "responsible_person" %}Responsible person
