@@ -35,7 +35,7 @@
 
 <section class="panel">
     <h3>Upload Workbook</h3>
-    <p class="muted">Expected sheet: <strong>Standard Asset List Format</strong>. The system reads the workbook, normalizes asset rows, and compares them with the current `assets` table before anything is written.</p>
+    <p class="muted">Expected sheets: <strong>Standard Asset List Format</strong> and <strong>Low-cost-items</strong>. The system normalizes both asset lists and compares them with the current `assets` table before anything is written.</p>
     <form method="post" action="/admin/sync/upload" enctype="multipart/form-data" class="toolbar">
         <input type="file" name="excel_file" accept=".xlsx" required>
         <button class="btn" type="submit">Generate preview</button>
@@ -44,7 +44,7 @@
 
 <section class="panel">
     <h3>Export Workbook</h3>
-    <p class="muted">Generate a workbook from the current Supabase asset registry using the tracked official Excel file as the template.</p>
+    <p class="muted">Generate a workbook from the current Supabase asset registry using the tracked official Excel file as the template. Standard assets and low-cost items are written to their matching sheets.</p>
     <form method="post" action="/admin/sync/export" class="toolbar">
         <button class="btn secondary" type="submit">Download Supabase to Excel</button>
     </form>
@@ -52,7 +52,9 @@
     <div class="flash" style="margin-top: 18px;">
         Last export: updated {{ sync_state.last_export_result.updated_rows }},
         appended {{ sync_state.last_export_result.appended_rows }},
-        records {{ sync_state.last_export_result.exported_records }}.
+        records {{ sync_state.last_export_result.exported_records }}
+        (standard {{ sync_state.last_export_result.standard_exported_records or 0 }},
+        low-cost {{ sync_state.last_export_result.low_cost_exported_records or 0 }}).
         {% if sync_state.last_exported_at %}Completed at {{ sync_state.last_exported_at }}.{% endif %}
     </div>
     {% endif %}
@@ -64,6 +66,7 @@
     <article class="stat">
         <div class="stat-label">Excel rows</div>
         <div class="stat-value">{{ preview.summary.excel_rows }}</div>
+        <div class="muted">Standard: {{ preview.summary.standard_rows or 0 }} | Low-cost: {{ preview.summary.low_cost_rows or 0 }}</div>
     </article>
     <article class="stat">
         <div class="stat-label">New assets</div>
@@ -112,6 +115,7 @@
                 <thead>
                     <tr>
                         <th>Apply</th>
+                        <th>Type</th>
                         <th>Asset tag</th>
                         <th>Description</th>
                         <th>Status</th>
@@ -126,6 +130,7 @@
                                 <span>Add</span>
                             </label>
                         </td>
+                        <td>{% if asset.usage_type == "low_cost" %}Low-cost item{% else %}Standard asset{% endif %}</td>
                         <td><strong>{{ asset.asset_tag_number }}</strong></td>
                         <td>{{ asset.item_description or "-" }}</td>
                         <td>{{ asset.current_status or "-" }}</td>
@@ -175,6 +180,7 @@
                             {% for field_name in item.changed_fields %}
                             <div>
                                 {% if field_name == "asset_classification" %}Classification
+                                {% elif field_name == "usage_type" %}Asset type
                                 {% elif field_name == "asset_sub_classification" %}Sub-classification
                                 {% elif field_name == "item_description" %}Description
                                 {% elif field_name == "brand_make" %}Brand
@@ -203,6 +209,7 @@
                             <div>
                                 <strong>
                                     {% if field_name == "asset_classification" %}Classification
+                                    {% elif field_name == "usage_type" %}Asset type
                                     {% elif field_name == "asset_sub_classification" %}Sub-classification
                                     {% elif field_name == "item_description" %}Description
                                     {% elif field_name == "brand_make" %}Brand
@@ -225,6 +232,7 @@
                             <div>
                                 <strong>
                                     {% if field_name == "asset_classification" %}Classification
+                                    {% elif field_name == "usage_type" %}Asset type
                                     {% elif field_name == "asset_sub_classification" %}Sub-classification
                                     {% elif field_name == "item_description" %}Description
                                     {% elif field_name == "brand_make" %}Brand

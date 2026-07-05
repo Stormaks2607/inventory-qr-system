@@ -48,6 +48,7 @@ SYNC_WORKBOOK_PATH = os.path.join(SYNC_STORAGE_DIR, "official_inventory.xlsx")
 SYNC_EXPORT_PATH = os.path.join(SYNC_STORAGE_DIR, "supabase_inventory_export.xlsx")
 SYNC_STATE_PATH = os.path.join(SYNC_STORAGE_DIR, "sync_state.json")
 EXCEL_SYNC_SHEET_NAME = "Standard Asset List Format"
+EXCEL_LOW_COST_SHEET_NAME = "Low-cost-items"
 EXCEL_SYNC_HEADER_ROW = 7
 EXCEL_SYNC_COLUMN_MAP = {
     "Asset Tag No. / Inventory Code\n(new standardised system)": "asset_tag_number",
@@ -68,6 +69,7 @@ EXCEL_SYNC_COLUMN_MAP = {
     "Currency": "currency",
     "Purchased to Project No.": "purchased_project_no",
     "Donor ": "purchased_donor_name",
+    "Donor": "transferred_donor_name",
     "Donor .1": "transferred_donor_name",
     "Transferred to Project No.": "transferred_project_no",
     "Current Status\n(functionality)": "current_status",
@@ -662,7 +664,7 @@ def get_latest_payment_period(payments: list[dict]) -> Optional[str]:
     return format_purchase_period(max(str(date_value)[:10] for date_value in payment_dates))
 
 
-def normalize_excel_asset_record(row: dict) -> Optional[dict]:
+def normalize_excel_asset_record(row: dict, usage_type: str = "standard", source_sheet: Optional[str] = None) -> Optional[dict]:
     asset_tag = normalize_asset_tag(clean_excel_value(row.get("asset_tag_number")) or "")
     if not asset_tag:
         return None
@@ -671,6 +673,8 @@ def normalize_excel_asset_record(row: dict) -> Optional[dict]:
 
     return {
         "asset_tag_number": asset_tag,
+        "usage_type": normalize_asset_usage_type(usage_type, asset_tag),
+        "source_sheet": source_sheet,
         "asset_classification": clean_excel_value(row.get("asset_classification")),
         "asset_sub_classification": clean_excel_value(row.get("asset_sub_classification")),
         "item_description": clean_excel_value(row.get("item_description")),
@@ -696,20 +700,24 @@ def normalize_excel_asset_record(row: dict) -> Optional[dict]:
     }
 
 
-def load_excel_sync_rows(file_path: str) -> list[dict]:
+def load_excel_sync_sheet_rows(file_path: str, sheet_name: str, usage_type: str, required: bool = False) -> list[dict]:
     try:
         import pandas as pd  # type: ignore
     except Exception as exc:
         raise ValueError(f"Excel sync requires pandas/openpyxl support: {exc}") from exc
 
     try:
-        dataframe = pd.read_excel(file_path, sheet_name=EXCEL_SYNC_SHEET_NAME, header=EXCEL_SYNC_HEADER_ROW)
+        dataframe = pd.read_excel(file_path, sheet_name=sheet_name, header=EXCEL_SYNC_HEADER_ROW)
     except Exception as exc:
-        raise ValueError(f"Could not read Excel sheet '{EXCEL_SYNC_SHEET_NAME}': {exc}") from exc
+        if required:
+            raise ValueError(f"Could not read Excel sheet '{sheet_name}': {exc}") from exc
+        return []
 
     dataframe = dataframe.rename(columns=EXCEL_SYNC_COLUMN_MAP)
     if "asset_tag_number" not in dataframe.columns:
-        raise ValueError("The uploaded workbook does not contain the expected Asset Tag column.")
+        if required:
+            raise ValueError(f"The workbook sheet '{sheet_name}' does not contain the expected Asset Tag column.")
+        return []
 
     has_recipient_column = "recipient_name" in dataframe.columns
     has_project_column = "purchased_project_no" in dataframe.columns or "transferred_project_no" in dataframe.columns
@@ -717,12 +725,18 @@ def load_excel_sync_rows(file_path: str) -> list[dict]:
     dataframe = dataframe[dataframe["asset_tag_number"].notna()].copy()
     records: list[dict] = []
     for _, row in dataframe.iterrows():
-        normalized = normalize_excel_asset_record(row.to_dict())
+        normalized = normalize_excel_asset_record(row.to_dict(), usage_type=usage_type, source_sheet=sheet_name)
         if normalized:
             normalized["_has_recipient_column"] = has_recipient_column
             normalized["_has_project_column"] = has_project_column
             records.append(normalized)
     return records
+
+
+def load_excel_sync_rows(file_path: str) -> list[dict]:
+    standard_rows = load_excel_sync_sheet_rows(file_path, EXCEL_SYNC_SHEET_NAME, "standard", required=True)
+    low_cost_rows = load_excel_sync_sheet_rows(file_path, EXCEL_LOW_COST_SHEET_NAME, "low_cost", required=False)
+    return [*standard_rows, *low_cost_rows]
 
 
 def list_asset_records() -> list[dict]:
@@ -1062,6 +1076,7 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
         if asset.get("asset_tag_number")
     }
     synced_fields = [
+        "usage_type",
         "asset_classification",
         "asset_sub_classification",
         "item_description",
@@ -1077,8 +1092,14 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
     new_records: list[dict] = []
     changed_records: list[dict] = []
     unchanged_count = 0
+    standard_count = 0
+    low_cost_count = 0
 
     for record in excel_records:
+        if normalize_asset_usage_type(record.get("usage_type"), record.get("asset_tag_number")) == "low_cost":
+            low_cost_count += 1
+        else:
+            standard_count += 1
         asset_tag = record["asset_tag_number"]
         current_asset = current_by_tag.get(asset_tag)
         if not current_asset:
@@ -1094,8 +1115,12 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
             excel_value = record.get(field_name)
             if not sync_values_equal(field_name, current_value, excel_value):
                 changed_fields.append(field_name)
-                current_values[field_name] = current_value
-                excel_values[field_name] = excel_value
+                if field_name == "usage_type":
+                    current_values[field_name] = get_asset_usage_type_label(current_value)
+                    excel_values[field_name] = get_asset_usage_type_label(excel_value)
+                else:
+                    current_values[field_name] = current_value
+                    excel_values[field_name] = excel_value
 
         if record.get("_has_recipient_column"):
             current_assignment = sync_context["assignment_by_asset_id"].get(current_asset.get("asset_id")) or {}
@@ -1172,6 +1197,8 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
     return {
         "summary": {
             "excel_rows": len(excel_records),
+            "standard_rows": standard_count,
+            "low_cost_rows": low_cost_count,
             "new_records": len(new_records),
             "changed_records": len(changed_records),
             "unchanged_records": unchanged_count,
@@ -1377,6 +1404,7 @@ def apply_sync_preview(preview: dict) -> dict:
     skipped_relationships = 0
     sync_context = build_sync_context()
     asset_fields = {
+        "usage_type",
         "asset_classification",
         "asset_sub_classification",
         "item_description",
@@ -1545,12 +1573,15 @@ def get_export_transfer_date(asset_projects: list[dict]) -> Optional[str]:
     return max(dates) if dates else None
 
 
-def build_database_excel_records() -> list[dict]:
+def build_database_excel_records(usage_type: Optional[str] = None) -> list[dict]:
     assets = list_asset_records()
     sync_context = build_sync_context()
     records = []
 
     for asset in assets:
+        asset_usage_type = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
+        if usage_type and asset_usage_type != usage_type:
+            continue
         asset_id = asset.get("asset_id")
         assignment = sync_context["assignment_by_asset_id"].get(asset_id) or {}
         asset_projects = sync_context["projects_by_asset_id"].get(asset_id, [])
@@ -1561,6 +1592,7 @@ def build_database_excel_records() -> list[dict]:
         records.append(
             {
                 "asset_tag_number": asset.get("asset_tag_number"),
+                "usage_type": asset_usage_type,
                 "inventory_code_old": asset.get("inventory_code"),
                 "asset_classification": asset.get("asset_classification"),
                 "asset_sub_classification": asset.get("asset_sub_classification"),
@@ -1648,36 +1680,23 @@ def expand_excel_data_ranges(sheet, header_row_number: int, last_data_row: int) 
             )
 
 
-def export_supabase_to_excel() -> dict:
-    if not os.path.exists(SYNC_WORKBOOK_PATH):
-        raise ValueError("No official workbook is available. Upload an Excel file first.")
-
-    try:
-        from openpyxl import load_workbook  # type: ignore
-    except Exception as exc:
-        raise ValueError(f"Excel export requires openpyxl support: {exc}") from exc
-
-    workbook = load_workbook(SYNC_WORKBOOK_PATH)
-    if EXCEL_SYNC_SHEET_NAME not in workbook.sheetnames:
-        raise ValueError(f"The workbook does not contain the expected sheet '{EXCEL_SYNC_SHEET_NAME}'.")
-
-    sheet = workbook[EXCEL_SYNC_SHEET_NAME]
+def write_database_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
     columns = get_excel_header_columns(sheet)
     if "asset_tag_number" not in columns:
-        raise ValueError("The workbook does not contain the expected Asset Tag column.")
+        raise ValueError(f"The workbook sheet '{sheet.title}' does not contain the expected Asset Tag column.")
 
     header_row_number = EXCEL_SYNC_HEADER_ROW + 1
     data_start_row = EXCEL_SYNC_HEADER_ROW + 2
     asset_tag_column = get_first_excel_column(columns, "asset_tag_number")
     if not asset_tag_column:
-        raise ValueError("The workbook does not contain the expected Asset Tag column.")
+        raise ValueError(f"The workbook sheet '{sheet.title}' does not contain the expected Asset Tag column.")
+
     row_by_tag = {}
     for row_number in range(data_start_row, sheet.max_row + 1):
         asset_tag = normalize_asset_tag(sheet.cell(row=row_number, column=asset_tag_column).value or "")
         if asset_tag and asset_tag not in row_by_tag:
             row_by_tag[asset_tag] = row_number
 
-    records = build_database_excel_records()
     updated_rows = 0
     appended_rows = 0
     written_cells = 0
@@ -1702,15 +1721,54 @@ def export_supabase_to_excel() -> dict:
 
     expand_excel_data_ranges(sheet, header_row_number, last_data_row)
 
+    return {
+        "updated_rows": updated_rows,
+        "appended_rows": appended_rows,
+        "written_cells": written_cells,
+        "exported_records": len(records),
+    }
+
+
+def export_supabase_to_excel() -> dict:
+    if not os.path.exists(SYNC_WORKBOOK_PATH):
+        raise ValueError("No official workbook is available. Upload an Excel file first.")
+
+    try:
+        from openpyxl import load_workbook  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Excel export requires openpyxl support: {exc}") from exc
+
+    workbook = load_workbook(SYNC_WORKBOOK_PATH)
+    if EXCEL_SYNC_SHEET_NAME not in workbook.sheetnames:
+        raise ValueError(f"The workbook does not contain the expected sheet '{EXCEL_SYNC_SHEET_NAME}'.")
+
+    standard_result = write_database_records_to_excel_sheet(
+        workbook[EXCEL_SYNC_SHEET_NAME],
+        build_database_excel_records("standard"),
+    )
+    low_cost_result = {
+        "updated_rows": 0,
+        "appended_rows": 0,
+        "written_cells": 0,
+        "exported_records": 0,
+    }
+    if EXCEL_LOW_COST_SHEET_NAME in workbook.sheetnames:
+        low_cost_result = write_database_records_to_excel_sheet(
+            workbook[EXCEL_LOW_COST_SHEET_NAME],
+            build_database_excel_records("low_cost"),
+        )
+
     ensure_sync_storage()
     workbook.save(SYNC_EXPORT_PATH)
 
     return {
         "path": SYNC_EXPORT_PATH,
-        "updated_rows": updated_rows,
-        "appended_rows": appended_rows,
-        "written_cells": written_cells,
-        "exported_records": len(records),
+        "updated_rows": standard_result["updated_rows"] + low_cost_result["updated_rows"],
+        "appended_rows": standard_result["appended_rows"] + low_cost_result["appended_rows"],
+        "written_cells": standard_result["written_cells"] + low_cost_result["written_cells"],
+        "exported_records": standard_result["exported_records"] + low_cost_result["exported_records"],
+        "standard_exported_records": standard_result["exported_records"],
+        "low_cost_exported_records": low_cost_result["exported_records"],
         "exported_at": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M"),
     }
 
@@ -1737,6 +1795,8 @@ def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_
     return {
         "summary": {
             "excel_rows": excel_rows,
+            "standard_rows": summary.get("standard_rows", 0),
+            "low_cost_rows": summary.get("low_cost_rows", 0),
             "new_records": len(filtered_new_records),
             "changed_records": len(filtered_changed_records),
             "unchanged_records": unchanged_records,
@@ -4630,6 +4690,8 @@ def admin_sync_export(request: Request):
         "appended_rows": result["appended_rows"],
         "written_cells": result["written_cells"],
         "exported_records": result["exported_records"],
+        "standard_exported_records": result.get("standard_exported_records", 0),
+        "low_cost_exported_records": result.get("low_cost_exported_records", 0),
     }
     save_sync_state(sync_state)
 
