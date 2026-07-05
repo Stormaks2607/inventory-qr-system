@@ -75,6 +75,18 @@
             </div>
 
             <div class="field">
+                <label for="usage_type">Asset type</label>
+                <select id="usage_type" name="usage_type">
+                    {% for type_value, type_label in usage_type_options %}
+                    <option value="{{ type_value }}" {% if asset_form.usage_type == type_value %}selected{% endif %}>{{ type_label }}</option>
+                    {% endfor %}
+                </select>
+                <div class="muted asset-helper">&nbsp;</div>
+            </div>
+        </div>
+
+        <div class="asset-create-top-row field full">
+            <div class="field">
                 <label for="current_status">Asset status</label>
                 <div class="asset-status-row {% if asset_form.current_status_select != '__custom__' %}single{% endif %}" data-asset-status-row>
                     <select id="current_status" name="current_status" data-asset-status-select>

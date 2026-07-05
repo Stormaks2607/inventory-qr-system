@@ -37,6 +37,7 @@
         <table>
             <tbody>
                 <tr><th>Asset tag</th><td>{{ asset.asset_tag_number or "-" }}</td></tr>
+                <tr><th>Asset type</th><td>{{ asset.usage_type_label or "-" }}</td></tr>
                 <tr><th>Description</th><td>{{ asset.item_description or "-" }}</td></tr>
                 <tr><th>Brand</th><td>{{ asset.brand_make or "-" }}</td></tr>
                 <tr><th>Model</th><td>{{ asset.model or "-" }}</td></tr>
@@ -454,6 +455,15 @@
     <article class="panel">
         <h3>Edit Asset</h3>
         <form method="post" action="/admin/assets/{{ asset.asset_id }}/edit" class="form-grid">
+            <div class="field">
+                <label for="usage_type">Asset type</label>
+                <select id="usage_type" name="usage_type">
+                    {% for type_value, type_label in usage_type_options %}
+                    <option value="{{ type_value }}" {% if asset.usage_type == type_value %}selected{% endif %}>{{ type_label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
             <div class="field full">
                 <label for="item_description">Description</label>
                 <input id="item_description" name="item_description" type="text" value="{{ asset.item_description or '' }}">

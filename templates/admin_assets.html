@@ -25,6 +25,7 @@
     <p class="muted">Showing {{ total_found }} assets from the live inventory dataset. Use quick search for broad matching, or open filters inside the column headers for narrower matching.</p>
 
     {% set filter_config = [
+        {"name": "usage_type", "label": "Type", "value": filters.usage_type},
         {"name": "asset_tag", "label": "Asset", "value": filters.asset_tag},
         {"name": "description", "label": "Description", "value": filters.description},
         {"name": "status", "label": "Status", "value": filters.status},
@@ -89,6 +90,7 @@
             {% for asset in assets %}
             <tr>
                 <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                <td>{{ asset.usage_type_label or "-" }}</td>
                 <td>
                     {{ asset.item_description or "-" }}<br>
                     <span class="muted">{{ asset.brand_make or "-" }} / {{ asset.model or "-" }}</span>
@@ -105,7 +107,7 @@
             </tr>
             {% else %}
             <tr>
-                <td colspan="7" class="muted">No assets matched the current search.</td>
+                <td colspan="8" class="muted">No assets matched the current search.</td>
             </tr>
             {% endfor %}
         </tbody>

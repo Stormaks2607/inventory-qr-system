@@ -97,6 +97,29 @@ ASSET_STATUS_SELECT_OPTIONS = [
     ("disposed", "Disposed"),
 ]
 
+ASSET_USAGE_TYPE_OPTIONS = [
+    ("standard", "Standard asset"),
+    ("low_cost", "Low-cost item"),
+]
+
+ASSET_USAGE_TYPE_LABELS = dict(ASSET_USAGE_TYPE_OPTIONS)
+
+
+def infer_asset_usage_type(asset_tag_number: Optional[str]) -> str:
+    normalized = normalize_asset_tag(asset_tag_number or "")
+    return "low_cost" if "-LC-" in normalized else "standard"
+
+
+def normalize_asset_usage_type(value: Optional[str], asset_tag_number: Optional[str] = None) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in ASSET_USAGE_TYPE_LABELS:
+        return normalized
+    return infer_asset_usage_type(asset_tag_number)
+
+
+def get_asset_usage_type_label(value: Optional[str]) -> str:
+    return ASSET_USAGE_TYPE_LABELS.get(normalize_asset_usage_type(value), "Standard asset")
+
 
 class DatabaseConnectionError(RuntimeError):
     pass
@@ -1855,6 +1878,8 @@ def get_asset_by_tag(asset_tag: str) -> Optional[dict]:
         return None
 
     asset = response.data[0]
+    asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
+    asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
     asset["current_assignment"] = get_current_assignment(asset["asset_id"])
     return asset
 
@@ -1871,6 +1896,8 @@ def get_asset_by_id(asset_id: int) -> Optional[dict]:
         return None
 
     asset = response.data[0]
+    asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
+    asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
     asset["current_assignment"] = get_current_assignment(asset["asset_id"])
     asset["effective_status"] = get_effective_status(asset)
     return asset
@@ -2407,6 +2434,7 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
     standard_status_values = {value for value, _ in ASSET_STATUS_SELECT_OPTIONS}
     return {
         "asset_tag_number": asset.get("asset_tag_number") or suggest_next_asset_tag(),
+        "usage_type": normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")),
         "item_description": asset.get("item_description") or "",
         "brand_make": asset.get("brand_make") or "",
         "model": asset.get("model") or "",
@@ -2589,6 +2617,7 @@ def get_asset_create_options() -> dict:
 
     return {
         "status_options": ASSET_STATUS_SELECT_OPTIONS,
+        "usage_type_options": ASSET_USAGE_TYPE_OPTIONS,
         "classification_options": classifications,
         "sub_classification_options": sub_classifications,
         "currency_options": currencies,
@@ -2629,6 +2658,9 @@ def describe_asset_create_error(error: Exception) -> str:
 
     if "serial_chassis_number" in combined and ("duplicate" in combined or "unique" in combined):
         return "Serial number already exists."
+
+    if "usage_type" in combined and "column" in combined:
+        return "The database schema is missing usage_type for asset type."
 
     return f"Asset could not be created: {message}"
 
@@ -2736,6 +2768,8 @@ def list_assets(limit: Optional[int] = None, batch_size: int = 500) -> list[dict
         start += len(batch)
 
     for asset in assets:
+        asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
+        asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
         asset["current_assignment"] = get_current_assignment(asset["asset_id"])
         asset["effective_status"] = get_effective_status(asset)
     return assets
@@ -2808,6 +2842,7 @@ def asset_matches_query(asset: dict, query: str) -> bool:
         asset.get("model"),
         asset.get("asset_classification"),
         asset.get("asset_sub_classification"),
+        asset.get("usage_type_label"),
         asset.get("effective_status"),
         assignment.get("responsible_person"),
         assignment.get("department"),
@@ -2833,6 +2868,7 @@ def asset_matches_filters(asset: dict, filters: dict[str, str]) -> bool:
     assignment = asset.get("current_assignment") or {}
     return (
         field_contains(asset.get("asset_tag_number"), filters.get("asset_tag", ""))
+        and field_contains(asset.get("usage_type_label"), filters.get("usage_type", ""))
         and field_contains(asset.get("item_description"), filters.get("description", ""))
         and field_contains(asset.get("effective_status"), filters.get("status", ""))
         and field_contains(assignment.get("responsible_person"), filters.get("person", ""))
@@ -3101,6 +3137,7 @@ def admin_dashboard(request: Request):
 def admin_assets(
     request: Request,
     q: str = "",
+    usage_type: str = "",
     asset_tag: str = "",
     description: str = "",
     status: str = "",
@@ -3114,6 +3151,7 @@ def admin_assets(
 
     assets = list_assets()
     filters = {
+        "usage_type": usage_type.strip(),
         "asset_tag": asset_tag.strip(),
         "description": description.strip(),
         "status": status.strip(),
@@ -3170,6 +3208,7 @@ def admin_asset_new(request: Request):
 def admin_asset_create(
     request: Request,
     asset_tag_number: str = Form(""),
+    usage_type: str = Form("standard"),
     item_description: str = Form(""),
     brand_make: str = Form(""),
     model: str = Form(""),
@@ -3197,6 +3236,7 @@ def admin_asset_create(
     asset_tag_standard = get_asset_tag_standard()
     asset_form = {
         "asset_tag_number": normalize_asset_tag(asset_tag_number),
+        "usage_type": normalize_asset_usage_type(usage_type, asset_tag_number),
         "item_description": item_description.strip(),
         "brand_make": brand_make.strip(),
         "model": model.strip(),
@@ -3291,6 +3331,7 @@ def admin_asset_create(
         insert_data = {
             "asset_tag_number": asset_form["asset_tag_number"],
             "inventory_code": asset_form["asset_tag_number"],
+            "usage_type": asset_form["usage_type"],
             "item_description": asset_form["item_description"] or None,
             "brand_make": asset_form["brand_make"] or None,
             "model": asset_form["model"] or None,
@@ -3951,6 +3992,7 @@ def admin_asset_detail(request: Request, asset_id: int):
             "active_page": "assets",
             "page_title": f"Asset {asset.get('asset_tag_number')}",
             "admin_username": request.session.get("admin_username"),
+            "usage_type_options": ASSET_USAGE_TYPE_OPTIONS,
             **get_assignment_form_context(asset),
             **get_asset_project_form_context(asset_id),
             **get_asset_payment_context(asset_id),
@@ -3962,6 +4004,7 @@ def admin_asset_detail(request: Request, asset_id: int):
 def admin_asset_edit(
     request: Request,
     asset_id: int,
+    usage_type: str = Form("standard"),
     item_description: str = Form(""),
     brand_make: str = Form(""),
     model: str = Form(""),
@@ -3984,6 +4027,7 @@ def admin_asset_edit(
 
     try:
         update_data = {
+            "usage_type": normalize_asset_usage_type(usage_type, asset.get("asset_tag_number")),
             "item_description": item_description.strip() or None,
             "brand_make": brand_make.strip() or None,
             "model": model.strip() or None,
