@@ -619,6 +619,10 @@
             <strong>{{ assigned_assets|length }}</strong>
         </div>
         <div class="report-card">
+            Low-cost items
+            <strong>{{ assigned_low_cost_assets|length }}</strong>
+        </div>
+        <div class="report-card">
             Print date
             <strong>{{ printed_at }}</strong>
         </div>
@@ -785,14 +789,14 @@
             <section class="report-box report-count">
                 <div class="report-count-label">Total assigned assets</div>
                 <div class="report-count-value">{{ assigned_assets|length }}</div>
-                <div class="muted">Live count of active assignments for this employee.</div>
+                <div class="muted">Standard: {{ assigned_standard_assets|length }} | Low-cost: {{ assigned_low_cost_assets|length }}</div>
             </section>
         </div>
     </article>
 
     <section class="panel">
-        <h3>Assigned Assets</h3>
-        <p class="muted">Current live assignments for this employee. This table is formatted for both on-screen review and paper printout.</p>
+        <h3>Assigned Standard Assets</h3>
+        <p class="muted">Current standard assets assigned to this employee.</p>
 
         <div class="table-wrap">
             <table>
@@ -808,7 +812,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for asset in assigned_assets %}
+                    {% for asset in assigned_standard_assets %}
                     {% set assignment = asset.current_assignment or {} %}
                     <tr>
                         <td><strong>{{ asset.asset_tag_number }}</strong></td>
@@ -828,7 +832,53 @@
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="7" class="muted">No active assets are currently assigned to this employee.</td>
+                        <td colspan="7" class="muted">No active standard assets are currently assigned to this employee.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel screen-only">
+        <h3>Assigned Low-cost Items</h3>
+        <p class="muted">Mouse, keyboard, lamp, powerbank, headset, and other low-cost items currently assigned to this employee.</p>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Inventory code</th>
+                        <th>Description</th>
+                        <th>Status</th>
+                        <th>City</th>
+                        <th>Department</th>
+                        <th>Assignment date</th>
+                        <th>Open</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for asset in assigned_low_cost_assets %}
+                    {% set assignment = asset.current_assignment or {} %}
+                    <tr>
+                        <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                        <td>
+                            {{ asset.item_description or "-" }}<br>
+                            <span class="muted">{{ asset.brand_make or "-" }} / {{ asset.model or "-" }}</span>
+                        </td>
+                        <td>
+                            <span class="badge {% if (asset.effective_status or '')|upper == 'LOST' %}warn{% endif %}">
+                                {{ asset.effective_status or "-" }}
+                            </span>
+                        </td>
+                        <td>{{ assignment.city or "-" }}</td>
+                        <td>{{ assignment.department or "-" }}</td>
+                        <td>{{ assignment.assignment_date or "-" }}</td>
+                        <td><a href="/admin/assets/{{ asset.asset_id }}">Open item</a></td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="muted">No active low-cost items are currently assigned to this employee.</td>
                     </tr>
                     {% endfor %}
                 </tbody>

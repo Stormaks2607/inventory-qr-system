@@ -3653,6 +3653,16 @@ def admin_person_detail(request: Request, person_id: int):
         raise HTTPException(status_code=404, detail="Person not found")
 
     assigned_assets = get_assets_for_person(person_id)
+    assigned_standard_assets = [
+        asset
+        for asset in assigned_assets
+        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "standard"
+    ]
+    assigned_low_cost_assets = [
+        asset
+        for asset in assigned_assets
+        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "low_cost"
+    ]
     display_name = get_person_display_name(person)
     report_display_name = get_person_report_name(person)
     printed_at = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y")
@@ -3667,6 +3677,8 @@ def admin_person_detail(request: Request, person_id: int):
             "display_name": display_name,
             "report_display_name": report_display_name,
             "assigned_assets": assigned_assets,
+            "assigned_standard_assets": assigned_standard_assets,
+            "assigned_low_cost_assets": assigned_low_cost_assets,
             "printed_at": printed_at,
             "branding": branding,
             "branding_storage": branding_storage,
