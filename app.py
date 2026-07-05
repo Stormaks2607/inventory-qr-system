@@ -702,6 +702,39 @@ def normalize_excel_asset_record(row: dict, usage_type: str = "standard", source
     }
 
 
+def resolve_excel_sync_dataframe_columns(columns) -> dict:
+    rename_map = {}
+    last_project_field = None
+    donor_index = 0
+
+    for column in columns:
+        normalized = normalize_excel_header(column)
+        field_name = None
+
+        if normalized.startswith("donor"):
+            donor_index += 1
+            if last_project_field == "purchased_project_no":
+                field_name = "purchased_donor_name"
+            elif last_project_field == "transferred_project_no":
+                field_name = "transferred_donor_name"
+            else:
+                field_name = "purchased_donor_name" if donor_index == 1 else "transferred_donor_name"
+        else:
+            field_name = resolve_excel_header_field(column)
+            if not field_name and "project" in normalized:
+                if "transfer" in normalized:
+                    field_name = "transferred_project_no"
+                elif "purchase" in normalized or normalized in {"project", "project no", "project no.", "project number"}:
+                    field_name = "purchased_project_no"
+
+        if field_name in {"purchased_project_no", "transferred_project_no"}:
+            last_project_field = field_name
+
+        rename_map[column] = field_name or column
+
+    return rename_map
+
+
 def load_excel_sync_sheet_rows(file_path: str, sheet_name: str, usage_type: str, required: bool = False) -> list[dict]:
     try:
         import pandas as pd  # type: ignore
@@ -715,7 +748,7 @@ def load_excel_sync_sheet_rows(file_path: str, sheet_name: str, usage_type: str,
             raise ValueError(f"Could not read Excel sheet '{sheet_name}': {exc}") from exc
         return []
 
-    dataframe = dataframe.rename(columns=EXCEL_SYNC_COLUMN_MAP)
+    dataframe = dataframe.rename(columns=resolve_excel_sync_dataframe_columns(dataframe.columns))
     if "asset_tag_number" not in dataframe.columns:
         if required:
             raise ValueError(f"The workbook sheet '{sheet_name}' does not contain the expected Asset Tag column.")
@@ -1765,7 +1798,9 @@ def apply_sync_preview(preview: dict) -> dict:
         if asset_id:
             if record.get("_has_recipient_column") and normalize_sync_string(record.get("recipient_name")):
                 assignment_updated += apply_sync_assignment(asset_id, record, sync_context)
-            if record.get("_has_project_column") and get_excel_current_project_number(record):
+            if record.get("_has_project_column") and (
+                get_excel_purchased_project_allocations(record) or get_excel_transferred_project_allocations(record)
+            ):
                 project_updated += apply_sync_project(asset_id, record, sync_context)
             payment_updated += apply_sync_payments(asset_id, record)
 
