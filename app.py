@@ -2185,6 +2185,102 @@ def get_asset_project_form_context(asset_id: int) -> dict:
     }
 
 
+def get_asset_transfer_project_rows(transfer_ids: list[int]) -> dict[int, list[dict]]:
+    if not transfer_ids:
+        return {}
+
+    try:
+        response = (
+            supabase.table("asset_transfer_projects")
+            .select("*")
+            .in_("transfer_id", transfer_ids)
+            .order("direction")
+            .order("transfer_project_id")
+            .execute()
+        )
+    except Exception:
+        return {}
+    rows = response.data or []
+    projects_by_id = {row.get("project_id"): row for row in list_projects()}
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        project = projects_by_id.get(row.get("project_id")) or {}
+        grouped.setdefault(row.get("transfer_id"), []).append(
+            {
+                **row,
+                "project_number": project.get("project_number") or row.get("project_number_raw"),
+                "project_name": project.get("project_name") or project.get("name") or "",
+            }
+        )
+    return grouped
+
+
+def format_transfer_project_rows(rows: list[dict], direction: str) -> str:
+    selected = [row for row in rows if row.get("direction") == direction]
+    if not selected:
+        return "-"
+    parts = []
+    for row in selected:
+        project_number = row.get("project_number") or row.get("project_number_raw") or "-"
+        allocation_percent = row.get("allocation_percent")
+        if allocation_percent is None:
+            parts.append(project_number)
+        else:
+            try:
+                parts.append(f"{project_number} {float(allocation_percent):g}%")
+            except Exception:
+                parts.append(project_number)
+    return " / ".join(parts)
+
+
+def get_asset_transfer_history(asset_id: int, limit: int = 50) -> list[dict]:
+    try:
+        response = (
+            supabase.table("asset_transfers")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .order("transfer_date", desc=True)
+            .order("transfer_id", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception:
+        return []
+    transfers = response.data or []
+    transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
+    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
+
+    people_by_id = {row.get("person_id"): row for row in list_people()}
+    for transfer in transfers:
+        from_person = people_by_id.get(transfer.get("from_person_id")) or {}
+        to_person = people_by_id.get(transfer.get("to_person_id")) or {}
+        project_rows = projects_by_transfer_id.get(transfer.get("transfer_id"), [])
+        transfer["from_holder_display"] = (
+            get_person_display_name(from_person)
+            if from_person
+            else transfer.get("from_holder_name") or "-"
+        )
+        transfer["to_holder_display"] = (
+            get_person_display_name(to_person)
+            if to_person
+            else transfer.get("to_holder_name") or "-"
+        )
+        transfer["from_project_display"] = format_transfer_project_rows(project_rows, "from") if project_rows else (transfer.get("from_project_raw") or "-")
+        transfer["to_project_display"] = format_transfer_project_rows(project_rows, "to") if project_rows else (transfer.get("to_project_raw") or "-")
+    return transfers
+
+
+def get_asset_transfer_context(asset_id: int) -> dict:
+    transfers = get_asset_transfer_history(asset_id)
+    return {
+        "asset_transfers": transfers,
+        "asset_transfer_summary": {
+            "transfer_count": len(transfers),
+            "latest_transfer_date": transfers[0].get("transfer_date") if transfers else None,
+        },
+    }
+
+
 def get_asset_payments(asset_id: int) -> list[dict]:
     response = (
         supabase.table("asset_payments")
@@ -4080,6 +4176,7 @@ def admin_asset_detail(request: Request, asset_id: int):
             **get_assignment_form_context(asset),
             **get_asset_project_form_context(asset_id),
             **get_asset_payment_context(asset_id),
+            **get_asset_transfer_context(asset_id),
         },
     )
 
