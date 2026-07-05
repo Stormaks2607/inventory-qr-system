@@ -35,7 +35,7 @@
 
 <section class="panel">
     <h3>Upload Workbook</h3>
-    <p class="muted">Expected sheets: <strong>Standard Asset List Format</strong> and <strong>Low-cost-items</strong>. The system normalizes both asset lists and compares them with the current `assets` table before anything is written.</p>
+    <p class="muted">Expected sheets: <strong>Standard Asset List Format</strong>, <strong>Low-cost-items</strong>, and <strong>Transfer log</strong>. Asset lists update the registry; transfer log rows are imported as movement history.</p>
     <form method="post" action="/admin/sync/upload" enctype="multipart/form-data" class="toolbar">
         <input type="file" name="excel_file" accept=".xlsx" required>
         <button class="btn" type="submit">Generate preview</button>
@@ -80,6 +80,11 @@
         <div class="stat-label">Unchanged assets</div>
         <div class="stat-value">{{ preview.summary.unchanged_records }}</div>
     </article>
+    <article class="stat">
+        <div class="stat-label">Transfer log</div>
+        <div class="stat-value">{{ preview.transfer_log.summary.new_records if preview.transfer_log else 0 }}</div>
+        <div class="muted">Skipped: {{ preview.transfer_log.summary.skipped_existing if preview.transfer_log else 0 }} | Unmatched: {{ preview.transfer_log.summary.unmatched_assets if preview.transfer_log else 0 }}</div>
+    </article>
 </section>
 
 <section class="panel">
@@ -97,7 +102,8 @@
         Last apply: inserted {{ sync_state.last_apply_result.inserted }}, updated {{ sync_state.last_apply_result.updated }},
         assignments {{ sync_state.last_apply_result.assignment_updated or 0 }},
         projects {{ sync_state.last_apply_result.project_updated or 0 }},
-        payments {{ sync_state.last_apply_result.payment_updated or 0 }}.
+        payments {{ sync_state.last_apply_result.payment_updated or 0 }},
+        transfers {{ sync_state.last_apply_result.transfer_updated or 0 }}.
         {% if sync_state.last_apply_result.skipped_relationships %}
         Skipped relationship updates: {{ sync_state.last_apply_result.skipped_relationships }}.
         {% endif %}
@@ -259,6 +265,69 @@
         <p class="muted">No changed assets were found in the uploaded workbook.</p>
         {% endif %}
     </article>
+</section>
+
+<section class="panel">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Transfer Log</h3>
+            <p class="muted" style="margin: 0;">Review historical transfer records from the workbook Transfer log. Unmatched assets are shown for review but cannot be applied.</p>
+        </div>
+    </div>
+
+    {% if preview.transfer_log and preview.transfer_log.new_records %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Apply</th>
+                    <th>Date</th>
+                    <th>Asset tag</th>
+                    <th>Holder</th>
+                    <th>New holder</th>
+                    <th>Current project</th>
+                    <th>New project</th>
+                    <th>Status</th>
+                    <th>Warnings</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for transfer in preview.transfer_log.new_records %}
+                <tr>
+                    <td>
+                        {% if transfer.can_apply %}
+                        <label style="display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;">
+                            <input type="checkbox" name="selected_transfers" value="{{ transfer.transfer_key }}" checked>
+                            <span>Apply</span>
+                        </label>
+                        {% else %}
+                        <span class="muted">Blocked</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ transfer.transfer_date or "-" }}</td>
+                    <td><strong>{{ transfer.asset_tag_number }}</strong></td>
+                    <td>{{ transfer.from_holder_name or "-" }}</td>
+                    <td>{{ transfer.to_holder_name or "-" }}</td>
+                    <td>{{ transfer.from_project_raw or "-" }}</td>
+                    <td>{{ transfer.to_project_raw or "-" }}</td>
+                    <td>{{ transfer.asset_status or "-" }}</td>
+                    <td>
+                        {% if transfer.warnings %}
+                        {% for warning in transfer.warnings %}
+                        <div>{{ warning }}</div>
+                        {% endfor %}
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">No new transfer log records were found in the uploaded workbook.</p>
+    {% endif %}
 </section>
 </form>
 <script>

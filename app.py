@@ -49,7 +49,9 @@ SYNC_EXPORT_PATH = os.path.join(SYNC_STORAGE_DIR, "supabase_inventory_export.xls
 SYNC_STATE_PATH = os.path.join(SYNC_STORAGE_DIR, "sync_state.json")
 EXCEL_SYNC_SHEET_NAME = "Standard Asset List Format"
 EXCEL_LOW_COST_SHEET_NAME = "Low-cost-items"
+EXCEL_TRANSFER_LOG_SHEET_NAME = "Transfer log"
 EXCEL_SYNC_HEADER_ROW = 7
+EXCEL_TRANSFER_LOG_HEADER_ROW = 0
 EXCEL_SYNC_COLUMN_MAP = {
     "Asset Tag No. / Inventory Code\n(new standardised system)": "asset_tag_number",
     "Previous inventory code\n(if applicable)": "inventory_code_old",
@@ -739,9 +741,163 @@ def load_excel_sync_rows(file_path: str) -> list[dict]:
     return [*standard_rows, *low_cost_rows]
 
 
-def list_asset_records() -> list[dict]:
-    response = supabase.table("assets").select("*").order("asset_tag_number").execute()
-    return response.data or []
+def normalize_transfer_header(value) -> str:
+    return " ".join(str(value or "").replace("\n", " ").split()).casefold()
+
+
+def resolve_transfer_header_field(value) -> Optional[str]:
+    normalized = normalize_transfer_header(value)
+    if normalized == "no.":
+        return "source_log_no"
+    if normalized == "transfer date":
+        return "transfer_date"
+    if normalized.startswith("standart") or normalized.startswith("standard"):
+        return "source_asset_type"
+    if "asset tag" in normalized and "inventory" in normalized:
+        return "asset_tag_number"
+    if normalized.startswith("brand-make"):
+        return "description_snapshot"
+    if normalized.startswith("serial"):
+        return "serial_snapshot"
+    if normalized == "holder":
+        return "from_holder_name"
+    if normalized == "current project":
+        return "from_project_raw"
+    if normalized == "new project":
+        return "to_project_raw"
+    if normalized == "new holder":
+        return "to_holder_name"
+    if normalized.startswith("current status"):
+        return "asset_status"
+    if normalized == "asset condition description":
+        return "asset_condition_description"
+    if normalized == "reason for asset transfer":
+        return "transfer_reason"
+    return None
+
+
+def normalize_transfer_holder(value) -> Optional[str]:
+    normalized = normalize_sync_string(value)
+    if not normalized:
+        return None
+    if normalized.casefold() == "warehouse":
+        return "Warehouse"
+    return normalized
+
+
+def make_transfer_key(record: dict) -> str:
+    return "|".join(
+        [
+            normalize_asset_tag(record.get("asset_tag_number") or ""),
+            str(record.get("transfer_date") or ""),
+            str(record.get("source_log_no") or ""),
+            normalize_sync_match_key(record.get("from_holder_name")) or "",
+            normalize_sync_match_key(record.get("to_holder_name")) or "",
+        ]
+    )
+
+
+def normalize_excel_transfer_record(row: dict, source_row_number: int) -> Optional[dict]:
+    asset_tag = normalize_asset_tag(clean_excel_value(row.get("asset_tag_number")) or "")
+    transfer_date = parse_excel_sync_date(row.get("transfer_date"))
+    if not asset_tag or not transfer_date:
+        return None
+
+    record = {
+        "transfer_key": "",
+        "source_row_number": source_row_number,
+        "source_log_no": safe_excel_int(row.get("source_log_no")),
+        "transfer_date": transfer_date,
+        "source_asset_type": clean_excel_value(row.get("source_asset_type")),
+        "asset_tag_number": asset_tag,
+        "asset_tag_snapshot": asset_tag,
+        "description_snapshot": clean_excel_value(row.get("description_snapshot")),
+        "serial_snapshot": clean_excel_value(row.get("serial_snapshot")),
+        "from_holder_name": normalize_transfer_holder(row.get("from_holder_name")),
+        "from_project_raw": clean_excel_value(row.get("from_project_raw")),
+        "to_project_raw": clean_excel_value(row.get("to_project_raw")),
+        "to_holder_name": normalize_transfer_holder(row.get("to_holder_name")),
+        "asset_status": clean_excel_value(row.get("asset_status")),
+        "asset_condition_description": clean_excel_value(row.get("asset_condition_description")),
+        "transfer_reason": clean_excel_value(row.get("transfer_reason")),
+    }
+    if not any(
+        record.get(field_name)
+        for field_name in [
+            "from_holder_name",
+            "to_holder_name",
+            "from_project_raw",
+            "to_project_raw",
+            "asset_status",
+            "asset_condition_description",
+            "transfer_reason",
+        ]
+    ):
+        return None
+    record["transfer_key"] = make_transfer_key(record)
+    return record
+
+
+def load_excel_transfer_log_rows(file_path: str) -> list[dict]:
+    try:
+        from openpyxl import load_workbook  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Excel transfer log sync requires openpyxl support: {exc}") from exc
+
+    workbook = load_workbook(file_path, read_only=True, data_only=True)
+    if EXCEL_TRANSFER_LOG_SHEET_NAME not in workbook.sheetnames:
+        return []
+
+    sheet = workbook[EXCEL_TRANSFER_LOG_SHEET_NAME]
+    rows = sheet.iter_rows(values_only=True)
+    header_values = None
+    for index, row in enumerate(rows, start=1):
+        if index == EXCEL_TRANSFER_LOG_HEADER_ROW + 1:
+            header_values = row
+            break
+    if not header_values:
+        return []
+
+    columns = {}
+    for index, value in enumerate(header_values):
+        field_name = resolve_transfer_header_field(value)
+        if field_name:
+            columns[field_name] = index
+
+    if "asset_tag_number" not in columns or "transfer_date" not in columns:
+        return []
+
+    records = []
+    for row_number, values in enumerate(rows, start=EXCEL_TRANSFER_LOG_HEADER_ROW + 2):
+        row = {
+            field_name: values[column_index] if column_index < len(values) else None
+            for field_name, column_index in columns.items()
+        }
+        if not any(value is not None for value in row.values()):
+            continue
+        normalized = normalize_excel_transfer_record(row, row_number)
+        if normalized:
+            records.append(normalized)
+    return records
+
+
+def list_asset_records(batch_size: int = 1000) -> list[dict]:
+    rows: list[dict] = []
+    start = 0
+    while True:
+        response = (
+            supabase.table("assets")
+            .select("*")
+            .order("asset_tag_number")
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        start += len(batch)
+    return rows
 
 
 def list_current_assignment_records(batch_size: int = 1000) -> list[dict]:
@@ -793,6 +949,26 @@ def list_asset_payment_records(batch_size: int = 1000) -> list[dict]:
             .select("*")
             .order("asset_id")
             .order("payment_date")
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        start += len(batch)
+    return rows
+
+
+def list_asset_transfer_records(batch_size: int = 1000) -> list[dict]:
+    rows: list[dict] = []
+    start = 0
+    while True:
+        response = (
+            supabase.table("asset_transfers")
+            .select("*")
+            .order("asset_id")
+            .order("transfer_date")
             .range(start, start + batch_size - 1)
             .execute()
         )
@@ -1020,6 +1196,7 @@ def build_sync_context() -> dict:
     assignments = list_current_assignment_records()
     asset_projects = list_asset_project_records()
     asset_payments = list_asset_payment_records()
+    asset_transfers = list_asset_transfer_records()
 
     people_by_id = {row.get("person_id"): row for row in people}
     locations_by_id = {row.get("location_id"): row for row in locations}
@@ -1056,6 +1233,20 @@ def build_sync_context() -> dict:
     for payment in asset_payments:
         payments_by_asset_id.setdefault(payment.get("asset_id"), []).append(payment)
 
+    transfer_signatures = set()
+    for transfer in asset_transfers:
+        transfer_signatures.add(
+            "|".join(
+                [
+                    str(transfer.get("asset_id") or ""),
+                    str(transfer.get("transfer_date") or ""),
+                    str(transfer.get("source_log_no") or ""),
+                    normalize_sync_match_key(transfer.get("from_holder_name")) or "",
+                    normalize_sync_match_key(transfer.get("to_holder_name")) or "",
+                ]
+            )
+        )
+
     return {
         "person_lookup": build_person_lookup(people),
         "location_lookup": build_location_lookup(locations),
@@ -1064,11 +1255,93 @@ def build_sync_context() -> dict:
         "assignment_by_asset_id": assignment_by_asset_id,
         "projects_by_asset_id": projects_by_asset_id,
         "payments_by_asset_id": payments_by_asset_id,
+        "transfer_signatures": transfer_signatures,
         "supports_asset_project_purchase_origin": asset_project_purchase_origin_supported(),
     }
 
 
-def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) -> dict:
+def make_transfer_signature(asset_id: int, record: dict) -> str:
+    return "|".join(
+        [
+            str(asset_id or ""),
+            str(record.get("transfer_date") or ""),
+            str(record.get("source_log_no") or ""),
+            normalize_sync_match_key(record.get("from_holder_name")) or "",
+            normalize_sync_match_key(record.get("to_holder_name")) or "",
+        ]
+    )
+
+
+def transfer_project_allocations(value) -> list[dict]:
+    allocations = get_project_allocations_from_value(value)
+    if allocations:
+        return allocations
+    raw = normalize_sync_string(value)
+    if not raw:
+        return []
+    return [{"project_number": raw, "allocation_percent": None}]
+
+
+def build_transfer_log_preview(transfer_records: list[dict], current_by_tag: dict[str, dict], sync_context: dict) -> dict:
+    new_transfer_records = []
+    skipped_existing = 0
+    unmatched_assets = 0
+
+    for record in transfer_records:
+        warnings = []
+        asset = current_by_tag.get(normalize_asset_tag(record.get("asset_tag_number") or ""))
+        if not asset:
+            unmatched_assets += 1
+            warnings.append(f"Asset not found: {record.get('asset_tag_number')}")
+
+        from_holder = record.get("from_holder_name")
+        to_holder = record.get("to_holder_name")
+        from_person = None
+        to_person = None
+        if from_holder and from_holder.casefold() != "warehouse":
+            from_person = sync_context["person_lookup"].get(normalize_sync_match_key(from_holder))
+            if not from_person:
+                warnings.append(f"Holder not found in People: {from_holder}")
+        if to_holder and to_holder.casefold() != "warehouse":
+            to_person = sync_context["person_lookup"].get(normalize_sync_match_key(to_holder))
+            if not to_person:
+                warnings.append(f"New holder not found in People: {to_holder}")
+
+        for direction, field_name in [("Current project", "from_project_raw"), ("New project", "to_project_raw")]:
+            for allocation in transfer_project_allocations(record.get(field_name)):
+                project_number = allocation.get("project_number")
+                if project_number and not sync_context["project_lookup"].get(normalize_sync_match_key(project_number)):
+                    warnings.append(f"{direction} not found in Projects: {project_number}")
+
+        if asset:
+            signature = make_transfer_signature(asset.get("asset_id"), record)
+            if signature in sync_context.get("transfer_signatures", set()):
+                skipped_existing += 1
+                continue
+
+        new_transfer_records.append(
+            {
+                **record,
+                "asset_id": asset.get("asset_id") if asset else None,
+                "from_person_id": from_person.get("person_id") if from_person else None,
+                "to_person_id": to_person.get("person_id") if to_person else None,
+                "warnings": warnings,
+                "can_apply": bool(asset),
+            }
+        )
+
+    return {
+        "summary": {
+            "excel_rows": len(transfer_records),
+            "new_records": len(new_transfer_records),
+            "skipped_existing": skipped_existing,
+            "unmatched_assets": unmatched_assets,
+        },
+        "new_records": new_transfer_records,
+    }
+
+
+def build_sync_preview(excel_records: list[dict], current_assets: list[dict], transfer_records: Optional[list[dict]] = None) -> dict:
     sync_context = build_sync_context()
     current_by_tag = {
         normalize_asset_tag(asset.get("asset_tag_number") or ""): asset
@@ -1205,6 +1478,7 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict]) ->
         },
         "new_records": new_records,
         "changed_records": changed_records,
+        "transfer_log": build_transfer_log_preview(transfer_records or [], current_by_tag, sync_context),
     }
 
 
@@ -1395,12 +1669,74 @@ def apply_sync_payments(asset_id: int, record: dict) -> int:
     return len(payloads)
 
 
+def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: dict) -> int:
+    payloads = []
+    for direction, field_name in [("from", "from_project_raw"), ("to", "to_project_raw")]:
+        for allocation in transfer_project_allocations(record.get(field_name)):
+            project_number = allocation.get("project_number")
+            project = sync_context["project_lookup"].get(normalize_sync_match_key(project_number))
+            payloads.append(
+                {
+                    "transfer_id": transfer_id,
+                    "direction": direction,
+                    "project_id": project.get("project_id") if project else None,
+                    "project_number_raw": project_number,
+                    "allocation_percent": allocation.get("allocation_percent"),
+                }
+            )
+
+    if not payloads:
+        return 0
+
+    supabase.table("asset_transfer_projects").delete().eq("transfer_id", transfer_id).execute()
+    supabase.table("asset_transfer_projects").insert(payloads).execute()
+    return len(payloads)
+
+
+def apply_sync_transfer(record: dict, sync_context: dict) -> int:
+    asset_id = record.get("asset_id")
+    if not asset_id:
+        return 0
+
+    payload = {
+        "asset_id": asset_id,
+        "from_person_id": record.get("from_person_id"),
+        "to_person_id": record.get("to_person_id"),
+        "transfer_date": record.get("transfer_date"),
+        "transfer_reason": record.get("transfer_reason"),
+        "notes": record.get("transfer_reason"),
+        "source_log_no": record.get("source_log_no"),
+        "source_row_number": record.get("source_row_number"),
+        "source_asset_type": record.get("source_asset_type"),
+        "asset_tag_snapshot": record.get("asset_tag_snapshot") or record.get("asset_tag_number"),
+        "from_holder_name": record.get("from_holder_name"),
+        "to_holder_name": record.get("to_holder_name"),
+        "from_project_raw": record.get("from_project_raw"),
+        "to_project_raw": record.get("to_project_raw"),
+        "asset_status": record.get("asset_status"),
+        "asset_condition_description": record.get("asset_condition_description"),
+    }
+
+    signature = make_transfer_signature(asset_id, record)
+    if signature in sync_context.get("transfer_signatures", set()):
+        return 0
+
+    response = supabase.table("asset_transfers").insert(payload).execute()
+    transfer = (response.data or [{}])[0]
+    transfer_id = transfer.get("transfer_id")
+    if transfer_id:
+        apply_transfer_project_rows(transfer_id, record, sync_context)
+        sync_context.setdefault("transfer_signatures", set()).add(signature)
+    return 1
+
+
 def apply_sync_preview(preview: dict) -> dict:
     inserted = 0
     updated = 0
     assignment_updated = 0
     project_updated = 0
     payment_updated = 0
+    transfer_updated = 0
     skipped_relationships = 0
     sync_context = build_sync_context()
     asset_fields = {
@@ -1459,12 +1795,18 @@ def apply_sync_preview(preview: dict) -> dict:
             payment_updated += applied
             skipped_relationships += 0 if applied else 1
 
+    for record in preview.get("transfer_log", {}).get("new_records", []):
+        applied = apply_sync_transfer(record, sync_context)
+        transfer_updated += applied
+        skipped_relationships += 0 if applied else 1
+
     return {
         "inserted": inserted,
         "updated": updated,
         "assignment_updated": assignment_updated,
         "project_updated": project_updated,
         "payment_updated": payment_updated,
+        "transfer_updated": transfer_updated,
         "skipped_relationships": skipped_relationships,
     }
 
@@ -1773,9 +2115,10 @@ def export_supabase_to_excel() -> dict:
     }
 
 
-def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_changed_assets: list[str]) -> dict:
+def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_changed_assets: list[str], selected_transfers: Optional[list[str]] = None) -> dict:
     selected_new_tags = {normalize_asset_tag(value) for value in selected_new_assets if value}
     selected_changed_tags = {normalize_asset_tag(value) for value in selected_changed_assets if value}
+    selected_transfer_keys = {value for value in (selected_transfers or []) if value}
 
     filtered_new_records = [
         record
@@ -1787,8 +2130,15 @@ def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_
         for item in preview.get("changed_records", [])
         if normalize_asset_tag(item.get("asset_tag_number") or "") in selected_changed_tags
     ]
+    transfer_log = preview.get("transfer_log") or {}
+    filtered_transfer_records = [
+        record
+        for record in transfer_log.get("new_records", [])
+        if record.get("transfer_key") in selected_transfer_keys
+    ]
 
     summary = preview.get("summary", {})
+    transfer_summary = transfer_log.get("summary", {})
     unchanged_records = summary.get("unchanged_records", 0)
     excel_rows = summary.get("excel_rows", unchanged_records + len(filtered_new_records) + len(filtered_changed_records))
 
@@ -1803,6 +2153,13 @@ def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_
         },
         "new_records": filtered_new_records,
         "changed_records": filtered_changed_records,
+        "transfer_log": {
+            "summary": {
+                **transfer_summary,
+                "new_records": len(filtered_transfer_records),
+            },
+            "new_records": filtered_transfer_records,
+        },
     }
 
 
@@ -4721,7 +5078,8 @@ async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)
 
     try:
         excel_records = load_excel_sync_rows(SYNC_WORKBOOK_PATH)
-        preview = build_sync_preview(excel_records, list_asset_records())
+        transfer_records = load_excel_transfer_log_rows(SYNC_WORKBOOK_PATH)
+        preview = build_sync_preview(excel_records, list_asset_records(), transfer_records)
     except ValueError as error:
         set_flash(request, "error", str(error))
         return RedirectResponse(url="/admin/sync", status_code=303)
@@ -4739,7 +5097,12 @@ async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)
     set_flash(
         request,
         "success",
-        f"Preview ready: {preview['summary']['new_records']} new, {preview['summary']['changed_records']} changed, {preview['summary']['unchanged_records']} unchanged.",
+        (
+            f"Preview ready: {preview['summary']['new_records']} new, "
+            f"{preview['summary']['changed_records']} changed, "
+            f"{preview['summary']['unchanged_records']} unchanged, "
+            f"{preview.get('transfer_log', {}).get('summary', {}).get('new_records', 0)} transfer records."
+        ),
     )
     return RedirectResponse(url="/admin/sync", status_code=303)
 
@@ -4749,6 +5112,7 @@ def admin_sync_apply(
     request: Request,
     selected_new_assets: list[str] = Form([]),
     selected_changed_assets: list[str] = Form([]),
+    selected_transfers: list[str] = Form([]),
 ):
     redirect = require_admin(request)
     if redirect:
@@ -4760,9 +5124,9 @@ def admin_sync_apply(
         set_flash(request, "error", "No sync preview is available. Upload an Excel file first.")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
-    selected_preview = filter_sync_preview(preview, selected_new_assets, selected_changed_assets)
-    if not selected_preview["new_records"] and not selected_preview["changed_records"]:
-        set_flash(request, "error", "No assets were selected for apply.")
+    selected_preview = filter_sync_preview(preview, selected_new_assets, selected_changed_assets, selected_transfers)
+    if not selected_preview["new_records"] and not selected_preview["changed_records"] and not selected_preview.get("transfer_log", {}).get("new_records"):
+        set_flash(request, "error", "No sync records were selected for apply.")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
     try:
@@ -4783,7 +5147,8 @@ def admin_sync_apply(
             f"{result['updated']} assets updated, "
             f"{result['assignment_updated']} assignment changes, "
             f"{result['project_updated']} project changes, "
-            f"{result['payment_updated']} payment records."
+            f"{result['payment_updated']} payment records, "
+            f"{result['transfer_updated']} transfer records."
         ),
     )
     return RedirectResponse(url="/admin/sync", status_code=303)
