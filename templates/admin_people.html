@@ -55,7 +55,9 @@
                 <tr>
                     <th>Employee</th>
                     <th>Department</th>
-                    <th>Assigned assets</th>
+                    <th>Total</th>
+                    <th>Standard</th>
+                    <th>Low-cost</th>
                     <th>Open</th>
                 </tr>
             </thead>
@@ -65,11 +67,13 @@
                     <td><strong>{{ person.display_name }}</strong></td>
                     <td>{{ person.department or "-" }}</td>
                     <td>{{ person.assigned_count }}</td>
+                    <td>{{ person.standard_count }}</td>
+                    <td>{{ person.low_cost_count }}</td>
                     <td><a href="/admin/people/{{ person.person_id }}">Open profile</a></td>
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="4" class="muted">No employees matched the current search.</td>
+                    <td colspan="6" class="muted">No employees matched the current search.</td>
                 </tr>
                 {% endfor %}
             </tbody>

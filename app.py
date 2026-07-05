@@ -2852,11 +2852,23 @@ def search_people_with_assets(query: str = "", show_all: bool = False) -> list[d
     for person in people:
         person_id = person.get("person_id")
         assigned_assets = assignments_by_person.get(person_id, [])
+        assigned_standard_assets = [
+            asset
+            for asset in assigned_assets
+            if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "standard"
+        ]
+        assigned_low_cost_assets = [
+            asset
+            for asset in assigned_assets
+            if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "low_cost"
+        ]
         row = {
             "person_id": person_id,
             "display_name": get_person_display_name(person),
             "department": person.get("department") or "-",
             "assigned_count": len(assigned_assets),
+            "standard_count": len(assigned_standard_assets),
+            "low_cost_count": len(assigned_low_cost_assets),
             "assets": assigned_assets,
         }
 
