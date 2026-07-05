@@ -52,6 +52,7 @@ EXCEL_LOW_COST_SHEET_NAME = "Low-cost-items"
 EXCEL_TRANSFER_LOG_SHEET_NAME = "Transfer log"
 EXCEL_SYNC_HEADER_ROW = 7
 EXCEL_TRANSFER_LOG_HEADER_ROW = 0
+PROJECT_NUMBER_PATTERN = r"\b[A-Z]{2,5}-\d{1,5}\b"
 EXCEL_SYNC_COLUMN_MAP = {
     "Asset Tag No. / Inventory Code\n(new standardised system)": "asset_tag_number",
     "Previous inventory code\n(if applicable)": "inventory_code_old",
@@ -1097,7 +1098,7 @@ def split_excel_project_numbers(value) -> list[str]:
     normalized = normalize_sync_string(value)
     if not normalized:
         return []
-    return re.findall(r"\bUKR-\d+\b", normalized.upper())
+    return re.findall(PROJECT_NUMBER_PATTERN, normalized.upper())
 
 
 def split_excel_project_percentages(value, expected_count: int) -> list[Optional[float]]:
