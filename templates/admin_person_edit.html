@@ -29,7 +29,13 @@
         {% for field in person_edit_fields %}
         <div class="field {% if field.multiline %}full{% endif %}">
             <label for="{{ field.name }}">{{ field.label }}</label>
-            {% if field.multiline %}
+            {% if field.control == "select" %}
+            <select id="{{ field.name }}" name="{{ field.name }}">
+                {% for option in field.options %}
+                <option value="{{ option.value }}" {% if option.value == field.value %}selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+            </select>
+            {% elif field.multiline %}
             <textarea id="{{ field.name }}" name="{{ field.name }}" rows="4">{{ field.value }}</textarea>
             {% else %}
             <input id="{{ field.name }}" name="{{ field.name }}" type="{{ field.input_type }}" value="{{ field.value }}">

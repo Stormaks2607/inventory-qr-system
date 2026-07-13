@@ -2976,6 +2976,23 @@ def build_person_edit_fields(person: dict) -> list[dict]:
         if row["readonly"]:
             continue
         value = row["value"]
+        if row["name"] == "is_active":
+            fields.append(
+                {
+                    "name": row["name"],
+                    "label": row["label"],
+                    "value": "false" if value is False else "true",
+                    "multiline": False,
+                    "input_type": "text",
+                    "control": "select",
+                    "options": [
+                        {"value": "true", "label": "Active (TRUE)"},
+                        {"value": "false", "label": "Inactive (FALSE)"},
+                    ],
+                }
+            )
+            continue
+
         as_text = "" if value is None else str(value)
         multiline = (
             "\n" in as_text
@@ -2983,6 +3000,8 @@ def build_person_edit_fields(person: dict) -> list[dict]:
             or len(as_text) > 120
         )
         input_type = "email" if row["name"] == "email" else "text"
+        if row["name"] == "offboarded_at":
+            input_type = "date"
         fields.append(
             {
                 "name": row["name"],
@@ -2990,6 +3009,7 @@ def build_person_edit_fields(person: dict) -> list[dict]:
                 "value": as_text,
                 "multiline": multiline,
                 "input_type": input_type,
+                "control": "input",
             }
         )
     return fields
@@ -4521,6 +4541,9 @@ async def admin_person_edit_submit(request: Request, person_id: int):
     for field in build_person_edit_fields(person):
         raw_value = form.get(field["name"], "")
         normalized = str(raw_value).strip() if raw_value is not None else ""
+        if field["name"] == "is_active":
+            update_data[field["name"]] = normalized.casefold() == "true"
+            continue
         update_data[field["name"]] = normalized or None
 
     if not update_data.get("name") and not update_data.get("name_eng"):
