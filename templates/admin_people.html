@@ -32,6 +32,11 @@
         <a class="btn" href="/admin/people/new">Add employee</a>
         <form method="get" class="search compact" style="width: 100%;">
             <input type="text" name="q" value="{{ query }}" placeholder="Search by employee name or department">
+            <select name="status" style="max-width: 160px;">
+                <option value="active" {% if status == "active" %}selected{% endif %}>Active</option>
+                <option value="inactive" {% if status == "inactive" %}selected{% endif %}>Inactive</option>
+                <option value="all" {% if status == "all" %}selected{% endif %}>All statuses</option>
+            </select>
             <label style="display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 14px;">
                 <input type="checkbox" name="show_all" value="true" {% if show_all %}checked{% endif %}>
                 Show employees without assets
@@ -54,6 +59,7 @@
             <thead>
                 <tr>
                     <th>Employee</th>
+                    <th>Status</th>
                     <th>Department</th>
                     <th>Total</th>
                     <th>Standard</th>
@@ -65,6 +71,11 @@
                 {% for person in people %}
                 <tr{% if show_all and person.assigned_count == 0 %} class="person-row-unassigned"{% endif %}>
                     <td><strong>{{ person.display_name }}</strong></td>
+                    <td>
+                        <span class="badge {% if not person.is_active %}warn{% endif %}">
+                            {{ person.status_label }}
+                        </span>
+                    </td>
                     <td>{{ person.department or "-" }}</td>
                     <td>{{ person.assigned_count }}</td>
                     <td>{{ person.standard_count }}</td>
@@ -73,7 +84,7 @@
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="6" class="muted">No employees matched the current search.</td>
+                    <td colspan="7" class="muted">No employees matched the current search.</td>
                 </tr>
                 {% endfor %}
             </tbody>

@@ -2719,6 +2719,14 @@ def get_person_report_name(person: dict) -> str:
     return english_name or local_name or f"Person #{person.get('person_id')}"
 
 
+def is_person_active(person: dict) -> bool:
+    return person.get("is_active") is not False
+
+
+def get_person_status_label(person: dict) -> str:
+    return "Active" if is_person_active(person) else "Inactive"
+
+
 def get_person_by_id(person_id: int) -> Optional[dict]:
     response = (
         supabase.table("persons")
@@ -2732,6 +2740,174 @@ def get_person_by_id(person_id: int) -> Optional[dict]:
     return response.data[0]
 
 
+def find_warehouse_person(people: Optional[list[dict]] = None) -> Optional[dict]:
+    people = people if people is not None else list_people()
+    for person in people:
+        names = [
+            person.get("name"),
+            person.get("name_eng"),
+            person.get("full_name"),
+        ]
+        if any((name or "").strip().casefold() == "warehouse" for name in names):
+            return person
+    return None
+
+
+def get_location_display_name(location: dict) -> str:
+    parts = [
+        location.get("city"),
+        location.get("department"),
+        location.get("office"),
+        location.get("building"),
+        location.get("room"),
+    ]
+    return " / ".join(str(part) for part in parts if part) or f"Location #{location.get('location_id')}"
+
+
+def get_default_offboarding_location_id(asset: dict, locations: list[dict]) -> Optional[int]:
+    current_assignment = asset.get("current_assignment") or {}
+    if current_assignment.get("location_id"):
+        return current_assignment.get("location_id")
+
+    for location in locations:
+        if (
+            (location.get("city") or "").strip().casefold() == "kyiv"
+            and (location.get("department") or "").strip().casefold() == "administration"
+        ):
+            return location.get("location_id")
+
+    return locations[0].get("location_id") if locations else None
+
+
+def get_offboarding_target_people(person_id: int) -> list[dict]:
+    people = list_people()
+    return [
+        {
+            **person,
+            "display_name": get_person_display_name(person),
+            "status_label": get_person_status_label(person),
+        }
+        for person in people
+        if person.get("person_id") != person_id and is_person_active(person)
+    ]
+
+
+def build_person_offboarding_context(person: dict) -> dict:
+    assigned_assets = get_assets_for_person(person["person_id"])
+    locations = [
+        {**location, "display_name": get_location_display_name(location)}
+        for location in list_locations()
+    ]
+    people = get_offboarding_target_people(person["person_id"])
+    warehouse_person = find_warehouse_person(people)
+    warehouse_person_id = warehouse_person.get("person_id") if warehouse_person else None
+
+    rows = []
+    for asset in assigned_assets:
+        assignment = asset.get("current_assignment") or {}
+        rows.append(
+            {
+                "asset": asset,
+                "assignment": assignment,
+                "default_person_id": warehouse_person_id or "",
+                "default_location_id": get_default_offboarding_location_id(asset, locations) or "",
+            }
+        )
+
+    return {
+        "assigned_assets": assigned_assets,
+        "offboarding_rows": rows,
+        "target_people": people,
+        "locations": locations,
+        "warehouse_person": warehouse_person,
+        "offboarding_date": datetime.now(ZoneInfo("Europe/Kyiv")).date().isoformat(),
+    }
+
+
+def update_person_inactive(person_id: int, offboarding_date: str, note: str) -> None:
+    payload = {
+        "is_active": False,
+        "offboarded_at": offboarding_date,
+        "offboarding_note": note or None,
+    }
+    try:
+        supabase.table("persons").update(payload).eq("person_id", person_id).execute()
+    except Exception as error:
+        if isinstance(error, APIError):
+            combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
+            if "offboarded_at" in combined or "offboarding_note" in combined:
+                supabase.table("persons").update({"is_active": False}).eq("person_id", person_id).execute()
+                return
+        raise
+
+
+def apply_person_offboarding(person: dict, form) -> dict:
+    person_id = person["person_id"]
+    offboarding_date = str(form.get("offboarding_date") or "").strip()
+    offboarding_note = str(form.get("offboarding_note") or "").strip()
+    if not offboarding_date:
+        raise ValueError("Offboarding date is required.")
+
+    assigned_assets = get_assets_for_person(person_id)
+    selected_asset_ids = {
+        int(value)
+        for value in form.getlist("asset_id")
+        if str(value).strip().isdigit()
+    }
+    if not selected_asset_ids:
+        selected_asset_ids = {asset["asset_id"] for asset in assigned_assets}
+
+    target_people = {person["person_id"]: person for person in get_offboarding_target_people(person_id)}
+    locations = {location["location_id"]: location for location in list_locations()}
+    reassigned = 0
+    skipped = 0
+
+    for asset in assigned_assets:
+        asset_id = asset.get("asset_id")
+        if asset_id not in selected_asset_ids:
+            skipped += 1
+            continue
+
+        person_value = str(form.get(f"target_person_id_{asset_id}") or "").strip()
+        location_value = str(form.get(f"target_location_id_{asset_id}") or "").strip()
+        target_person_id = int(person_value) if person_value.isdigit() else None
+        target_location_id = int(location_value) if location_value.isdigit() else None
+
+        if target_person_id == person_id:
+            raise ValueError("An offboarded employee cannot remain responsible for assigned assets.")
+        if target_person_id and target_person_id not in target_people:
+            raise ValueError("Selected responsible person is not available for offboarding.")
+        if target_location_id and target_location_id not in locations:
+            raise ValueError("Selected location is not available for offboarding.")
+        if target_person_id and not target_location_id:
+            raise ValueError("Location is required when a responsible person is selected.")
+
+        close_current_assignments(asset_id, offboarding_date)
+
+        if target_person_id or target_location_id:
+            current_assignment = asset.get("current_assignment") or {}
+            status = current_assignment.get("status") or asset.get("current_status")
+            notes = "Reassigned during employee offboarding"
+            if offboarding_note:
+                notes = f"{notes}: {offboarding_note}"
+            supabase.table("asset_assignments").insert(
+                {
+                    "asset_id": asset_id,
+                    "person_id": target_person_id,
+                    "location_id": target_location_id,
+                    "assignment_date": offboarding_date,
+                    "return_date": None,
+                    "status": status,
+                    "notes": notes,
+                    "handover_condition": current_assignment.get("handover_condition"),
+                }
+            ).execute()
+        reassigned += 1
+
+    update_person_inactive(person_id, offboarding_date, offboarding_note)
+    return {"reassigned": reassigned, "skipped": skipped}
+
+
 PERSON_FIELD_LABELS = {
     "person_id": "Person ID",
     "name": "Employee name (local)",
@@ -2739,6 +2915,9 @@ PERSON_FIELD_LABELS = {
     "full_name": "Full name",
     "position": "Position",
     "department": "Department",
+    "is_active": "Active employee",
+    "offboarded_at": "Offboarded at",
+    "offboarding_note": "Offboarding note",
     "email": "Email",
     "phone": "Phone",
     "telegram": "Telegram",
@@ -2753,6 +2932,9 @@ PERSON_FIELD_ORDER = [
     "full_name",
     "position",
     "department",
+    "is_active",
+    "offboarded_at",
+    "offboarding_note",
     "email",
     "phone",
     "telegram",
@@ -3324,7 +3506,7 @@ def list_assets(limit: Optional[int] = None, batch_size: int = 500) -> list[dict
     return assets
 
 
-def search_people_with_assets(query: str = "", show_all: bool = False) -> list[dict]:
+def search_people_with_assets(query: str = "", show_all: bool = False, status: str = "active") -> list[dict]:
     assets = list_assets()
     people = list_people()
     assignments_by_person: dict[int, list[dict]] = {}
@@ -3337,8 +3519,15 @@ def search_people_with_assets(query: str = "", show_all: bool = False) -> list[d
 
     rows: list[dict] = []
     normalized_query = query.strip().lower()
+    normalized_status = (status or "active").strip().lower()
 
     for person in people:
+        person_active = is_person_active(person)
+        if normalized_status == "active" and not person_active:
+            continue
+        if normalized_status == "inactive" and person_active:
+            continue
+
         person_id = person.get("person_id")
         assigned_assets = assignments_by_person.get(person_id, [])
         assigned_standard_assets = [
@@ -3358,6 +3547,8 @@ def search_people_with_assets(query: str = "", show_all: bool = False) -> list[d
             "assigned_count": len(assigned_assets),
             "standard_count": len(assigned_standard_assets),
             "low_cost_count": len(assigned_low_cost_assets),
+            "is_active": person_active,
+            "status_label": get_person_status_label(person),
             "assets": assigned_assets,
         }
 
@@ -3384,11 +3575,40 @@ def search_people_with_assets(query: str = "", show_all: bool = False) -> list[d
 
 
 def get_assets_for_person(person_id: int) -> list[dict]:
-    return [
-        asset
-        for asset in list_assets()
-        if (asset.get("current_assignment") or {}).get("person_id") == person_id
-    ]
+    assignments_response = (
+        supabase.table("asset_assignments")
+        .select("*")
+        .eq("person_id", person_id)
+        .is_("return_date", "null")
+        .execute()
+    )
+    assignments = assignments_response.data or []
+    if not assignments:
+        return []
+
+    assignments_by_asset_id = {
+        assignment.get("asset_id"): assignment
+        for assignment in assignments
+        if assignment.get("asset_id")
+    }
+    asset_ids = list(assignments_by_asset_id.keys())
+    assets_response = (
+        supabase.table("assets")
+        .select("*")
+        .in_("asset_id", asset_ids)
+        .execute()
+    )
+
+    assets = assets_response.data or []
+    for asset in assets:
+        asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
+        asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
+        assignment = assignments_by_asset_id.get(asset.get("asset_id")) or {}
+        asset["current_assignment"] = enrich_assignment(assignment)
+        asset["effective_status"] = get_effective_status(asset)
+
+    assets.sort(key=lambda item: item.get("asset_tag_number") or "")
+    return assets
 
 
 def asset_matches_query(asset: dict, query: str) -> bool:
@@ -4006,12 +4226,13 @@ def admin_asset_create(
 
 
 @app.get("/admin/people", response_class=HTMLResponse)
-def admin_people(request: Request, q: str = "", show_all: bool = False):
+def admin_people(request: Request, q: str = "", show_all: bool = False, status: str = "active"):
     redirect = require_admin(request)
     if redirect:
         return redirect
 
-    people = search_people_with_assets(q, show_all=show_all)
+    status = status if status in {"active", "inactive", "all"} else "active"
+    people = search_people_with_assets(q, show_all=show_all, status=status)
 
     return templates.TemplateResponse(
         request=request,
@@ -4020,6 +4241,7 @@ def admin_people(request: Request, q: str = "", show_all: bool = False):
             "people": people,
             "query": q,
             "show_all": show_all,
+            "status": status,
             "flash": pop_flash(request),
             "active_page": "people",
             "page_title": "People",
@@ -4191,6 +4413,71 @@ def admin_person_detail(request: Request, person_id: int):
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.get("/admin/people/{person_id}/offboard", response_class=HTMLResponse)
+def admin_person_offboard(request: Request, person_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    person = get_person_by_id(person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    context = build_person_offboarding_context(person)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_person_offboard.html",
+        context={
+            "person": person,
+            "display_name": get_person_display_name(person),
+            "flash": pop_flash(request),
+            "active_page": "people",
+            "page_title": f"Offboard {get_person_display_name(person)}",
+            "admin_username": request.session.get("admin_username"),
+            **context,
+        },
+    )
+
+
+@app.post("/admin/people/{person_id}/offboard")
+async def admin_person_offboard_submit(request: Request, person_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    person = get_person_by_id(person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    form = await request.form()
+    try:
+        result = apply_person_offboarding(person, form)
+    except Exception as error:
+        context = build_person_offboarding_context(person)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_person_offboard.html",
+            context={
+                "person": person,
+                "display_name": get_person_display_name(person),
+                "flash": {"level": "error", "message": f"Offboarding could not be applied: {error}"},
+                "active_page": "people",
+                "page_title": f"Offboard {get_person_display_name(person)}",
+                "admin_username": request.session.get("admin_username"),
+                **context,
+            },
+            status_code=400,
+        )
+
+    set_flash(
+        request,
+        "success",
+        f"Employee {get_person_display_name(person)} was marked inactive. "
+        f"Reassigned assets: {result['reassigned']}.",
+    )
+    return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
 
 
 @app.get("/admin/people/{person_id}/edit", response_class=HTMLResponse)

@@ -1,0 +1,118 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Offboard Employee</h2>
+    <p>Close current assignments, reassign assets, and mark the employee as inactive.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="panel">
+    <div class="toolbar" style="justify-content: space-between;">
+        <div>
+            <h3 style="margin-bottom: 6px;">{{ display_name }}</h3>
+            <p class="muted" style="margin: 0;">
+                Assigned assets: {{ assigned_assets|length }}.
+                Default reassignment target:
+                {% if warehouse_person %}{{ warehouse_person.display_name }}{% else %}Warehouse person not found{% endif %}.
+            </p>
+        </div>
+        <div class="toolbar" style="margin-bottom: 0;">
+            <a class="btn secondary" href="/admin/people/{{ person.person_id }}">Back to profile</a>
+            <a class="btn secondary" href="/admin/people">Back to people</a>
+        </div>
+    </div>
+</section>
+
+<form method="post" action="/admin/people/{{ person.person_id }}/offboard">
+    <section class="panel">
+        <h3>Offboarding Details</h3>
+        <div class="form-grid">
+            <div class="field">
+                <label for="offboarding_date">Offboarding date</label>
+                <input id="offboarding_date" name="offboarding_date" type="date" value="{{ offboarding_date }}" required>
+            </div>
+            <div class="field full">
+                <label for="offboarding_note">Offboarding note</label>
+                <textarea id="offboarding_note" name="offboarding_note" rows="3" placeholder="Optional reason or handover reference"></textarea>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="toolbar" style="justify-content: space-between; align-items: center;">
+            <div>
+                <h3 style="margin-bottom: 6px;">Reassign Assets</h3>
+                <p class="muted" style="margin: 0;">Leave the default Warehouse target, or choose a different responsible person per asset.</p>
+            </div>
+            <button class="btn" type="submit">Apply offboarding</button>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Reassign</th>
+                        <th>Asset</th>
+                        <th>Type</th>
+                        <th>Current location</th>
+                        <th>New responsible person</th>
+                        <th>New location</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in offboarding_rows %}
+                    {% set asset = row.asset %}
+                    {% set assignment = row.assignment %}
+                    <tr>
+                        <td>
+                            <input type="checkbox" name="asset_id" value="{{ asset.asset_id }}" checked>
+                        </td>
+                        <td>
+                            <strong>{{ asset.asset_tag_number }}</strong><br>
+                            <span class="muted">{{ asset.item_description or "-" }}</span>
+                        </td>
+                        <td>{{ asset.usage_type_label }}</td>
+                        <td>{{ assignment.city or "-" }} / {{ assignment.department or assignment.location_name or "-" }}</td>
+                        <td>
+                            <select name="target_person_id_{{ asset.asset_id }}">
+                                <option value="">No responsible person</option>
+                                {% for target in target_people %}
+                                <option value="{{ target.person_id }}" {% if target.person_id == row.default_person_id %}selected{% endif %}>
+                                    {{ target.display_name }}{% if target.department %} / {{ target.department }}{% endif %}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </td>
+                        <td>
+                            <select name="target_location_id_{{ asset.asset_id }}">
+                                <option value="">No location</option>
+                                {% for location in locations %}
+                                <option value="{{ location.location_id }}" {% if location.location_id == row.default_location_id %}selected{% endif %}>
+                                    {{ location.display_name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="muted">No active assets are currently assigned to this employee. Applying offboarding will only mark the employee inactive.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="toolbar" style="margin-top: 16px; margin-bottom: 0;">
+            <button class="btn" type="submit">Apply offboarding</button>
+            <a class="btn secondary" href="/admin/people/{{ person.person_id }}">Cancel</a>
+        </div>
+    </section>
+</form>
+{% endblock %}

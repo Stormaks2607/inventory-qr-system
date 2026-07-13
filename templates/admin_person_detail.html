@@ -592,6 +592,9 @@
     <div class="toolbar" style="margin-bottom: 0;">
         <a class="btn secondary" href="/admin/people">Back to people</a>
         <a class="btn secondary" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
+        {% if person.is_active is not sameas false %}
+        <a class="btn secondary" href="/admin/people/{{ person.person_id }}/offboard">Offboard</a>
+        {% endif %}
         <button class="btn" type="button" data-print-report>Print report</button>
     </div>
 </div>
@@ -605,6 +608,9 @@
         <div class="toolbar screen-only" style="margin-bottom: 0;">
             <a class="btn secondary" href="/admin/people">Back to people</a>
             <a class="btn secondary" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
+            {% if person.is_active is not sameas false %}
+            <a class="btn secondary" href="/admin/people/{{ person.person_id }}/offboard">Offboard</a>
+            {% endif %}
             <button class="btn" type="button" data-print-report>Print report</button>
         </div>
     </div>
@@ -617,6 +623,10 @@
         <div class="report-card">
             Assigned assets
             <strong>{{ assigned_assets|length }}</strong>
+        </div>
+        <div class="report-card">
+            Status
+            <strong>{% if person.is_active is sameas false %}Inactive{% else %}Active{% endif %}</strong>
         </div>
         <div class="report-card">
             Low-cost items
