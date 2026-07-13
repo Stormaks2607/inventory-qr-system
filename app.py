@@ -2825,18 +2825,19 @@ def build_person_offboarding_context(person: dict) -> dict:
 
 
 def update_person_inactive(person_id: int, offboarding_date: str, note: str) -> None:
-    payload = {
-        "is_active": False,
-        "offboarded_at": offboarding_date,
-        "offboarding_note": note or None,
-    }
+    supabase.table("persons").update({"is_active": False}).eq("person_id", person_id).execute()
+
     try:
-        supabase.table("persons").update(payload).eq("person_id", person_id).execute()
+        supabase.table("persons").update(
+            {
+                "offboarded_at": offboarding_date,
+                "offboarding_note": note or None,
+            }
+        ).eq("person_id", person_id).execute()
     except Exception as error:
         if isinstance(error, APIError):
             combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
             if "offboarded_at" in combined or "offboarding_note" in combined:
-                supabase.table("persons").update({"is_active": False}).eq("person_id", person_id).execute()
                 return
         raise
 
