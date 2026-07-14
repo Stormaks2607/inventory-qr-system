@@ -76,4 +76,58 @@
         </ul>
     </article>
 </section>
+
+<section class="panel">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Recent Changes</h3>
+            <p class="muted" style="margin: 0;">Latest recorded updates across assets, assignments, people, payments, Excel sync, and offboarding.</p>
+        </div>
+        <form method="get" class="search compact" style="width: auto; margin: 0;">
+            <label for="changes_limit" class="muted" style="white-space: nowrap;">Show</label>
+            <select id="changes_limit" name="changes_limit" onchange="this.form.submit()" style="max-width: 100px;">
+                {% for option in changes_limit_options %}
+                <option value="{{ option }}" {% if option == changes_limit %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </form>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date / Time</th>
+                    <th>Type</th>
+                    <th>Object</th>
+                    <th>Change</th>
+                    <th>User / Source</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for change in recent_changes %}
+                <tr>
+                    <td>{{ change.created_at_display }}</td>
+                    <td>{{ change.entity_type or "-" }}</td>
+                    <td>
+                        {% if change.entity_type == "Asset" or change.entity_type == "Assignment" or change.entity_type == "Payment" %}
+                        <strong>{{ change.entity_label or "-" }}</strong>
+                        {% elif change.entity_label %}
+                        {{ change.entity_label }}
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                    <td>{{ change.display_summary }}</td>
+                    <td>{{ change.actor or change.source or "-" }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" class="muted">No changes recorded yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
 {% endblock %}

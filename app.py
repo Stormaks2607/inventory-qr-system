@@ -31,6 +31,14 @@ def clean_env_value(name: str) -> Optional[str]:
     return value.strip().strip("\"'")
 
 
+def normalize_audit_limit(value, default: int = 5) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return default
+    return limit if limit in {5, 10, 20, 50} else default
+
+
 SUPABASE_URL = clean_env_value("SUPABASE_URL")
 SUPABASE_KEY = clean_env_value("SUPABASE_KEY")
 BOT_TOKEN = clean_env_value("BOT_TOKEN")
@@ -148,6 +156,125 @@ def execute_supabase_query(query, context: str):
         )
         print(f"SUPABASE CONNECTION ERROR ({context}): {message} Original error: {exc}")
         raise DatabaseConnectionError(message) from exc
+
+
+def get_admin_actor(request: Optional[Request] = None, fallback: str = "Admin") -> str:
+    if request is not None:
+        username = request.session.get("admin_username")
+        if username:
+            return str(username)
+    return fallback
+
+
+def stringify_audit_value(value) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
+
+
+def audit_log_event(
+    *,
+    entity_type: str,
+    action: str,
+    entity_id: Optional[int] = None,
+    entity_label: Optional[str] = None,
+    field_name: Optional[str] = None,
+    old_value=None,
+    new_value=None,
+    summary: Optional[str] = None,
+    source: str = "Admin",
+    actor: Optional[str] = None,
+    request: Optional[Request] = None,
+) -> None:
+    payload = {
+        "actor": actor or get_admin_actor(request, fallback=source),
+        "source": source,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "entity_label": entity_label,
+        "action": action,
+        "field_name": field_name,
+        "old_value": stringify_audit_value(old_value),
+        "new_value": stringify_audit_value(new_value),
+        "summary": summary,
+    }
+    try:
+        supabase.table("audit_log").insert(payload).execute()
+    except Exception:
+        return
+
+
+def audit_log_field_changes(
+    *,
+    entity_type: str,
+    entity_id: Optional[int],
+    entity_label: Optional[str],
+    old_record: dict,
+    new_record: dict,
+    fields: list[str],
+    source: str = "Admin",
+    request: Optional[Request] = None,
+    action: str = "updated",
+) -> int:
+    logged = 0
+    for field_name in fields:
+        old_value = old_record.get(field_name)
+        new_value = new_record.get(field_name)
+        if stringify_audit_value(old_value) == stringify_audit_value(new_value):
+            continue
+        audit_log_event(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            entity_label=entity_label,
+            action=action,
+            field_name=field_name,
+            old_value=old_value,
+            new_value=new_value,
+            summary=f"{field_name}: {stringify_audit_value(old_value) or '-'} -> {stringify_audit_value(new_value) or '-'}",
+            source=source,
+            request=request,
+        )
+        logged += 1
+    return logged
+
+
+def format_audit_datetime(value) -> str:
+    if not value:
+        return "-"
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = parsed.astimezone(ZoneInfo("Europe/Kyiv"))
+        return parsed.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return str(value)
+
+
+def list_recent_audit_events(limit: int = 5) -> list[dict]:
+    limit = normalize_audit_limit(limit)
+    try:
+        response = (
+            supabase.table("audit_log")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception:
+        return []
+
+    rows = response.data or []
+    for row in rows:
+        row["created_at_display"] = format_audit_datetime(row.get("created_at"))
+        row["display_summary"] = row.get("summary") or (
+            f"{row.get('field_name')}: {row.get('old_value') or '-'} -> {row.get('new_value') or '-'}"
+            if row.get("field_name")
+            else row.get("action")
+        )
+    return rows
 
 
 def get_default_branding_settings() -> dict:
@@ -1796,6 +1923,15 @@ def apply_sync_preview(preview: dict) -> dict:
         inserted_asset = (insert_response.data or [{}])[0]
         asset_id = inserted_asset.get("asset_id")
         inserted += 1
+        audit_log_event(
+            entity_type="Asset",
+            entity_id=asset_id,
+            entity_label=record.get("asset_tag_number"),
+            action="created",
+            summary=f"Created asset from Excel: {record.get('asset_tag_number')}",
+            source="Excel import",
+            actor="Excel import",
+        )
         if asset_id:
             if record.get("_has_recipient_column") and normalize_sync_string(record.get("recipient_name")):
                 assignment_updated += apply_sync_assignment(asset_id, record, sync_context)
@@ -1818,6 +1954,15 @@ def apply_sync_preview(preview: dict) -> dict:
         if update_data:
             supabase.table("assets").update(update_data).eq("asset_id", asset_id).execute()
             updated += 1
+            audit_log_event(
+                entity_type="Asset",
+                entity_id=asset_id,
+                entity_label=item.get("asset_tag_number"),
+                action="updated",
+                summary=f"Excel updated fields: {', '.join(update_data.keys())}",
+                source="Excel import",
+                actor="Excel import",
+            )
         if "responsible_person" in item.get("changed_fields", []):
             applied = apply_sync_assignment(asset_id, record, sync_context)
             assignment_updated += applied
@@ -1835,6 +1980,15 @@ def apply_sync_preview(preview: dict) -> dict:
         applied = apply_sync_transfer(record, sync_context)
         transfer_updated += applied
         skipped_relationships += 0 if applied else 1
+        if applied:
+            audit_log_event(
+                entity_type="Transfer",
+                entity_label=record.get("asset_tag_number"),
+                action="imported",
+                summary=f"Imported transfer log row for {record.get('asset_tag_number')}",
+                source="Excel import",
+                actor="Excel import",
+            )
 
     return {
         "inserted": inserted,
@@ -2903,9 +3057,35 @@ def apply_person_offboarding(person: dict, form) -> dict:
                     "handover_condition": current_assignment.get("handover_condition"),
                 }
             ).execute()
+            target_person = target_people.get(target_person_id) if target_person_id else None
+            target_label = get_person_display_name(target_person) if target_person else "No responsible person"
+            audit_log_event(
+                entity_type="Assignment",
+                entity_id=asset_id,
+                entity_label=asset.get("asset_tag_number"),
+                action="reassigned",
+                field_name="responsible_person",
+                old_value=get_person_display_name(person),
+                new_value=target_label,
+                summary=f"{asset.get('asset_tag_number')} reassigned during offboarding: {get_person_display_name(person)} -> {target_label}",
+                source="Offboarding",
+                actor="Offboarding",
+            )
         reassigned += 1
 
     update_person_inactive(person_id, offboarding_date, offboarding_note)
+    audit_log_event(
+        entity_type="Employee",
+        entity_id=person_id,
+        entity_label=get_person_display_name(person),
+        action="offboarded",
+        field_name="is_active",
+        old_value=True,
+        new_value=False,
+        summary=f"Employee offboarded: {get_person_display_name(person)}",
+        source="Offboarding",
+        actor="Offboarding",
+    )
     return {"reassigned": reassigned, "skipped": skipped}
 
 
@@ -3909,12 +4089,13 @@ def admin_logout(request: Request):
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_dashboard(request: Request):
+def admin_dashboard(request: Request, changes_limit: int = 5):
     redirect = require_admin(request)
     if redirect:
         return redirect
 
     database_error = ""
+    changes_limit = normalize_audit_limit(changes_limit)
     try:
         assets = list_assets()
         summary = build_asset_summary(assets)
@@ -3927,6 +4108,9 @@ def admin_dashboard(request: Request):
         name="admin_dashboard.html",
         context={
             "summary": summary,
+            "recent_changes": list_recent_audit_events(changes_limit),
+            "changes_limit": changes_limit,
+            "changes_limit_options": [5, 10, 20, 50],
             "database_error": database_error,
             "active_page": "dashboard",
             "page_title": "Admin Dashboard",
@@ -4238,10 +4422,26 @@ def admin_asset_create(
                 fallback_amount=parse_float_field(asset_form["purchase_price"]),
             )
             supabase.table("asset_payments").insert(payment_payload).execute()
+            audit_log_event(
+                entity_type="Payment",
+                entity_id=created_asset_id,
+                entity_label=asset_form["asset_tag_number"],
+                action="created",
+                summary=f"Added initial payment for {asset_form['asset_tag_number']}: {payment_payload.get('payment_amount') or '-'} {payment_payload.get('currency') or ''}",
+                request=request,
+            )
         except Exception as error:
             set_flash(request, "error", f"Asset was created, but payment was not saved: {describe_asset_payment_error(error)}")
             return RedirectResponse(url=f"/admin/assets/{created_asset_id}", status_code=303)
 
+    audit_log_event(
+        entity_type="Asset",
+        entity_id=created_asset_id,
+        entity_label=asset_form["asset_tag_number"],
+        action="created",
+        summary=f"Created asset: {asset_form['asset_tag_number']}",
+        request=request,
+    )
     set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
     return RedirectResponse(url=f"/admin/assets/{created_asset_id}", status_code=303)
 
@@ -4348,6 +4548,14 @@ def admin_person_create(
             created_name = person_form["name_eng"] or person_form["name"]
 
             set_flash(request, "success", f"Employee {created_name} was created.")
+            audit_log_event(
+                entity_type="Employee",
+                entity_id=created_person_id,
+                entity_label=created_name,
+                action="created",
+                summary=f"Created employee: {created_name}",
+                request=request,
+            )
             if created_person_id:
                 return RedirectResponse(url=f"/admin/people/{created_person_id}", status_code=303)
             return RedirectResponse(url="/admin/people?show_all=true", status_code=303)
@@ -4381,6 +4589,14 @@ def admin_person_create(
     created_name = person_form["name_eng"] or person_form["name"]
 
     set_flash(request, "success", f"Employee {created_name} was created.")
+    audit_log_event(
+        entity_type="Employee",
+        entity_id=created_person_id,
+        entity_label=created_name,
+        action="created",
+        summary=f"Created employee: {created_name}",
+        request=request,
+    )
     if created_person_id:
         return RedirectResponse(url=f"/admin/people/{created_person_id}", status_code=303)
     return RedirectResponse(url="/admin/people?show_all=true", status_code=303)
@@ -4566,6 +4782,15 @@ async def admin_person_edit_submit(request: Request, person_id: int):
 
     try:
         supabase.table("persons").update(update_data).eq("person_id", person_id).execute()
+        audit_log_field_changes(
+            entity_type="Employee",
+            entity_id=person_id,
+            entity_label=get_person_display_name({**person, **update_data}),
+            old_record=person,
+            new_record=update_data,
+            fields=list(update_data.keys()),
+            request=request,
+        )
     except Exception as exc:
         return templates.TemplateResponse(
             request=request,
@@ -4935,6 +5160,15 @@ def admin_asset_edit(
         .eq("asset_id", asset_id)
         .execute()
     )
+    audit_log_field_changes(
+        entity_type="Asset",
+        entity_id=asset_id,
+        entity_label=asset.get("asset_tag_number"),
+        old_record=asset,
+        new_record=update_data,
+        fields=list(update_data.keys()),
+        request=request,
+    )
 
     set_flash(request, "success", "Asset details were updated.")
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -4977,12 +5211,23 @@ def admin_asset_assignment_update(
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     current_assignment = asset.get("current_assignment")
+    old_responsible = (current_assignment or {}).get("responsible_person") or "-"
 
     if not parsed_person_id and not parsed_location_id:
         if current_assignment:
             close_current_assignments(asset_id, assignment_date)
             if status:
                 supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+            audit_log_event(
+                entity_type="Assignment",
+                entity_id=asset_id,
+                entity_label=asset.get("asset_tag_number"),
+                action="closed",
+                old_value=old_responsible,
+                new_value="-",
+                summary=f"Assignment closed for {asset.get('asset_tag_number')}: {old_responsible} -> unassigned",
+                request=request,
+            )
             set_flash(request, "success", "Current assignment was closed and the asset is now unassigned.")
         else:
             if status:
@@ -5024,6 +5269,14 @@ def admin_asset_assignment_update(
             set_flash(request, "error", describe_assignment_update_error(exc))
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
         set_flash(request, "success", "Current assignment was updated.")
+        audit_log_event(
+            entity_type="Assignment",
+            entity_id=asset_id,
+            entity_label=asset.get("asset_tag_number"),
+            action="updated",
+            summary=f"Assignment updated for {asset.get('asset_tag_number')}",
+            request=request,
+        )
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     try:
@@ -5036,6 +5289,19 @@ def admin_asset_assignment_update(
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     set_flash(request, "success", "Assignment was updated.")
+    target_person = get_person_by_id(parsed_person_id) if parsed_person_id else None
+    new_responsible = get_person_display_name(target_person) if target_person else "-"
+    audit_log_event(
+        entity_type="Assignment",
+        entity_id=asset_id,
+        entity_label=asset.get("asset_tag_number"),
+        action="reassigned",
+        field_name="responsible_person",
+        old_value=old_responsible,
+        new_value=new_responsible,
+        summary=f"{asset.get('asset_tag_number')} reassigned: {old_responsible} -> {new_responsible}",
+        request=request,
+    )
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
 
@@ -5068,6 +5334,14 @@ def admin_asset_payment_create(
             notes=notes,
         )
         supabase.table("asset_payments").insert(payload).execute()
+        audit_log_event(
+            entity_type="Payment",
+            entity_id=asset_id,
+            entity_label=asset.get("asset_tag_number"),
+            action="created",
+            summary=f"Added payment for {asset.get('asset_tag_number')}: {payload.get('payment_amount') or '-'} {payload.get('currency') or ''}",
+            request=request,
+        )
     except Exception as error:
         set_flash(request, "error", describe_asset_payment_error(error))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -5097,6 +5371,15 @@ def admin_asset_payment_update(
         raise HTTPException(status_code=404, detail="Asset not found")
 
     try:
+        old_payment_response = (
+            supabase.table("asset_payments")
+            .select("*")
+            .eq("payment_id", payment_id)
+            .eq("asset_id", asset_id)
+            .limit(1)
+            .execute()
+        )
+        old_payment = (old_payment_response.data or [{}])[0]
         parsed_number = int(payment_number.strip()) if payment_number.strip() else get_next_payment_number(asset_id)
         payload = build_asset_payment_payload(
             asset_id=asset_id,
@@ -5109,6 +5392,15 @@ def admin_asset_payment_update(
         )
         payload.pop("asset_id", None)
         supabase.table("asset_payments").update(payload).eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
+        audit_log_field_changes(
+            entity_type="Payment",
+            entity_id=payment_id,
+            entity_label=asset.get("asset_tag_number"),
+            old_record=old_payment,
+            new_record=payload,
+            fields=["payment_number", "payment_date", "payment_amount", "currency", "payment_status", "notes"],
+            request=request,
+        )
     except Exception as error:
         set_flash(request, "error", describe_asset_payment_error(error))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -5128,7 +5420,24 @@ def admin_asset_payment_delete(request: Request, asset_id: int, payment_id: int)
         raise HTTPException(status_code=404, detail="Asset not found")
 
     try:
+        old_payment_response = (
+            supabase.table("asset_payments")
+            .select("*")
+            .eq("payment_id", payment_id)
+            .eq("asset_id", asset_id)
+            .limit(1)
+            .execute()
+        )
+        old_payment = (old_payment_response.data or [{}])[0]
         supabase.table("asset_payments").delete().eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
+        audit_log_event(
+            entity_type="Payment",
+            entity_id=payment_id,
+            entity_label=asset.get("asset_tag_number"),
+            action="deleted",
+            summary=f"Removed payment for {asset.get('asset_tag_number')}: {old_payment.get('payment_amount') or '-'} {old_payment.get('currency') or ''}",
+            request=request,
+        )
     except Exception as error:
         set_flash(request, "error", describe_asset_payment_error(error))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -5198,6 +5507,14 @@ def admin_asset_project_create(
         if payload["is_primary"]:
             supabase.table("asset_projects").update({"is_primary": False}).eq("asset_id", asset_id).execute()
         supabase.table("asset_projects").insert(payload).execute()
+        audit_log_event(
+            entity_type="Project",
+            entity_id=asset_id,
+            entity_label=asset.get("asset_tag_number"),
+            action="created",
+            summary=f"Added project funding for {asset.get('asset_tag_number')}: project #{payload.get('project_id')}",
+            request=request,
+        )
     except Exception as error:
         set_flash(request, "error", describe_asset_project_error(error))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -5264,9 +5581,27 @@ def admin_asset_project_update(
         payload.pop("is_purchase_origin", None)
 
     try:
+        old_project_response = (
+            supabase.table("asset_projects")
+            .select("*")
+            .eq("asset_project_id", asset_project_id)
+            .eq("asset_id", asset_id)
+            .limit(1)
+            .execute()
+        )
+        old_project = (old_project_response.data or [{}])[0]
         if payload["is_primary"]:
             supabase.table("asset_projects").update({"is_primary": False}).eq("asset_id", asset_id).execute()
         supabase.table("asset_projects").update(payload).eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
+        audit_log_field_changes(
+            entity_type="Project",
+            entity_id=asset_project_id,
+            entity_label=asset.get("asset_tag_number"),
+            old_record=old_project,
+            new_record=payload,
+            fields=list(payload.keys()),
+            request=request,
+        )
     except Exception as error:
         set_flash(request, "error", describe_asset_project_error(error))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -5286,7 +5621,24 @@ def admin_asset_project_delete(request: Request, asset_id: int, asset_project_id
         raise HTTPException(status_code=404, detail="Asset not found")
 
     try:
+        old_project_response = (
+            supabase.table("asset_projects")
+            .select("*")
+            .eq("asset_project_id", asset_project_id)
+            .eq("asset_id", asset_id)
+            .limit(1)
+            .execute()
+        )
+        old_project = (old_project_response.data or [{}])[0]
         supabase.table("asset_projects").delete().eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
+        audit_log_event(
+            entity_type="Project",
+            entity_id=asset_project_id,
+            entity_label=asset.get("asset_tag_number"),
+            action="deleted",
+            summary=f"Removed project funding for {asset.get('asset_tag_number')}: project #{old_project.get('project_id') or '-'}",
+            request=request,
+        )
     except Exception as error:
         set_flash(request, "error", describe_asset_project_error(error))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
