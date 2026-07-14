@@ -1,0 +1,106 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Audit Log</h2>
+    <p>Review recorded changes from Transfer log backfill, Excel synchronization, offboarding, and admin edits.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="panel">
+    <div class="toolbar">
+        <a class="btn secondary" href="/admin">Back to dashboard</a>
+    </div>
+
+    <form method="get" class="form-grid">
+        <div class="field">
+            <label for="q">Search</label>
+            <input id="q" name="q" type="text" value="{{ query }}" placeholder="Asset tag, person, project, summary">
+        </div>
+        <div class="field">
+            <label for="entity_type">Type</label>
+            <select id="entity_type" name="entity_type">
+                <option value="">All types</option>
+                {% for option in entity_type_options %}
+                <option value="{{ option }}" {% if option == entity_type %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="field">
+            <label for="source">Source</label>
+            <select id="source" name="source">
+                <option value="">All sources</option>
+                {% for option in source_options %}
+                <option value="{{ option }}" {% if option == source %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="field">
+            <label for="page_size">Rows</label>
+            <select id="page_size" name="page_size">
+                {% for option in page_size_options %}
+                <option value="{{ option }}" {% if option == page_size %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <input type="hidden" name="page" value="1">
+        <div class="toolbar" style="margin-bottom: 0;">
+            <button class="btn" type="submit">Apply</button>
+            <a class="btn secondary" href="/admin/audit-log">Reset</a>
+        </div>
+    </form>
+</section>
+
+<section class="panel">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Changes</h3>
+            <p class="muted" style="margin: 0;">Page {{ page }} | Showing {{ audit_rows|length }} rows{% if total_loaded %} from {{ total_loaded }} loaded matches{% endif %}.</p>
+        </div>
+        <div class="toolbar" style="margin-bottom: 0;">
+            {% if previous_page_url %}
+            <a class="btn secondary" href="{{ previous_page_url }}">Previous</a>
+            {% endif %}
+            {% if next_page_url %}
+            <a class="btn secondary" href="{{ next_page_url }}">Next</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date / Time</th>
+                    <th>Type</th>
+                    <th>Object</th>
+                    <th>Action</th>
+                    <th>Change</th>
+                    <th>User / Source</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in audit_rows %}
+                <tr>
+                    <td>{{ row.created_at_display }}</td>
+                    <td>{{ row.entity_type or "-" }}</td>
+                    <td><strong>{{ row.entity_label or "-" }}</strong></td>
+                    <td>{{ row.action or "-" }}</td>
+                    <td>{{ row.display_summary }}</td>
+                    <td>{{ row.actor or row.source or "-" }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="muted">No audit records matched the current filters.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

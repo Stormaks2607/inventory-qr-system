@@ -8,7 +8,7 @@ import json
 import os
 import re
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -320,7 +320,18 @@ def list_recent_audit_events(limit: int = 5) -> list[dict]:
         else:
             return []
 
-    rows = response.data or []
+    return enrich_audit_rows(response.data or [])
+
+
+def normalize_audit_page_size(value, default: int = 100) -> int:
+    try:
+        page_size = int(value)
+    except (TypeError, ValueError):
+        return default
+    return page_size if page_size in {50, 100, 200} else default
+
+
+def enrich_audit_rows(rows: list[dict]) -> list[dict]:
     for row in rows:
         row["created_at_display"] = format_audit_datetime(row.get("event_date") or row.get("created_at"))
         row["display_summary"] = row.get("summary") or (
@@ -329,6 +340,103 @@ def list_recent_audit_events(limit: int = 5) -> list[dict]:
             else row.get("action")
         )
     return rows
+
+
+def audit_row_matches_query(row: dict, query: str) -> bool:
+    if not query:
+        return True
+    normalized_query = query.strip().casefold()
+    haystack = " ".join(
+        str(row.get(field_name) or "")
+        for field_name in [
+            "entity_type",
+            "entity_label",
+            "action",
+            "field_name",
+            "old_value",
+            "new_value",
+            "summary",
+            "actor",
+            "source",
+        ]
+    ).casefold()
+    return normalized_query in haystack
+
+
+def list_audit_log_events(
+    *,
+    q: str = "",
+    entity_type: str = "",
+    source: str = "",
+    page: int = 1,
+    page_size: int = 100,
+) -> dict:
+    page = max(page, 1)
+    page_size = normalize_audit_page_size(page_size)
+    fetch_limit = max(page * page_size + 1, page_size + 1)
+
+    try:
+        query = supabase.table("audit_log").select("*")
+        if entity_type:
+            query = query.eq("entity_type", entity_type)
+        if source:
+            query = query.eq("source", source)
+        response = (
+            query
+            .order("event_date", desc=True)
+            .order("created_at", desc=True)
+            .limit(fetch_limit)
+            .execute()
+        )
+    except Exception as error:
+        if isinstance(error, APIError):
+            combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
+            if "event_date" in combined:
+                try:
+                    query = supabase.table("audit_log").select("*")
+                    if entity_type:
+                        query = query.eq("entity_type", entity_type)
+                    if source:
+                        query = query.eq("source", source)
+                    response = query.order("created_at", desc=True).limit(fetch_limit).execute()
+                except Exception:
+                    return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_loaded": 0}
+            else:
+                return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_loaded": 0}
+        else:
+            return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_loaded": 0}
+
+    all_rows = [row for row in (response.data or []) if audit_row_matches_query(row, q)]
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_rows = enrich_audit_rows(all_rows[start:end])
+    has_next = len(all_rows) > end
+
+    return {
+        "rows": page_rows,
+        "page": page,
+        "page_size": page_size,
+        "has_next": has_next,
+        "total_loaded": len(all_rows),
+    }
+
+
+def list_audit_filter_values(field_name: str) -> list[str]:
+    try:
+        response = (
+            supabase.table("audit_log")
+            .select(field_name)
+            .limit(1000)
+            .execute()
+        )
+    except Exception:
+        return []
+    values = {
+        str(row.get(field_name))
+        for row in response.data or []
+        if row.get(field_name)
+    }
+    return sorted(values)
 
 
 def build_transfer_audit_summary(transfer: dict, project_rows: Optional[list[dict]] = None) -> str:
@@ -4487,6 +4595,65 @@ def admin_audit_backfill_transfer_log(request: Request):
         f"{result.get('updated', 0)} refreshed from {result['available']} transfer records.",
     )
     return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.get("/admin/audit-log", response_class=HTMLResponse)
+def admin_audit_log(
+    request: Request,
+    q: str = "",
+    entity_type: str = "",
+    source: str = "",
+    page: int = 1,
+    page_size: int = 100,
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    page = max(page, 1)
+    page_size = normalize_audit_page_size(page_size)
+    result = list_audit_log_events(
+        q=q.strip(),
+        entity_type=entity_type.strip(),
+        source=source.strip(),
+        page=page,
+        page_size=page_size,
+    )
+
+    query_params = {
+        "q": q.strip(),
+        "entity_type": entity_type.strip(),
+        "source": source.strip(),
+        "page_size": page_size,
+    }
+    base_query_string = urlencode({key: value for key, value in query_params.items() if value not in ("", None)})
+    previous_page_url = f"/admin/audit-log?{base_query_string}&page={page - 1}" if page > 1 else ""
+    next_page_url = f"/admin/audit-log?{base_query_string}&page={page + 1}" if result["has_next"] else ""
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_audit_log.html",
+        context={
+            "audit_rows": result["rows"],
+            "query": q.strip(),
+            "entity_type": entity_type.strip(),
+            "source": source.strip(),
+            "page": result["page"],
+            "page_size": result["page_size"],
+            "has_next": result["has_next"],
+            "total_loaded": result["total_loaded"],
+            "page_size_options": [50, 100, 200],
+            "entity_type_options": list_audit_filter_values("entity_type"),
+            "source_options": list_audit_filter_values("source"),
+            "query_params": query_params,
+            "previous_page_url": previous_page_url,
+            "next_page_url": next_page_url,
+            "flash": pop_flash(request),
+            "active_page": "dashboard",
+            "page_title": "Audit Log",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
 
 
 @app.get("/admin/assets", response_class=HTMLResponse)
