@@ -225,6 +225,26 @@ def audit_log_event(
         return False
 
 
+def update_audit_log_event_by_key(event_key: Optional[str], **updates) -> bool:
+    if not event_key:
+        return False
+    payload = {
+        key: value
+        for key, value in updates.items()
+        if value is not None
+    }
+    if not payload:
+        return False
+    for field_name in ["old_value", "new_value"]:
+        if field_name in payload:
+            payload[field_name] = stringify_audit_value(payload[field_name])
+    try:
+        supabase.table("audit_log").update(payload).eq("event_key", event_key).execute()
+        return True
+    except Exception:
+        return False
+
+
 def audit_log_field_changes(
     *,
     entity_type: str,
@@ -320,7 +340,24 @@ def build_transfer_audit_summary(transfer: dict, project_rows: Optional[list[dic
     if project_rows is not None:
         from_project = format_transfer_project_rows(project_rows, "from")
         to_project = format_transfer_project_rows(project_rows, "to")
-    return f"{asset_label} transferred: {from_holder} / {from_project} -> {to_holder} / {to_project}"
+
+    movement_changed = (
+        normalize_sync_match_key(from_holder) != normalize_sync_match_key(to_holder)
+        or normalize_sync_match_key(from_project) != normalize_sync_match_key(to_project)
+    )
+    if movement_changed:
+        return f"{asset_label} transferred: {from_holder} / {from_project} -> {to_holder} / {to_project}"
+
+    details = []
+    if transfer.get("asset_status"):
+        details.append(f"Status: {transfer.get('asset_status')}")
+    if transfer.get("asset_condition_description"):
+        details.append(f"Condition: {transfer.get('asset_condition_description')}")
+    if transfer.get("transfer_reason") or transfer.get("notes"):
+        details.append(f"Reason: {transfer.get('transfer_reason') or transfer.get('notes')}")
+    if details:
+        return f"{asset_label} transfer log update: " + " | ".join(details)
+    return f"{asset_label} transfer log update: holder/project unchanged"
 
 
 def backfill_audit_from_transfer_log() -> dict:
@@ -333,6 +370,7 @@ def backfill_audit_from_transfer_log() -> dict:
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
     projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
     created = 0
+    updated = 0
 
     for transfer in sorted(transfers, key=lambda row: (str(row.get("transfer_date") or ""), int(row.get("transfer_id") or 0))):
         transfer_id = transfer.get("transfer_id")
@@ -347,6 +385,7 @@ def backfill_audit_from_transfer_log() -> dict:
         }
         project_rows = projects_by_transfer_id.get(transfer_id, [])
         summary = build_transfer_audit_summary(transfer, project_rows)
+        event_key = f"asset_transfer:{transfer_id}" if transfer_id else None
         was_created = audit_log_event(
             entity_type="Transfer",
             entity_id=transfer_id,
@@ -359,12 +398,23 @@ def backfill_audit_from_transfer_log() -> dict:
             source="Excel Transfer log",
             actor="Excel Transfer log",
             event_date=transfer.get("transfer_date"),
-            event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
+            event_key=event_key,
         )
         if was_created:
             created += 1
+        else:
+            was_updated = update_audit_log_event_by_key(
+                event_key,
+                entity_label=transfer.get("asset_tag_snapshot") or transfer.get("asset_tag_number"),
+                old_value=transfer.get("from_holder_display") or transfer.get("from_holder_name"),
+                new_value=transfer.get("to_holder_display") or transfer.get("to_holder_name"),
+                summary=summary,
+                event_date=transfer.get("transfer_date"),
+            )
+            if was_updated:
+                updated += 1
 
-    return {"created": created, "available": len(transfers)}
+    return {"created": created, "updated": updated, "available": len(transfers)}
 
 
 def get_default_branding_settings() -> dict:
@@ -4433,7 +4483,8 @@ def admin_audit_backfill_transfer_log(request: Request):
     set_flash(
         request,
         "success",
-        f"Transfer log backfill completed: {result['created']} audit records created from {result['available']} transfer records.",
+        f"Transfer log backfill completed: {result['created']} audit records created, "
+        f"{result.get('updated', 0)} refreshed from {result['available']} transfer records.",
     )
     return RedirectResponse(url="/admin", status_code=303)
 
