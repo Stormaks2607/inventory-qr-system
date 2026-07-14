@@ -6,6 +6,12 @@
     <p>This admin area is the foundation for asset operations, reporting, and hybrid Excel synchronization. Supabase is used for live work, while the Excel inventory file remains the official control copy.</p>
 </section>
 
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
 {% if database_error %}
 <section class="panel alert-panel">
     <h3>Database connection problem</h3>
@@ -90,6 +96,9 @@
                 <option value="{{ option }}" {% if option == changes_limit %}selected{% endif %}>{{ option }}</option>
                 {% endfor %}
             </select>
+        </form>
+        <form method="post" action="/admin/audit/backfill-transfer-log" style="margin: 0;">
+            <button class="btn secondary" type="submit">Backfill from Transfer log</button>
         </form>
     </div>
 

@@ -189,7 +189,9 @@ def audit_log_event(
     source: str = "Admin",
     actor: Optional[str] = None,
     request: Optional[Request] = None,
-) -> None:
+    event_date: Optional[str] = None,
+    event_key: Optional[str] = None,
+) -> bool:
     payload = {
         "actor": actor or get_admin_actor(request, fallback=source),
         "source": source,
@@ -201,11 +203,26 @@ def audit_log_event(
         "old_value": stringify_audit_value(old_value),
         "new_value": stringify_audit_value(new_value),
         "summary": summary,
+        "event_date": event_date or datetime.now(ZoneInfo("Europe/Kyiv")).isoformat(),
+        "event_key": event_key,
     }
     try:
         supabase.table("audit_log").insert(payload).execute()
-    except Exception:
-        return
+        return True
+    except Exception as error:
+        if isinstance(error, APIError):
+            combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
+            if "event_key" in combined and ("duplicate" in combined or "unique" in combined):
+                return False
+            if "event_date" in combined or "event_key" in combined:
+                payload.pop("event_date", None)
+                payload.pop("event_key", None)
+                try:
+                    supabase.table("audit_log").insert(payload).execute()
+                    return True
+                except Exception:
+                    return False
+        return False
 
 
 def audit_log_field_changes(
@@ -259,22 +276,95 @@ def list_recent_audit_events(limit: int = 5) -> list[dict]:
         response = (
             supabase.table("audit_log")
             .select("*")
+            .order("event_date", desc=True)
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
         )
-    except Exception:
-        return []
+    except Exception as error:
+        if isinstance(error, APIError):
+            combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
+            if "event_date" in combined:
+                try:
+                    response = (
+                        supabase.table("audit_log")
+                        .select("*")
+                        .order("created_at", desc=True)
+                        .limit(limit)
+                        .execute()
+                    )
+                except Exception:
+                    return []
+            else:
+                return []
+        else:
+            return []
 
     rows = response.data or []
     for row in rows:
-        row["created_at_display"] = format_audit_datetime(row.get("created_at"))
+        row["created_at_display"] = format_audit_datetime(row.get("event_date") or row.get("created_at"))
         row["display_summary"] = row.get("summary") or (
             f"{row.get('field_name')}: {row.get('old_value') or '-'} -> {row.get('new_value') or '-'}"
             if row.get("field_name")
             else row.get("action")
         )
     return rows
+
+
+def build_transfer_audit_summary(transfer: dict, project_rows: Optional[list[dict]] = None) -> str:
+    asset_label = transfer.get("asset_tag_snapshot") or transfer.get("asset_tag_number") or f"Asset #{transfer.get('asset_id')}"
+    from_holder = transfer.get("from_holder_display") or transfer.get("from_holder_name") or "-"
+    to_holder = transfer.get("to_holder_display") or transfer.get("to_holder_name") or "-"
+    from_project = transfer.get("from_project_display") or transfer.get("from_project_raw") or "-"
+    to_project = transfer.get("to_project_display") or transfer.get("to_project_raw") or "-"
+    if project_rows is not None:
+        from_project = format_transfer_project_rows(project_rows, "from")
+        to_project = format_transfer_project_rows(project_rows, "to")
+    return f"{asset_label} transferred: {from_holder} / {from_project} -> {to_holder} / {to_project}"
+
+
+def backfill_audit_from_transfer_log() -> dict:
+    transfers = list_asset_transfer_records()
+    if not transfers:
+        return {"created": 0, "available": 0}
+
+    assets_by_id = {row.get("asset_id"): row for row in list_asset_records()}
+    people_by_id = {row.get("person_id"): row for row in list_people()}
+    transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
+    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
+    created = 0
+
+    for transfer in sorted(transfers, key=lambda row: (str(row.get("transfer_date") or ""), int(row.get("transfer_id") or 0))):
+        transfer_id = transfer.get("transfer_id")
+        asset = assets_by_id.get(transfer.get("asset_id")) or {}
+        from_person = people_by_id.get(transfer.get("from_person_id")) or {}
+        to_person = people_by_id.get(transfer.get("to_person_id")) or {}
+        transfer = {
+            **transfer,
+            "asset_tag_number": asset.get("asset_tag_number"),
+            "from_holder_display": get_person_display_name(from_person) if from_person else transfer.get("from_holder_name"),
+            "to_holder_display": get_person_display_name(to_person) if to_person else transfer.get("to_holder_name"),
+        }
+        project_rows = projects_by_transfer_id.get(transfer_id, [])
+        summary = build_transfer_audit_summary(transfer, project_rows)
+        was_created = audit_log_event(
+            entity_type="Transfer",
+            entity_id=transfer_id,
+            entity_label=transfer.get("asset_tag_snapshot") or transfer.get("asset_tag_number"),
+            action="transferred",
+            field_name="assignment",
+            old_value=transfer.get("from_holder_display") or transfer.get("from_holder_name"),
+            new_value=transfer.get("to_holder_display") or transfer.get("to_holder_name"),
+            summary=summary,
+            source="Excel Transfer log",
+            actor="Excel Transfer log",
+            event_date=transfer.get("transfer_date"),
+            event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
+        )
+        if was_created:
+            created += 1
+
+    return {"created": created, "available": len(transfers)}
 
 
 def get_default_branding_settings() -> dict:
@@ -1888,6 +1978,20 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
     if transfer_id:
         apply_transfer_project_rows(transfer_id, record, sync_context)
         sync_context.setdefault("transfer_signatures", set()).add(signature)
+        audit_log_event(
+            entity_type="Transfer",
+            entity_id=transfer_id,
+            entity_label=record.get("asset_tag_number"),
+            action="transferred",
+            field_name="assignment",
+            old_value=record.get("from_holder_name"),
+            new_value=record.get("to_holder_name"),
+            summary=build_transfer_audit_summary(record),
+            source="Excel Transfer log",
+            actor="Excel Transfer log",
+            event_date=record.get("transfer_date"),
+            event_key=f"asset_transfer:{transfer_id}",
+        )
     return 1
 
 
@@ -1980,15 +2084,6 @@ def apply_sync_preview(preview: dict) -> dict:
         applied = apply_sync_transfer(record, sync_context)
         transfer_updated += applied
         skipped_relationships += 0 if applied else 1
-        if applied:
-            audit_log_event(
-                entity_type="Transfer",
-                entity_label=record.get("asset_tag_number"),
-                action="imported",
-                summary=f"Imported transfer log row for {record.get('asset_tag_number')}",
-                source="Excel import",
-                actor="Excel import",
-            )
 
     return {
         "inserted": inserted,
@@ -2078,6 +2173,16 @@ def get_excel_header_columns(sheet) -> dict[str, list[int]]:
     return columns
 
 
+def get_transfer_header_columns(sheet) -> dict[str, int]:
+    header_row_number = EXCEL_TRANSFER_LOG_HEADER_ROW + 1
+    columns = {}
+    for cell in sheet[header_row_number]:
+        field_name = resolve_transfer_header_field(cell.value)
+        if field_name and field_name not in columns:
+            columns[field_name] = cell.column
+    return columns
+
+
 def get_export_project_numbers(asset_projects: list[dict], mode: str) -> str:
     if mode == "purchased":
         allocations = get_project_allocations_from_rows(get_purchased_project_rows(asset_projects))
@@ -2150,6 +2255,48 @@ def build_database_excel_records(usage_type: Optional[str] = None) -> list[dict]
             }
         )
 
+    return records
+
+
+def build_database_transfer_log_records() -> list[dict]:
+    transfers = list_asset_transfer_records()
+    if not transfers:
+        return []
+
+    assets_by_id = {row.get("asset_id"): row for row in list_asset_records()}
+    people_by_id = {row.get("person_id"): row for row in list_people()}
+    transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
+    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
+    records = []
+
+    for index, transfer in enumerate(
+        sorted(transfers, key=lambda row: (str(row.get("transfer_date") or ""), int(row.get("transfer_id") or 0))),
+        start=1,
+    ):
+        asset = assets_by_id.get(transfer.get("asset_id")) or {}
+        from_person = people_by_id.get(transfer.get("from_person_id")) or {}
+        to_person = people_by_id.get(transfer.get("to_person_id")) or {}
+        project_rows = projects_by_transfer_id.get(transfer.get("transfer_id"), [])
+        from_project = transfer.get("from_project_raw") or (format_transfer_project_rows(project_rows, "from") if project_rows else None)
+        to_project = transfer.get("to_project_raw") or (format_transfer_project_rows(project_rows, "to") if project_rows else None)
+        record = {
+            "source_log_no": transfer.get("source_log_no"),
+            "transfer_date": transfer.get("transfer_date"),
+            "source_asset_type": transfer.get("source_asset_type") or get_asset_usage_type_label(asset.get("usage_type")),
+            "asset_tag_number": transfer.get("asset_tag_snapshot") or asset.get("asset_tag_number"),
+            "asset_tag_snapshot": transfer.get("asset_tag_snapshot") or asset.get("asset_tag_number"),
+            "description_snapshot": transfer.get("description_snapshot") or asset.get("item_description"),
+            "serial_snapshot": transfer.get("serial_snapshot") or asset.get("serial_chassis_number") or asset.get("serial_number"),
+            "from_holder_name": get_person_display_name(from_person) if from_person else transfer.get("from_holder_name"),
+            "from_project_raw": None if from_project == "-" else from_project,
+            "to_project_raw": None if to_project == "-" else to_project,
+            "to_holder_name": get_person_display_name(to_person) if to_person else transfer.get("to_holder_name"),
+            "asset_status": transfer.get("asset_status"),
+            "asset_condition_description": transfer.get("asset_condition_description"),
+            "transfer_reason": transfer.get("transfer_reason") or transfer.get("notes"),
+        }
+        record["transfer_key"] = make_transfer_key(record)
+        records.append(record)
     return records
 
 
@@ -2261,6 +2408,62 @@ def write_database_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
     }
 
 
+def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
+    columns = get_transfer_header_columns(sheet)
+    if "asset_tag_number" not in columns or "transfer_date" not in columns:
+        raise ValueError(f"The workbook sheet '{sheet.title}' does not contain the expected Transfer log headers.")
+
+    header_row_number = EXCEL_TRANSFER_LOG_HEADER_ROW + 1
+    data_start_row = EXCEL_TRANSFER_LOG_HEADER_ROW + 2
+    row_by_key = {}
+    max_source_log_no = 0
+
+    for row_number in range(data_start_row, sheet.max_row + 1):
+        row = {
+            field_name: sheet.cell(row=row_number, column=column_number).value
+            for field_name, column_number in columns.items()
+        }
+        normalized = normalize_excel_transfer_record(row, row_number)
+        if normalized:
+            row_by_key.setdefault(normalized.get("transfer_key"), row_number)
+            max_source_log_no = max(max_source_log_no, int(normalized.get("source_log_no") or 0))
+
+    last_data_row = max(row_by_key.values(), default=data_start_row - 1)
+    template_row = max(data_start_row, last_data_row)
+    updated_rows = 0
+    appended_rows = 0
+    written_cells = 0
+
+    for record in records:
+        transfer_key = record.get("transfer_key") or make_transfer_key(record)
+        row_number = row_by_key.get(transfer_key)
+        if row_number:
+            updated_rows += 1
+        else:
+            row_number = last_data_row + 1
+            copy_excel_row_style(sheet, template_row, row_number)
+            row_by_key[transfer_key] = row_number
+            last_data_row = row_number
+            template_row = row_number
+            appended_rows += 1
+            if not record.get("source_log_no"):
+                max_source_log_no += 1
+                record["source_log_no"] = max_source_log_no
+
+        for field_name, column_number in columns.items():
+            if field_name in record:
+                sheet.cell(row=row_number, column=column_number).value = record.get(field_name)
+                written_cells += 1
+
+    expand_excel_data_ranges(sheet, header_row_number, last_data_row)
+    return {
+        "updated_rows": updated_rows,
+        "appended_rows": appended_rows,
+        "written_cells": written_cells,
+        "exported_records": len(records),
+    }
+
+
 def export_supabase_to_excel() -> dict:
     if not os.path.exists(SYNC_WORKBOOK_PATH):
         raise ValueError("No official workbook is available. Upload an Excel file first.")
@@ -2289,18 +2492,30 @@ def export_supabase_to_excel() -> dict:
             workbook[EXCEL_LOW_COST_SHEET_NAME],
             build_database_excel_records("low_cost"),
         )
+    transfer_result = {
+        "updated_rows": 0,
+        "appended_rows": 0,
+        "written_cells": 0,
+        "exported_records": 0,
+    }
+    if EXCEL_TRANSFER_LOG_SHEET_NAME in workbook.sheetnames:
+        transfer_result = write_transfer_log_records_to_excel_sheet(
+            workbook[EXCEL_TRANSFER_LOG_SHEET_NAME],
+            build_database_transfer_log_records(),
+        )
 
     ensure_sync_storage()
     workbook.save(SYNC_EXPORT_PATH)
 
     return {
         "path": SYNC_EXPORT_PATH,
-        "updated_rows": standard_result["updated_rows"] + low_cost_result["updated_rows"],
-        "appended_rows": standard_result["appended_rows"] + low_cost_result["appended_rows"],
-        "written_cells": standard_result["written_cells"] + low_cost_result["written_cells"],
-        "exported_records": standard_result["exported_records"] + low_cost_result["exported_records"],
+        "updated_rows": standard_result["updated_rows"] + low_cost_result["updated_rows"] + transfer_result["updated_rows"],
+        "appended_rows": standard_result["appended_rows"] + low_cost_result["appended_rows"] + transfer_result["appended_rows"],
+        "written_cells": standard_result["written_cells"] + low_cost_result["written_cells"] + transfer_result["written_cells"],
+        "exported_records": standard_result["exported_records"] + low_cost_result["exported_records"] + transfer_result["exported_records"],
         "standard_exported_records": standard_result["exported_records"],
         "low_cost_exported_records": low_cost_result["exported_records"],
+        "transfer_exported_records": transfer_result["exported_records"],
         "exported_at": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M"),
     }
 
@@ -2780,6 +2995,78 @@ def format_transfer_project_rows(rows: list[dict], direction: str) -> str:
     return " / ".join(parts)
 
 
+def create_asset_transfer_from_assignment_change(
+    *,
+    asset: dict,
+    from_assignment: Optional[dict],
+    to_person_id: Optional[int],
+    transfer_date: str,
+    transfer_reason: str,
+    status: Optional[str] = None,
+    condition: Optional[str] = None,
+) -> Optional[int]:
+    asset_id = asset.get("asset_id")
+    if not asset_id or not transfer_date:
+        return None
+
+    from_assignment = from_assignment or {}
+    from_person_id = from_assignment.get("person_id")
+    from_holder_name = from_assignment.get("responsible_person")
+    if not from_holder_name and from_assignment.get("location_id"):
+        from_holder_name = "Warehouse"
+
+    to_person = get_person_by_id(to_person_id) if to_person_id else None
+    to_holder_name = get_person_display_name(to_person) if to_person else "Warehouse"
+    current_project_rows = get_current_project_rows(get_asset_projects(asset_id))
+    current_project_raw = format_project_allocations(get_project_allocations_from_rows(current_project_rows))
+
+    payload = {
+        "asset_id": asset_id,
+        "from_person_id": from_person_id,
+        "to_person_id": to_person_id,
+        "transfer_date": transfer_date,
+        "transfer_reason": transfer_reason,
+        "notes": transfer_reason,
+        "source_asset_type": get_asset_usage_type_label(asset.get("usage_type")),
+        "asset_tag_snapshot": asset.get("asset_tag_number"),
+        "description_snapshot": asset.get("item_description"),
+        "serial_snapshot": asset.get("serial_chassis_number") or asset.get("serial_number"),
+        "from_holder_name": from_holder_name,
+        "to_holder_name": to_holder_name,
+        "from_project_raw": current_project_raw,
+        "to_project_raw": current_project_raw,
+        "asset_status": status or from_assignment.get("status") or asset.get("current_status"),
+        "asset_condition_description": condition or from_assignment.get("handover_condition"),
+    }
+
+    try:
+        response = supabase.table("asset_transfers").insert(payload).execute()
+    except Exception:
+        return None
+
+    transfer = (response.data or [{}])[0]
+    transfer_id = transfer.get("transfer_id")
+    if transfer_id and current_project_rows:
+        project_payloads = []
+        for direction in ["from", "to"]:
+            for row in current_project_rows:
+                project_payloads.append(
+                    {
+                        "transfer_id": transfer_id,
+                        "direction": direction,
+                        "project_id": row.get("project_id"),
+                        "project_number_raw": row.get("project_number"),
+                        "allocation_percent": row.get("allocation_percent"),
+                    }
+                )
+        try:
+            supabase.table("asset_transfer_projects").insert(project_payloads).execute()
+        except Exception:
+            pass
+
+    return transfer_id
+
+
 def get_asset_transfer_history(asset_id: int, limit: int = 50) -> list[dict]:
     try:
         response = (
@@ -3057,19 +3344,30 @@ def apply_person_offboarding(person: dict, form) -> dict:
                     "handover_condition": current_assignment.get("handover_condition"),
                 }
             ).execute()
+            transfer_id = create_asset_transfer_from_assignment_change(
+                asset=asset,
+                from_assignment=asset.get("current_assignment"),
+                to_person_id=target_person_id,
+                transfer_date=offboarding_date,
+                transfer_reason="Employee offboarding",
+                status=(asset.get("current_assignment") or {}).get("status") or asset.get("current_status"),
+                condition=(asset.get("current_assignment") or {}).get("handover_condition"),
+            )
             target_person = target_people.get(target_person_id) if target_person_id else None
             target_label = get_person_display_name(target_person) if target_person else "No responsible person"
             audit_log_event(
-                entity_type="Assignment",
-                entity_id=asset_id,
+                entity_type="Transfer",
+                entity_id=transfer_id or asset_id,
                 entity_label=asset.get("asset_tag_number"),
-                action="reassigned",
+                action="transferred",
                 field_name="responsible_person",
                 old_value=get_person_display_name(person),
                 new_value=target_label,
                 summary=f"{asset.get('asset_tag_number')} reassigned during offboarding: {get_person_display_name(person)} -> {target_label}",
                 source="Offboarding",
                 actor="Offboarding",
+                event_date=offboarding_date,
+                event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
             )
         reassigned += 1
 
@@ -4112,11 +4410,32 @@ def admin_dashboard(request: Request, changes_limit: int = 5):
             "changes_limit": changes_limit,
             "changes_limit_options": [5, 10, 20, 50],
             "database_error": database_error,
+            "flash": pop_flash(request),
             "active_page": "dashboard",
             "page_title": "Admin Dashboard",
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.post("/admin/audit/backfill-transfer-log")
+def admin_audit_backfill_transfer_log(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    try:
+        result = backfill_audit_from_transfer_log()
+    except Exception as error:
+        set_flash(request, "error", f"Transfer log backfill could not be completed: {error}")
+        return RedirectResponse(url="/admin", status_code=303)
+
+    set_flash(
+        request,
+        "success",
+        f"Transfer log backfill completed: {result['created']} audit records created from {result['available']} transfer records.",
+    )
+    return RedirectResponse(url="/admin", status_code=303)
 
 
 @app.get("/admin/assets", response_class=HTMLResponse)
@@ -5218,15 +5537,26 @@ def admin_asset_assignment_update(
             close_current_assignments(asset_id, assignment_date)
             if status:
                 supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+            transfer_id = create_asset_transfer_from_assignment_change(
+                asset=asset,
+                from_assignment=current_assignment,
+                to_person_id=None,
+                transfer_date=assignment_date,
+                transfer_reason="Assignment closed in web app",
+                status=status or current_assignment.get("status") or asset.get("current_status"),
+                condition=handover_condition or current_assignment.get("handover_condition"),
+            )
             audit_log_event(
-                entity_type="Assignment",
-                entity_id=asset_id,
+                entity_type="Transfer",
+                entity_id=transfer_id or asset_id,
                 entity_label=asset.get("asset_tag_number"),
-                action="closed",
+                action="transferred",
                 old_value=old_responsible,
-                new_value="-",
-                summary=f"Assignment closed for {asset.get('asset_tag_number')}: {old_responsible} -> unassigned",
+                new_value="Warehouse",
+                summary=f"Assignment closed for {asset.get('asset_tag_number')}: {old_responsible} -> Warehouse",
                 request=request,
+                event_date=assignment_date,
+                event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
             )
             set_flash(request, "success", "Current assignment was closed and the asset is now unassigned.")
         else:
@@ -5290,17 +5620,28 @@ def admin_asset_assignment_update(
 
     set_flash(request, "success", "Assignment was updated.")
     target_person = get_person_by_id(parsed_person_id) if parsed_person_id else None
-    new_responsible = get_person_display_name(target_person) if target_person else "-"
+    new_responsible = get_person_display_name(target_person) if target_person else "Warehouse"
+    transfer_id = create_asset_transfer_from_assignment_change(
+        asset=asset,
+        from_assignment=current_assignment,
+        to_person_id=parsed_person_id,
+        transfer_date=assignment_date,
+        transfer_reason="Assignment changed in web app",
+        status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
+        condition=handover_condition or (current_assignment or {}).get("handover_condition"),
+    )
     audit_log_event(
-        entity_type="Assignment",
-        entity_id=asset_id,
+        entity_type="Transfer",
+        entity_id=transfer_id or asset_id,
         entity_label=asset.get("asset_tag_number"),
-        action="reassigned",
+        action="transferred",
         field_name="responsible_person",
         old_value=old_responsible,
         new_value=new_responsible,
         summary=f"{asset.get('asset_tag_number')} reassigned: {old_responsible} -> {new_responsible}",
         request=request,
+        event_date=assignment_date,
+        event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
     )
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
@@ -5877,6 +6218,7 @@ def admin_sync_export(request: Request):
         "exported_records": result["exported_records"],
         "standard_exported_records": result.get("standard_exported_records", 0),
         "low_cost_exported_records": result.get("low_cost_exported_records", 0),
+        "transfer_exported_records": result.get("transfer_exported_records", 0),
     }
     save_sync_state(sync_state)
 

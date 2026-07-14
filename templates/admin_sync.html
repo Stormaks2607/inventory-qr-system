@@ -54,7 +54,8 @@
         appended {{ sync_state.last_export_result.appended_rows }},
         records {{ sync_state.last_export_result.exported_records }}
         (standard {{ sync_state.last_export_result.standard_exported_records or 0 }},
-        low-cost {{ sync_state.last_export_result.low_cost_exported_records or 0 }}).
+        low-cost {{ sync_state.last_export_result.low_cost_exported_records or 0 }},
+        transfers {{ sync_state.last_export_result.transfer_exported_records or 0 }}).
         {% if sync_state.last_exported_at %}Completed at {{ sync_state.last_exported_at }}.{% endif %}
     </div>
     {% endif %}
