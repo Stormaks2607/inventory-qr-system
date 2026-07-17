@@ -261,6 +261,185 @@
             text-align: center;
         }
 
+        .help-sheet {
+            border: 1.5px solid #1d2430;
+            background: #ffffff;
+        }
+
+        .help-sheet-header {
+            padding: 14px 18px 10px;
+            border-bottom: 1.5px solid #1d2430;
+            display: grid;
+            gap: 8px;
+        }
+
+        .help-sheet-topline {
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            align-items: flex-start;
+        }
+
+        .help-brand {
+            display: inline-grid;
+            gap: 2px;
+            margin-bottom: 10px;
+        }
+
+        .help-brand-word {
+            color: #141414;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            font-size: 34px;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1;
+        }
+
+        .help-brand-caption {
+            color: #2b2b2b;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .help-company-name {
+            margin-bottom: 6px;
+        }
+
+        .help-sheet-title {
+            margin: 0;
+            font-size: 17px;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .help-sheet-meta {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px 14px;
+            font-size: 13px;
+        }
+
+        .help-meta-label {
+            color: var(--muted);
+            font-size: 12px;
+            letter-spacing: 0.05em;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+
+        .help-meta-value {
+            font-weight: 600;
+        }
+
+        .help-meta-row {
+            display: grid;
+            grid-template-columns: 150px 1fr 110px 1fr;
+            gap: 8px 10px;
+            padding-top: 8px;
+            border-top: 1px solid #d5dbe3;
+            font-size: 13px;
+        }
+
+        .help-inline-label {
+            color: #4c5665;
+            font-size: 12px;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .help-inline-value {
+            font-weight: 600;
+        }
+
+        .help-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .help-table th,
+        .help-table td {
+            border: 1px solid #1d2430;
+            color: #111827;
+            font-size: 11.5px;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+            padding: 7px 6px;
+            vertical-align: top;
+            white-space: normal;
+            word-break: break-word;
+        }
+
+        .help-table th {
+            background: #f7f8fa;
+            font-size: 11px;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .help-col-num { width: 6%; }
+        .help-col-spec { width: 38%; }
+        .help-col-brand { width: 11%; }
+        .help-col-model { width: 13%; }
+        .help-col-serial { width: 12%; }
+        .help-col-tag { width: 12%; }
+        .help-col-status { width: 8%; }
+
+        .help-spec-lines {
+            display: grid;
+            gap: 2px;
+        }
+
+        .help-footer {
+            display: grid;
+            gap: 10px;
+            padding: 12px 18px 16px;
+        }
+
+        .help-note {
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .help-certification {
+            color: #273142;
+            font-size: 11.5px;
+            padding: 8px 0 2px;
+        }
+
+        .help-liability {
+            background: #fbfcfd;
+            border: 1px solid #1d2430;
+            color: #18212d;
+            font-size: 11.5px;
+            line-height: 1.45;
+            padding: 10px 12px;
+        }
+
+        .help-liability-signoff {
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .help-signatures {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .help-signature-box {
+            border: 1px solid #1d2430;
+            padding: 12px;
+        }
+
+        .help-signature-line {
+            border-top: 1px solid #1d2430;
+            font-size: 13px;
+            margin-top: 28px;
+            padding-top: 8px;
+        }
+
         @media (max-width: 900px) {
             .page {
                 padding: 12px;
@@ -293,6 +472,13 @@
             .report-stamp {
                 text-align: left;
             }
+
+            .help-sheet-topline,
+            .help-sheet-meta,
+            .help-meta-row,
+            .help-signatures {
+                grid-template-columns: 1fr;
+            }
         }
 
         @media print {
@@ -318,6 +504,36 @@
 
             .report-sheet {
                 gap: 14px;
+            }
+
+            .help-sheet {
+                border: 1.2px solid #000;
+                break-inside: avoid;
+            }
+
+            .help-sheet-header {
+                padding: 10px 12px 8px;
+            }
+
+            .help-footer {
+                padding: 10px 12px 14px;
+            }
+
+            .help-table th,
+            .help-table td {
+                border-color: #000;
+                font-size: 10.5px;
+                padding: 6px 5px;
+            }
+
+            .help-liability {
+                font-size: 10.5px;
+                padding: 8px 10px;
+            }
+
+            .help-meta-row {
+                grid-template-columns: 120px 1fr 90px 1fr;
+                font-size: 11px;
             }
 
             .report-banner,
@@ -377,6 +593,114 @@
             <a class="btn" href="{{ pdf_url }}">Download PDF</a>
         </div>
 
+        {% if branding.report_theme == 'help_standard' %}
+        <section class="report-sheet">
+            <article class="help-sheet">
+                <header class="help-sheet-header">
+                    <div class="help-sheet-topline">
+                        <div>
+                            {% if branding_logo_url %}
+                            <div style="margin-bottom: 10px;">
+                                <img src="{{ branding_logo_url }}" alt="{{ branding.company_name }} logo" style="max-height: 58px; max-width: 220px;">
+                            </div>
+                            {% else %}
+                            <div class="help-brand" aria-label="Help name">
+                                <div class="help-brand-word">Help</div>
+                                <div class="help-brand-caption">Hilfe zur Selbsthilfe</div>
+                            </div>
+                            {% endif %}
+                            <div class="muted help-company-name" style="text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px;">{{ branding.company_name }}</div>
+                            <h1 class="help-sheet-title">Стандартний перелік активів / Standard Asset List</h1>
+                            <div class="muted">Додаток до договору про матеріальну відповідальність / Appendix to the agreement on material responsibility.</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="help-meta-label">Дата друку / Printed on</div>
+                            <div class="help-meta-value">{{ printed_at }}</div>
+                        </div>
+                    </div>
+
+                    <div class="help-sheet-meta">
+                        <div>
+                            <div class="help-meta-label">Працівник / Employee</div>
+                            <div class="help-meta-value">{{ report_display_name }}</div>
+                        </div>
+                        <div>
+                            <div class="help-meta-label">Кількість активів / Assigned Assets</div>
+                            <div class="help-meta-value">{{ assigned_assets|length }}</div>
+                        </div>
+                    </div>
+
+                    <div class="help-meta-row">
+                        <div class="help-inline-label">Тип документа / Document Type</div>
+                        <div class="help-inline-value">Стандартний перелік активів / Standard Asset List</div>
+                        <div class="help-inline-label">Шаблон / Template</div>
+                        <div class="help-inline-value">Help Standard</div>
+                        <div class="help-inline-label">Дата звіту / Reference Date</div>
+                        <div class="help-inline-value">{{ printed_at }}</div>
+                    </div>
+                </header>
+
+                <table class="help-table">
+                    <thead>
+                        <tr>
+                            <th class="help-col-num">№</th>
+                            <th class="help-col-spec">Актив / Специфікація<br>Asset / Specification</th>
+                            <th class="help-col-brand">Бренд<br>Brand</th>
+                            <th class="help-col-model">Модель<br>Model</th>
+                            <th class="help-col-serial">Серійний №<br>Serial No.</th>
+                            <th class="help-col-tag">Інв. №<br>Inventory No.</th>
+                            <th class="help-col-status">Статус<br>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for asset in assigned_assets %}
+                        <tr>
+                            <td>{{ loop.index }}</td>
+                            <td>
+                                <div class="help-spec-lines">
+                                    <strong>{{ asset.item_description or "-" }}</strong>
+                                    {% if asset.quantity %}
+                                    <div>Кількість / Qty: {{ asset.quantity }}</div>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td>{{ asset.brand_make or "-" }}</td>
+                            <td>{{ asset.model or "-" }}</td>
+                            <td>{{ asset.serial_chassis_number or asset.serial_number or "-" }}</td>
+                            <td>{{ asset.asset_tag_number or "-" }}</td>
+                            <td>{{ asset.effective_status or "-" }}</td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="7" class="muted">Наразі за цим працівником не закріплено активних активів / No active assets are currently assigned to this employee.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+
+                <footer class="help-footer">
+                    <div class="help-note">{{ branding.footer_note }}</div>
+                    <div class="help-certification">Цей документ є додатком до договору про матеріальну відповідальність та підтверджує перелік активів, переданих працівнику / This document is an appendix to the agreement on material responsibility and confirms the list of assets assigned to the employee.</div>
+                    <div class="help-liability">
+                        Працівник своїм підписом підтверджує, що ознайомлений(а) з обов'язком нести повну відповідальність за збереження, належне використання та підтримання у робочому стані ввіреного обладнання, і зобов'язується повернути його у робочому стані у разі припинення співпраці. У разі пошкодження, несправності або втрати обладнання працівник зобов'язується негайно повідомити відповідальну особу організації та відшкодувати витрати на відновлення або заміну такого обладнання відповідно до внутрішніх правил та чинних домовленостей сторін.
+                        <br><br>
+                        By signing this document, the employee confirms full responsibility for the safekeeping, proper use, and maintenance of the assigned equipment in working condition, and undertakes to return it in working condition upon termination of cooperation. In the event of damage, malfunction, or loss of equipment, the employee must immediately inform the responsible person of the organization and reimburse the organization's costs for repair or replacement in accordance with internal rules and applicable agreements between the parties.
+                        <div class="help-liability-signoff">Ознайомлений(а) та згодний(а) / Acknowledged and agreed __________________</div>
+                    </div>
+                    <div class="help-signatures">
+                        <div class="help-signature-box">
+                            <div class="help-meta-label">Видав / Issued by</div>
+                            <div class="help-signature-line">{{ branding.issuer_signature_label }}</div>
+                        </div>
+                        <div class="help-signature-box">
+                            <div class="help-meta-label">Отримав / Received by</div>
+                            <div class="help-signature-line">{{ branding.receiver_signature_label or (report_display_name ~ ' signature') }}</div>
+                        </div>
+                    </div>
+                </footer>
+            </article>
+        </section>
+        {% else %}
         <section class="report-sheet">
             <article class="report-banner">
                 <div class="report-banner-top">
@@ -522,6 +846,7 @@
             <div class="footer-note">{{ branding.footer_note }}</div>
             {% endif %}
         </section>
+        {% endif %}
     </main>
 </body>
 </html>
