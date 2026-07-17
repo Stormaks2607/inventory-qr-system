@@ -4517,12 +4517,15 @@ def format_person_assets_message(person: dict) -> str:
         "",
     ]
     for index, asset in enumerate(assets, start=1):
-        assignment = asset.get("current_assignment") or {}
+        brand_model = " / ".join(
+            value
+            for value in [asset.get("brand_make"), asset.get("model")]
+            if value
+        )
         lines.append(
             f"{index}. {asset.get('asset_tag_number') or '-'} | "
-            f"{asset.get('usage_type_label') or '-'} | "
-            f"{asset.get('item_description') or '-'} | "
-            f"Status: {assignment.get('status') or asset.get('current_status') or '-'}"
+            f"{asset.get('item_description') or '-'}"
+            f"{f' | {brand_model}' if brand_model else ''}"
         )
     return "\n".join(lines)
 
