@@ -4597,9 +4597,37 @@ def build_telegram_asset_report_pdf(
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ImportError as exc:
         raise HTTPException(status_code=503, detail="PDF generation is not available yet") from exc
+
+    def resolve_pdf_fonts() -> tuple[str, str]:
+        candidates = [
+            (r"C:\Windows\Fonts\DejaVuSans.ttf", r"C:\Windows\Fonts\DejaVuSans-Bold.ttf"),
+            (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            ("/usr/share/fonts/dejavu/DejaVuSans.ttf", "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
+        ]
+        for normal_path, bold_path in candidates:
+            if os.path.exists(normal_path) and os.path.exists(bold_path):
+                try:
+                    pdfmetrics.registerFont(TTFont("AssetReportSans", normal_path))
+                    pdfmetrics.registerFont(TTFont("AssetReportSansBold", bold_path))
+                    pdfmetrics.registerFontFamily(
+                        "AssetReportSans",
+                        normal="AssetReportSans",
+                        bold="AssetReportSansBold",
+                        italic="AssetReportSans",
+                        boldItalic="AssetReportSansBold",
+                    )
+                    return "AssetReportSans", "AssetReportSansBold"
+                except Exception:
+                    continue
+        return "Helvetica", "Helvetica-Bold"
+
+    pdf_font, pdf_bold_font = resolve_pdf_fonts()
 
     def plain_text(value) -> str:
         return str(value if value not in (None, "") else "-")
@@ -4615,10 +4643,10 @@ def build_telegram_asset_report_pdf(
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4 if is_help_standard else landscape(A4),
-        rightMargin=12 * mm if is_help_standard else 10 * mm,
-        leftMargin=12 * mm if is_help_standard else 10 * mm,
-        topMargin=12 * mm if is_help_standard else 10 * mm,
-        bottomMargin=12 * mm if is_help_standard else 10 * mm,
+        rightMargin=6 * mm if is_help_standard else 10 * mm,
+        leftMargin=6 * mm if is_help_standard else 10 * mm,
+        topMargin=6 * mm if is_help_standard else 10 * mm,
+        bottomMargin=6 * mm if is_help_standard else 10 * mm,
         title=f"Asset List - {get_person_display_name(person)}",
     )
 
@@ -4626,7 +4654,7 @@ def build_telegram_asset_report_pdf(
     title_style = ParagraphStyle(
         "AssetReportTitle",
         parent=styles["Title"],
-        fontName="Helvetica-Bold",
+        fontName=pdf_bold_font,
         fontSize=20,
         leading=24,
         textColor=colors.HexColor("#102033"),
@@ -4635,7 +4663,7 @@ def build_telegram_asset_report_pdf(
     subtitle_style = ParagraphStyle(
         "AssetReportSubtitle",
         parent=styles["BodyText"],
-        fontName="Helvetica",
+        fontName=pdf_font,
         fontSize=9,
         leading=12,
         textColor=colors.HexColor("#657186"),
@@ -4643,7 +4671,7 @@ def build_telegram_asset_report_pdf(
     body_style = ParagraphStyle(
         "AssetReportBody",
         parent=styles["BodyText"],
-        fontName="Helvetica",
+        fontName=pdf_font,
         fontSize=7,
         leading=9,
         textColor=colors.HexColor("#102033"),
@@ -4665,87 +4693,113 @@ def build_telegram_asset_report_pdf(
         help_title_style = ParagraphStyle(
             "HelpStandardTitle",
             parent=styles["Title"],
-            fontName="Helvetica-Bold",
-            fontSize=13,
-            leading=16,
-            alignment=1,
+            fontName=pdf_bold_font,
+            fontSize=14,
+            leading=17,
+            alignment=0,
             textColor=colors.HexColor("#102033"),
         )
         help_label_style = ParagraphStyle(
             "HelpStandardLabel",
             parent=small_style,
-            fontName="Helvetica-Bold",
+            fontName=pdf_bold_font,
             textColor=colors.HexColor("#657186"),
         )
         help_body_style = ParagraphStyle(
             "HelpStandardBody",
             parent=body_style,
-            fontSize=6.8,
-            leading=8.5,
+            fontSize=7.3,
+            leading=9.2,
+        )
+        help_brand_style = ParagraphStyle(
+            "HelpBrand",
+            parent=styles["Title"],
+            fontName=pdf_bold_font,
+            fontSize=26,
+            leading=28,
+            alignment=0,
+            textColor=colors.HexColor("#102033"),
         )
         help_story = [
             Table(
                 [
                     [
-                        Paragraph("<b>Help</b><br/><font size='7'>Hilfe zur Selbsthilfe</font>", title_style),
-                        Paragraph(f"<b>{pdf_text(branding.get('company_name') or 'Your Company')}</b><br/>Printed on<br/><b>{printed_at}</b>", right_style),
+                        Paragraph("<b>Help</b><br/><font size='7'>Hilfe zur Selbsthilfe</font>", help_brand_style),
+                        Paragraph(f"ДАТА ДРУКУ /<br/>PRINTED ON<br/><b>{printed_at}</b>", right_style),
                     ]
                 ],
                 colWidths=[125 * mm, 46 * mm],
                 style=TableStyle(
                     [
-                        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#202833")),
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                        ("TOPPADDING", (0, 0), (-1, -1), 7),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                        ("TOPPADDING", (0, 0), (-1, -1), 0),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
                     ]
                 ),
             ),
+            Spacer(1, 2 * mm),
+            Paragraph(pdf_text(branding.get("company_name") or "Your Company"), small_style),
+            Paragraph("Стандартний перелік активів / Standard Asset List", help_title_style),
+            Paragraph("Додаток до договору про матеріальну відповідальність / Appendix to the agreement on material responsibility.", subtitle_style),
             Spacer(1, 3 * mm),
-            Paragraph("Standard Asset List", help_title_style),
-            Paragraph("Appendix to the agreement on material responsibility", subtitle_style),
-            Spacer(1, 4 * mm),
             Table(
                 [
-                    [Paragraph("Employee", help_label_style), Paragraph(pdf_text(report_display_name), body_style)],
-                    [Paragraph("Assigned assets", help_label_style), Paragraph(pdf_text(len(assigned_assets)), body_style)],
-                    [Paragraph("Document type", help_label_style), Paragraph("Standard Asset List", body_style)],
-                    [Paragraph("Template", help_label_style), Paragraph("Help Standard", body_style)],
-                    [Paragraph("Reference date", help_label_style), Paragraph(printed_at, body_style)],
+                    [Paragraph("ПРАЦІВНИК / EMPLOYEE", help_label_style), Paragraph(f"<b>{pdf_text(report_display_name)}</b>", body_style)],
+                    [Paragraph("КІЛЬКІСТЬ АКТИВІВ / ASSIGNED ASSETS", help_label_style), Paragraph(f"<b>{len(assigned_assets)}</b>", body_style)],
                 ],
-                colWidths=[36 * mm, 135 * mm],
+                colWidths=[54 * mm, 117 * mm],
                 style=TableStyle(
                     [
-                        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#202833")),
-                        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#202833")),
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                        ("TOPPADDING", (0, 0), (-1, -1), 4),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                        ("TOPPADDING", (0, 0), (-1, -1), 2),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
                     ]
                 ),
             ),
-            Spacer(1, 4 * mm),
+            Spacer(1, 2 * mm),
+            Table(
+                [
+                    [
+                        Paragraph("ТИП ДОКУМЕНТА / DOCUMENT TYPE", help_label_style),
+                        Paragraph("<b>Стандартний перелік активів / Standard Asset List</b>", body_style),
+                    ],
+                    [Paragraph("ШАБЛОН / TEMPLATE", help_label_style), Paragraph("<b>Help Standard</b>", body_style)],
+                    [Paragraph("ДАТА ЗВІТУ / REFERENCE DATE", help_label_style), Paragraph(f"<b>{printed_at}</b>", body_style)],
+                ],
+                colWidths=[54 * mm, 117 * mm],
+                style=TableStyle(
+                    [
+                        ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.HexColor("#cfd8e3")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                    ]
+                ),
+            ),
+            Spacer(1, 2 * mm),
         ]
 
         rows = [
             [
-                Paragraph("#", small_style),
-                Paragraph("Asset / Specification", small_style),
-                Paragraph("Brand", small_style),
-                Paragraph("Model", small_style),
-                Paragraph("Serial No.", small_style),
-                Paragraph("Inventory No.", small_style),
-                Paragraph("Status", small_style),
+                Paragraph("№", small_style),
+                Paragraph("АКТИВ / СПЕЦИФІКАЦІЯ<br/>ASSET / SPECIFICATION", small_style),
+                Paragraph("БРЕНД<br/>BRAND", small_style),
+                Paragraph("МОДЕЛЬ<br/>MODEL", small_style),
+                Paragraph("СЕРІЙНИЙ №<br/>SERIAL NO.", small_style),
+                Paragraph("ІНВ. №<br/>INVENTORY NO.", small_style),
+                Paragraph("СТАТУС<br/>STATUS", small_style),
             ]
         ]
         if not assigned_assets:
-            rows.append([Paragraph("No active assets are currently assigned to this employee.", body_style), "", "", "", "", "", ""])
+            rows.append([Paragraph("Наразі за цим працівником не закріплено активних активів / No active assets are currently assigned to this employee.", body_style), "", "", "", "", "", ""])
         for index, asset in enumerate(assigned_assets, start=1):
-            qty_line = f"<br/><font color='#657186'>Qty: {pdf_text(asset.get('quantity'))}</font>" if asset.get("quantity") else ""
+            qty_line = f"<br/><font color='#657186'>Кількість / Qty: {pdf_text(asset.get('quantity'))}</font>" if asset.get("quantity") else ""
             rows.append(
                 [
                     Paragraph(str(index), body_style),
@@ -4762,18 +4816,17 @@ def build_telegram_asset_report_pdf(
             [
                 Table(
                     rows,
-                    colWidths=[8 * mm, 68 * mm, 20 * mm, 28 * mm, 22 * mm, 18 * mm, 16 * mm],
+                    colWidths=[10 * mm, 64 * mm, 20 * mm, 23 * mm, 22 * mm, 24 * mm, 17 * mm],
                     repeatRows=1,
                     style=TableStyle(
                         [
                             ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#202833")),
                             ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#202833")),
-                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f6f8")),
                             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                            ("TOPPADDING", (0, 0), (-1, -1), 4),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                            ("TOPPADDING", (0, 0), (-1, -1), 5),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                         ]
                     ),
                 ),
@@ -4781,25 +4834,25 @@ def build_telegram_asset_report_pdf(
                 Paragraph(pdf_text(branding.get("footer_note") or "Internal use only"), small_style),
                 Spacer(1, 2 * mm),
                 Paragraph(
-                    "This document is an appendix to the agreement on material responsibility and confirms the list of assets assigned to the employee.",
+                    "Цей документ є додатком до договору про матеріальну відповідальність та підтверджує перелік активів, переданих працівнику / This document is an appendix to the agreement on material responsibility and confirms the list of assets assigned to the employee.",
                     help_body_style,
                 ),
                 Spacer(1, 2 * mm),
                 Paragraph(
-                    "By signing this document, the employee confirms full responsibility for the safekeeping, proper use, and maintenance of the assigned equipment in working condition, and undertakes to return it in working condition upon termination of cooperation. In the event of damage, malfunction, or loss of equipment, the employee must immediately inform the responsible person of the organization and reimburse the organization's costs for repair or replacement in accordance with internal rules and applicable agreements between the parties.",
+                    "Працівник своїм підписом підтверджує, що ознайомлений(а) з обов'язком нести повну відповідальність за збереження, належне використання та підтримання у робочому стані ввіреного обладнання, і зобов'язується повернути його у робочому стані у разі припинення співпраці. У разі пошкодження, несправності або втрати обладнання працівник зобов'язується негайно повідомити відповідальну особу організації та відшкодувати витрати на відновлення або заміну такого обладнання відповідно до внутрішніх правил та чинних домовленостей сторін.<br/><br/>By signing this document, the employee confirms full responsibility for the safekeeping, proper use, and maintenance of the assigned equipment in working condition, and undertakes to return it in working condition upon termination of cooperation. In the event of damage, malfunction, or loss of equipment, the employee must immediately inform the responsible person of the organization and reimburse the organization's costs for repair or replacement in accordance with internal rules and applicable agreements between the parties.",
                     help_body_style,
                 ),
                 Spacer(1, 2 * mm),
-                Paragraph("Acknowledged and agreed __________________", help_body_style),
+                Paragraph("Ознайомлений(а) та згодний(а) / Acknowledged and agreed __________________", help_body_style),
                 Spacer(1, 5 * mm),
                 Table(
                     [
                         [
-                            Paragraph(f"Issued by<br/><br/><br/>____________________________<br/>{pdf_text(branding.get('issuer_signature_label') or 'Signature')}", body_style),
-                            Paragraph(f"Received by<br/><br/><br/>____________________________<br/>{pdf_text(branding.get('receiver_signature_label') or report_display_name + ' signature')}", body_style),
+                            Paragraph(f"Видав / Issued by<br/><br/><br/>____________________________<br/>{pdf_text(branding.get('issuer_signature_label') or 'Signature')}", body_style),
+                            Paragraph(f"Отримав / Received by<br/><br/><br/>____________________________<br/>{pdf_text(branding.get('receiver_signature_label') or report_display_name + ' signature')}", body_style),
                         ]
                     ],
-                    colWidths=[85 * mm, 85 * mm],
+                    colWidths=[88 * mm, 88 * mm],
                     style=TableStyle(
                         [
                             ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#202833")),
@@ -4843,12 +4896,12 @@ def build_telegram_asset_report_pdf(
             ],
             colWidths=[38 * mm, 96 * mm, 38 * mm, 98 * mm],
             style=[
-                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                ("FONTNAME", (0, 0), (-1, -1), pdf_font),
                 ("FONTSIZE", (0, 0), (-1, -1), 8),
                 ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#657186")),
                 ("TEXTCOLOR", (2, 0), (2, -1), colors.HexColor("#657186")),
-                ("FONTNAME", (1, 0), (1, -1), "Helvetica-Bold"),
-                ("FONTNAME", (3, 0), (3, -1), "Helvetica-Bold"),
+                ("FONTNAME", (1, 0), (1, -1), pdf_bold_font),
+                ("FONTNAME", (3, 0), (3, -1), pdf_bold_font),
                 ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#dfe7ef")),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#dfe7ef")),
@@ -4893,7 +4946,7 @@ def build_telegram_asset_report_pdf(
                 [
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#edf4f1")),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#657186")),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTNAME", (0, 0), (-1, 0), pdf_bold_font),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#dfe7ef")),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 4),
