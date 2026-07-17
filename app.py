@@ -4518,6 +4518,8 @@ def format_person_assets_message(person: dict) -> str:
         "",
     ]
     for index, asset in enumerate(assets, start=1):
+        if index > 1:
+            lines.append("-----")
         brand_model = " / ".join(
             value
             for value in [asset.get("brand_make"), asset.get("model")]
