@@ -19,6 +19,7 @@ from telegram.ext import (
     filters,
 )
 
+import app as inventory_app
 
 load_dotenv()
 
@@ -27,6 +28,7 @@ API_URL = "https://inventory-qr-system.onrender.com"
 
 main_keyboard = ReplyKeyboardMarkup(
     [
+        [KeyboardButton("My assets")],
         [
             KeyboardButton(
                 text="Scan QR",
@@ -37,6 +39,15 @@ main_keyboard = ReplyKeyboardMarkup(
         [KeyboardButton("Help")],
     ],
     resize_keyboard=True,
+)
+
+auth_keyboard = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("Share phone number", request_contact=True)],
+        [KeyboardButton("Help")],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True,
 )
 
 
@@ -93,11 +104,18 @@ async def send_asset_card(update: Update, asset_tag: str):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "Scanventory\n\n"
-        "Use the buttons below to scan a QR code or enter an asset code manually."
+    person = get_authorized_person(update)
+    if person:
+        await update.message.reply_text(
+            f"Welcome back, {inventory_app.get_person_display_name(person)}. Choose an action below.",
+            reply_markup=main_keyboard,
+        )
+        return
+
+    await update.message.reply_text(
+        "Scanventory\n\nPlease authorize first: tap 'Share phone number'.",
+        reply_markup=auth_keyboard,
     )
-    await update.message.reply_text(text, reply_markup=main_keyboard)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,10 +128,83 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=main_keyboard)
 
 
+def get_authorized_person(update: Update):
+    telegram_user = update.effective_user
+    if not telegram_user:
+        return None
+    person = inventory_app.find_person_by_telegram_user_id(telegram_user.id)
+    if person and inventory_app.is_person_active(person):
+        return person
+    return None
+
+
+def format_person_assets(person: dict) -> str:
+    return inventory_app.format_person_assets_message(person)
+
+
+async def reply_long_text(update: Update, text: str, reply_markup=None, max_length: int = 3500):
+    lines = text.splitlines()
+    chunks = []
+    current = ""
+    for line in lines:
+        addition = line if not current else f"\n{line}"
+        if len(current) + len(addition) > max_length:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current += addition
+    if current:
+        chunks.append(current)
+    if not chunks:
+        chunks = [text]
+
+    for index, chunk in enumerate(chunks):
+        await update.message.reply_text(chunk, reply_markup=reply_markup if index == len(chunks) - 1 else None)
+
+
+async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    contact = update.message.contact
+    telegram_user = update.effective_user
+    if not contact or not telegram_user or contact.user_id != telegram_user.id:
+        await update.message.reply_text(
+            "Please share your own phone number using the Telegram button.",
+            reply_markup=auth_keyboard,
+        )
+        return
+
+    person = inventory_app.find_person_by_phone(contact.phone_number)
+    if not person:
+        await update.message.reply_text(
+            "Phone number was not found in the employee directory. Please contact the administrator.",
+            reply_markup=auth_keyboard,
+        )
+        return
+    if not inventory_app.is_person_active(person):
+        await update.message.reply_text(
+            "Your employee profile is inactive. Please contact the administrator.",
+            reply_markup=auth_keyboard,
+        )
+        return
+
+    inventory_app.save_person_telegram_identity(person["person_id"], telegram_user.to_dict(), contact.phone_number)
+    await update.message.reply_text(
+        f"Authorization successful. Welcome, {inventory_app.get_person_display_name(person)}.",
+        reply_markup=main_keyboard,
+    )
+
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
+    person = get_authorized_person(update)
 
     if text == "Enter code":
+        if not person:
+            await update.message.reply_text(
+                "Please authorize first: tap 'Share phone number'.",
+                reply_markup=auth_keyboard,
+            )
+            return
         await update.message.reply_text(
             "Enter or paste the asset code, for example:\nHELP-UKR-0015",
             reply_markup=main_keyboard,
@@ -122,6 +213,17 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == "Help":
         await help_command(update, context)
+        return
+
+    if not person:
+        await update.message.reply_text(
+            "Please authorize first: tap 'Share phone number'.",
+            reply_markup=auth_keyboard,
+        )
+        return
+
+    if text == "My assets":
+        await reply_long_text(update, format_person_assets(person), reply_markup=main_keyboard)
         return
 
     await send_asset_card(update, text)
@@ -140,6 +242,13 @@ async def handle_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return
 
+        if not get_authorized_person(update):
+            await update.message.reply_text(
+                "Please authorize first: tap 'Share phone number'.",
+                reply_markup=auth_keyboard,
+            )
+            return
+
         await send_asset_card(update, asset_tag)
 
     except Exception as exc:
@@ -155,6 +264,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_web_app_data))
+    app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     print("Bot started...")

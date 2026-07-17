@@ -4432,6 +4432,109 @@ def format_asset_message(asset: dict) -> str:
     )
 
 
+def normalize_phone_number(value: Optional[str]) -> str:
+    digits = re.sub(r"\D+", "", value or "")
+    if not digits:
+        return ""
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "38" + digits
+    return digits
+
+
+def get_person_phone_values(person: dict) -> list[str]:
+    return [
+        person.get("mobile_phone"),
+        person.get("phone"),
+        person.get("telegram"),
+    ]
+
+
+def find_person_by_phone(phone_number: str) -> Optional[dict]:
+    normalized_phone = normalize_phone_number(phone_number)
+    if not normalized_phone:
+        return None
+
+    for person in list_people():
+        for value in get_person_phone_values(person):
+            candidate = normalize_phone_number(value)
+            if candidate and candidate == normalized_phone:
+                return person
+    return None
+
+
+def find_person_by_telegram_user_id(telegram_user_id) -> Optional[dict]:
+    if telegram_user_id is None:
+        return None
+    telegram_user_id = str(telegram_user_id)
+    try:
+        response = (
+            supabase.table("persons")
+            .select("*")
+            .eq("messenger_type", "telegram")
+            .eq("messenger_id", telegram_user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    return (response.data or [None])[0]
+
+
+def save_person_telegram_identity(person_id: int, telegram_user: dict, phone_number: Optional[str] = None) -> None:
+    payload = {
+        "messenger_type": "telegram",
+        "messenger_id": str(telegram_user.get("id")),
+    }
+    username = telegram_user.get("username")
+    if username:
+        payload["username"] = username
+    if phone_number:
+        payload["mobile_phone"] = phone_number
+    try:
+        supabase.table("persons").update(payload).eq("person_id", person_id).execute()
+    except Exception:
+        return
+
+
+def get_authorized_telegram_person(message: dict) -> Optional[dict]:
+    telegram_user = message.get("from") or {}
+    person = find_person_by_telegram_user_id(telegram_user.get("id"))
+    if person and is_person_active(person):
+        return person
+    return None
+
+
+def format_person_assets_message(person: dict) -> str:
+    assets = get_assets_for_person(person["person_id"])
+    display_name = get_person_display_name(person)
+    if not assets:
+        return f"{display_name}, no active assets are currently assigned to you."
+
+    lines = [
+        f"{display_name}, assets assigned to you: {len(assets)}",
+        "",
+    ]
+    for index, asset in enumerate(assets, start=1):
+        assignment = asset.get("current_assignment") or {}
+        lines.append(
+            f"{index}. {asset.get('asset_tag_number') or '-'} | "
+            f"{asset.get('usage_type_label') or '-'} | "
+            f"{asset.get('item_description') or '-'} | "
+            f"Status: {assignment.get('status') or asset.get('current_status') or '-'}"
+        )
+    return "\n".join(lines)
+
+
+def send_telegram_auth_prompt(chat_id: int) -> None:
+    send_telegram_message(
+        chat_id,
+        "Please authorize first: tap 'Share phone number'. The number must match your employee profile.",
+        reply_markup=AUTH_KEYBOARD,
+    )
+
+
 def send_telegram_message(chat_id: int, text: str, reply_markup: Optional[dict] = None) -> None:
     payload = {"chat_id": chat_id, "text": text}
     if reply_markup is not None:
@@ -4444,8 +4547,32 @@ def send_telegram_message(chat_id: int, text: str, reply_markup: Optional[dict] 
     )
 
 
+def send_telegram_long_message(chat_id: int, text: str, reply_markup: Optional[dict] = None, max_length: int = 3500) -> None:
+    lines = text.splitlines()
+    chunks = []
+    current = ""
+    for line in lines:
+        addition = line if not current else f"\n{line}"
+        if len(current) + len(addition) > max_length:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current += addition
+    if current:
+        chunks.append(current)
+    if not chunks:
+        chunks = [text]
+
+    for index, chunk in enumerate(chunks):
+        send_telegram_message(chat_id, chunk, reply_markup=reply_markup if index == len(chunks) - 1 else None)
+
+
 MAIN_KEYBOARD = {
     "keyboard": [
+        [
+            {"text": "My assets"},
+        ],
         [
             {"text": "Scan QR", "web_app": {"url": f"{PUBLIC_BASE_URL}/miniapp"}},
             {"text": "Enter code"},
@@ -4453,6 +4580,15 @@ MAIN_KEYBOARD = {
         [{"text": "Help"}],
     ],
     "resize_keyboard": True,
+}
+
+AUTH_KEYBOARD = {
+    "keyboard": [
+        [{"text": "Share phone number", "request_contact": True}],
+        [{"text": "Help"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True,
 }
 
 
@@ -6458,7 +6594,42 @@ async def telegram_webhook(update: dict = Body(...)):
 
         message = update["message"]
         chat_id = message["chat"]["id"]
+        telegram_user = message.get("from") or {}
         text = ""
+
+        if "contact" in message:
+            contact = message.get("contact") or {}
+            if contact.get("user_id") != telegram_user.get("id"):
+                send_telegram_message(
+                    chat_id,
+                    "Please share your own phone number using the Telegram button.",
+                    reply_markup=AUTH_KEYBOARD,
+                )
+                return {"ok": True}
+
+            person = find_person_by_phone(contact.get("phone_number") or "")
+            if not person:
+                send_telegram_message(
+                    chat_id,
+                    "Phone number was not found in the employee directory. Please contact the administrator.",
+                    reply_markup=AUTH_KEYBOARD,
+                )
+                return {"ok": True}
+            if not is_person_active(person):
+                send_telegram_message(
+                    chat_id,
+                    "Your employee profile is inactive. Please contact the administrator.",
+                    reply_markup=AUTH_KEYBOARD,
+                )
+                return {"ok": True}
+
+            save_person_telegram_identity(person["person_id"], telegram_user, contact.get("phone_number"))
+            send_telegram_message(
+                chat_id,
+                f"Authorization successful. Welcome, {get_person_display_name(person)}.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return {"ok": True}
 
         if "web_app_data" in message and message["web_app_data"].get("data"):
             raw_data = message["web_app_data"]["data"]
@@ -6470,26 +6641,28 @@ async def telegram_webhook(update: dict = Body(...)):
         elif message.get("text"):
             text = message["text"].strip()
 
-        if not text:
-            send_telegram_message(
-                chat_id,
-                "Send the asset code or use the button below.",
-                reply_markup=MAIN_KEYBOARD,
-            )
+        if text == "/start":
+            person = get_authorized_telegram_person(message)
+            if person:
+                send_telegram_message(
+                    chat_id,
+                    f"Welcome back, {get_person_display_name(person)}. Choose an action below.",
+                    reply_markup=MAIN_KEYBOARD,
+                )
+            else:
+                send_telegram_auth_prompt(chat_id)
             return {"ok": True}
 
-        if text == "/start":
-            send_telegram_message(
-                chat_id,
-                (
-                    "Welcome! This bot helps you find an asset by tag, "
-                    "view a short card, and open the web card."
-                ),
-                reply_markup=MAIN_KEYBOARD,
-            )
+        if not text:
+            send_telegram_auth_prompt(chat_id)
             return {"ok": True}
+
+        person = get_authorized_telegram_person(message)
 
         if text == "Enter code":
+            if not person:
+                send_telegram_auth_prompt(chat_id)
+                return {"ok": True}
             send_telegram_message(
                 chat_id,
                 "Enter the asset code, for example: HELP-UKR-0015",
@@ -6499,7 +6672,20 @@ async def telegram_webhook(update: dict = Body(...)):
         if text == "Help":
             send_telegram_message(
                 chat_id,
-                "Use 'Scan QR' or enter the asset code manually.",
+                "Authorize with your phone number, then use 'My assets', 'Scan QR', or enter an asset code manually.",
+                reply_markup=MAIN_KEYBOARD if person else AUTH_KEYBOARD,
+            )
+            return {"ok": True}
+
+        if not person:
+            send_telegram_auth_prompt(chat_id)
+            return {"ok": True}
+
+        if text == "My assets":
+            send_telegram_long_message(
+                chat_id,
+                format_person_assets_message(person),
+                reply_markup=MAIN_KEYBOARD,
             )
             return {"ok": True}
 
