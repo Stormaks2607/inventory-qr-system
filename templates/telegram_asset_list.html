@@ -26,6 +26,7 @@
             font-family: Arial, Helvetica, sans-serif;
             font-size: 14px;
             line-height: 1.45;
+            overflow-x: hidden;
         }
 
         .page {
@@ -48,6 +49,9 @@
         }
 
         .btn {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
             border: 0;
             border-radius: 8px;
             background: var(--brand);
@@ -55,6 +59,7 @@
             padding: 10px 14px;
             font-weight: 700;
             cursor: pointer;
+            text-decoration: none;
         }
 
         .report-sheet {
@@ -76,6 +81,7 @@
                 linear-gradient(90deg, rgba(35, 107, 91, 0.10) 0%, transparent 24%),
                 linear-gradient(135deg, #ffffff 0%, var(--brand-soft) 100%);
             border-left: 8px solid var(--brand);
+            overflow: hidden;
         }
 
         .report-banner-top {
@@ -84,6 +90,10 @@
             gap: 18px;
             align-items: flex-start;
             margin-bottom: 18px;
+        }
+
+        .report-banner-top > * {
+            min-width: 0;
         }
 
         .company-label,
@@ -99,14 +109,16 @@
 
         .report-title {
             margin: 4px 0 0;
-            font-size: 30px;
+            font-size: clamp(24px, 7vw, 30px);
             line-height: 1.1;
+            overflow-wrap: anywhere;
         }
 
         .report-subtitle {
             margin: 8px 0 0;
             color: var(--muted);
             line-height: 1.5;
+            overflow-wrap: anywhere;
         }
 
         .report-stamp {
@@ -266,6 +278,14 @@
                 justify-content: stretch;
             }
 
+            .btn {
+                width: 100%;
+            }
+
+            .report-banner {
+                padding: 18px;
+            }
+
             .report-grid {
                 grid-template-columns: 1fr;
             }
@@ -353,8 +373,8 @@
 <body>
     <main class="page">
         <div class="toolbar screen-only">
-            <span class="toolbar-note">Choose Save as PDF in the print dialog.</span>
-            <button class="btn" type="button" onclick="window.print()">Save as PDF / Print</button>
+            <span class="toolbar-note">Download the official report as a PDF file.</span>
+            <a class="btn" href="{{ pdf_url }}">Download PDF</a>
         </div>
 
         <section class="report-sheet">

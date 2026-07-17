@@ -1,6 +1,7 @@
 from typing import Optional
 import base64
 import csv
+import html
 import io
 from copy import copy
 import secrets
@@ -4563,6 +4564,213 @@ def load_telegram_asset_list_person(token: str) -> Optional[dict]:
     return person
 
 
+def split_person_assets_by_usage(person: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    assigned_assets = get_assets_for_person(person["person_id"])
+    assigned_standard_assets = [
+        asset
+        for asset in assigned_assets
+        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "standard"
+    ]
+    assigned_low_cost_assets = [
+        asset
+        for asset in assigned_assets
+        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "low_cost"
+    ]
+    return assigned_assets, assigned_standard_assets, assigned_low_cost_assets
+
+
+def build_telegram_asset_report_pdf(
+    person: dict,
+    assigned_assets: list[dict],
+    assigned_standard_assets: list[dict],
+    assigned_low_cost_assets: list[dict],
+    branding: dict,
+) -> bytes:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_RIGHT
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="PDF generation is not available yet") from exc
+
+    def plain_text(value) -> str:
+        return str(value if value not in (None, "") else "-")
+
+    def pdf_text(value) -> str:
+        return html.escape(plain_text(value), quote=False)
+
+    def paragraph(value) -> Paragraph:
+        return Paragraph(pdf_text(value), body_style)
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=10 * mm,
+        leftMargin=10 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm,
+        title=f"Asset List - {get_person_display_name(person)}",
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "AssetReportTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=20,
+        leading=24,
+        textColor=colors.HexColor("#102033"),
+        spaceAfter=6,
+    )
+    subtitle_style = ParagraphStyle(
+        "AssetReportSubtitle",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#657186"),
+    )
+    body_style = ParagraphStyle(
+        "AssetReportBody",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=7,
+        leading=9,
+        textColor=colors.HexColor("#102033"),
+    )
+    small_style = ParagraphStyle(
+        "AssetReportSmall",
+        parent=body_style,
+        fontSize=6.5,
+        leading=8,
+        textColor=colors.HexColor("#657186"),
+    )
+    right_style = ParagraphStyle("AssetReportRight", parent=small_style, alignment=TA_RIGHT)
+
+    printed_at = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y")
+    display_name = get_person_display_name(person)
+    story = [
+        Table(
+            [
+                [
+                    Paragraph(pdf_text(branding.get("company_name") or "Your Company"), small_style),
+                    Paragraph(f"Printed on<br/><b>{printed_at}</b>", right_style),
+                ],
+                [
+                    Paragraph(pdf_text(branding.get("report_title") or "Asset Assignment Report"), title_style),
+                    "",
+                ],
+                [
+                    Paragraph(pdf_text(branding.get("report_subtitle") or "Current asset assignment register."), subtitle_style),
+                    "",
+                ],
+            ],
+            colWidths=[230 * mm, 40 * mm],
+        ),
+        Spacer(1, 5 * mm),
+        Table(
+            [
+                ["Employee name", plain_text(display_name), "Department", plain_text(person.get("department"))],
+                ["Person ID", plain_text(person.get("person_id")), "Report type", "Current assignment register"],
+                ["Total assigned assets", plain_text(len(assigned_assets)), "Standard / Low-cost", f"{len(assigned_standard_assets)} / {len(assigned_low_cost_assets)}"],
+            ],
+            colWidths=[38 * mm, 96 * mm, 38 * mm, 98 * mm],
+            style=[
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#657186")),
+                ("TEXTCOLOR", (2, 0), (2, -1), colors.HexColor("#657186")),
+                ("FONTNAME", (1, 0), (1, -1), "Helvetica-Bold"),
+                ("FONTNAME", (3, 0), (3, -1), "Helvetica-Bold"),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#dfe7ef")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#dfe7ef")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ],
+        ),
+        Spacer(1, 6 * mm),
+    ]
+
+    def add_asset_table(title: str, assets: list[dict], is_low_cost: bool = False):
+        story.append(Paragraph(title, ParagraphStyle("SectionTitle" + title, parent=styles["Heading2"], fontSize=12, leading=14)))
+        headers = ["Inventory code" if is_low_cost else "Asset tag", "Description", "Status", "City", "Department" if is_low_cost else "Location", "Assigned"]
+        rows = [[Paragraph(header, small_style) for header in headers]]
+        if not assets:
+            rows.append([Paragraph("No active items are currently assigned.", body_style), "", "", "", "", ""])
+        for asset in assets:
+            assignment = asset.get("current_assignment") or {}
+            brand_model = " / ".join(value for value in [asset.get("brand_make"), asset.get("model")] if value)
+            description = pdf_text(asset.get("item_description"))
+            if brand_model:
+                description = f"{description}<br/><font color='#657186'>{brand_model}</font>"
+            rows.append(
+                [
+                    paragraph(asset.get("asset_tag_number")),
+                    Paragraph(description, body_style),
+                    paragraph(asset.get("effective_status")),
+                    paragraph(assignment.get("city")),
+                    paragraph(assignment.get("department") if is_low_cost else assignment.get("location_name") or assignment.get("department")),
+                    paragraph(assignment.get("assignment_date")),
+                ]
+            )
+
+        table = Table(
+            rows,
+            colWidths=[29 * mm, 139 * mm, 24 * mm, 25 * mm, 35 * mm, 18 * mm],
+            repeatRows=1,
+            style=TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#edf4f1")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#657186")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#dfe7ef")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            ),
+        )
+        story.extend([table, Spacer(1, 5 * mm)])
+
+    add_asset_table("Assigned Standard Assets", assigned_standard_assets)
+    add_asset_table("Assigned Low-cost Items", assigned_low_cost_assets, is_low_cost=True)
+
+    story.append(
+        Table(
+            [
+                [
+                    Paragraph(f"{pdf_text(branding.get('issuer_label') or 'Issued by')}<br/><br/><br/>____________________________<br/>{pdf_text(branding.get('issuer_signature_label') or 'Signature')}", body_style),
+                    Paragraph(f"{pdf_text(branding.get('receiver_label') or 'Received by')}<br/><br/><br/>____________________________<br/>{pdf_text(branding.get('receiver_signature_label') or display_name + ' signature')}", body_style),
+                ]
+            ],
+            colWidths=[132 * mm, 132 * mm],
+            style=[
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#dfe7ef")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#dfe7ef")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ],
+        )
+    )
+    if branding.get("footer_note"):
+        story.extend([Spacer(1, 4 * mm), Paragraph(pdf_text(branding.get("footer_note")), small_style)])
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
 def get_telegram_asset_list_url(person: dict) -> str:
     token = create_telegram_asset_list_token(person)
     return f"{PUBLIC_BASE_URL}/telegram/assets/{token}"
@@ -4674,17 +4882,7 @@ def telegram_person_asset_list(request: Request, token: str):
     if not person:
         raise HTTPException(status_code=404, detail="Asset list not found")
 
-    assigned_assets = get_assets_for_person(person["person_id"])
-    assigned_standard_assets = [
-        asset
-        for asset in assigned_assets
-        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "standard"
-    ]
-    assigned_low_cost_assets = [
-        asset
-        for asset in assigned_assets
-        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "low_cost"
-    ]
+    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
     _, branding, branding_storage = resolve_branding_for_request(request)
 
     return templates.TemplateResponse(
@@ -4701,9 +4899,33 @@ def telegram_person_asset_list(request: Request, token: str):
             "branding": branding,
             "branding_storage": branding_storage,
             "branding_logo_url": get_branding_logo_url(branding),
+            "pdf_url": f"/telegram/assets/{token}/pdf",
             "page_title": f"Asset List - {get_person_display_name(person)}",
         },
     )
+
+
+@app.get("/telegram/assets/{token}/pdf")
+def telegram_person_asset_list_pdf(request: Request, token: str):
+    person = load_telegram_asset_list_person(token)
+    if not person:
+        raise HTTPException(status_code=404, detail="Asset list not found")
+
+    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
+    _, branding, _ = resolve_branding_for_request(request)
+    pdf_bytes = build_telegram_asset_report_pdf(
+        person,
+        assigned_assets,
+        assigned_standard_assets,
+        assigned_low_cost_assets,
+        branding,
+    )
+    filename_name = re.sub(r"[^A-Za-z0-9_-]+", "_", get_person_display_name(person)).strip("_") or "employee"
+    headers = {
+        "Content-Disposition": f'attachment; filename="asset_list_{filename_name}.pdf"',
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
 @app.get("/admin/login", response_class=HTMLResponse, name="admin_login")
