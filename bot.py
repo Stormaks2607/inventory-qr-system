@@ -223,7 +223,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if text == "My assets":
-        await reply_long_text(update, format_person_assets(person), reply_markup=main_keyboard)
+        inline_keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Open asset list", url=inventory_app.get_telegram_asset_list_url(person))]]
+        )
+        await reply_long_text(update, format_person_assets(person), reply_markup=inline_keyboard)
         return
 
     await send_asset_card(update, text)

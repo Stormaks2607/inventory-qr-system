@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Stre
 from postgrest.exceptions import APIError
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.templating import Jinja2Templates
+from itsdangerous import BadSignature, URLSafeSerializer
 from supabase import Client, create_client
 
 
@@ -4530,6 +4531,41 @@ def format_person_assets_message(person: dict) -> str:
     return "\n".join(lines)
 
 
+def get_telegram_asset_list_serializer() -> URLSafeSerializer:
+    return URLSafeSerializer(ADMIN_SESSION_SECRET, salt="telegram-asset-list")
+
+
+def create_telegram_asset_list_token(person: dict) -> str:
+    return get_telegram_asset_list_serializer().dumps(
+        {
+            "person_id": person.get("person_id"),
+            "messenger_id": person.get("messenger_id"),
+        }
+    )
+
+
+def load_telegram_asset_list_person(token: str) -> Optional[dict]:
+    try:
+        data = get_telegram_asset_list_serializer().loads(token)
+    except BadSignature:
+        return None
+    person_id = data.get("person_id")
+    if not person_id:
+        return None
+    person = get_person_by_id(int(person_id))
+    if not person or not is_person_active(person):
+        return None
+    expected_messenger_id = data.get("messenger_id")
+    if expected_messenger_id and str(person.get("messenger_id") or "") != str(expected_messenger_id):
+        return None
+    return person
+
+
+def get_telegram_asset_list_url(person: dict) -> str:
+    token = create_telegram_asset_list_token(person)
+    return f"{PUBLIC_BASE_URL}/telegram/assets/{token}"
+
+
 def send_telegram_auth_prompt(chat_id: int) -> None:
     send_telegram_message(
         chat_id,
@@ -4627,6 +4663,44 @@ def miniapp(request: Request):
         request=request,
         name="miniapp.html",
         context={},
+    )
+
+
+@app.get("/telegram/assets/{token}", response_class=HTMLResponse)
+def telegram_person_asset_list(request: Request, token: str):
+    person = load_telegram_asset_list_person(token)
+    if not person:
+        raise HTTPException(status_code=404, detail="Asset list not found")
+
+    assigned_assets = get_assets_for_person(person["person_id"])
+    assigned_standard_assets = [
+        asset
+        for asset in assigned_assets
+        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "standard"
+    ]
+    assigned_low_cost_assets = [
+        asset
+        for asset in assigned_assets
+        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "low_cost"
+    ]
+    _, branding, branding_storage = resolve_branding_for_request(request)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="telegram_asset_list.html",
+        context={
+            "person": person,
+            "display_name": get_person_display_name(person),
+            "report_display_name": get_person_report_name(person),
+            "assigned_assets": assigned_assets,
+            "assigned_standard_assets": assigned_standard_assets,
+            "assigned_low_cost_assets": assigned_low_cost_assets,
+            "printed_at": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y"),
+            "branding": branding,
+            "branding_storage": branding_storage,
+            "branding_logo_url": get_branding_logo_url(branding),
+            "page_title": f"Asset List - {get_person_display_name(person)}",
+        },
     )
 
 
@@ -6688,7 +6762,11 @@ async def telegram_webhook(update: dict = Body(...)):
             send_telegram_long_message(
                 chat_id,
                 format_person_assets_message(person),
-                reply_markup=MAIN_KEYBOARD,
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "Open asset list", "url": get_telegram_asset_list_url(person)}]
+                    ]
+                },
             )
             return {"ok": True}
 

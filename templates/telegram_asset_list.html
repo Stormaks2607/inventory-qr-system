@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page_title or "Asset List" }}</title>
+    <style>
+        :root {
+            --ink: #102033;
+            --muted: #657186;
+            --line: #dfe7ef;
+            --panel: #ffffff;
+            --soft: #f4f7f9;
+            --brand: #236b5b;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--soft);
+            color: var(--ink);
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+
+        .page {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .sheet,
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 18px;
+            margin-bottom: 16px;
+        }
+
+        .top {
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            align-items: flex-start;
+        }
+
+        h1, h2, h3, p { margin-top: 0; }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        h2 { font-size: 18px; margin-bottom: 8px; }
+        .muted { color: var(--muted); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin-top: 16px;
+        }
+        .meta div {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 10px;
+            background: #fbfcfd;
+        }
+        .meta span {
+            display: block;
+            color: var(--muted);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            margin-bottom: 4px;
+        }
+        .meta strong { font-size: 15px; }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-bottom: 14px;
+        }
+        button {
+            border: 0;
+            border-radius: 8px;
+            background: var(--brand);
+            color: white;
+            padding: 10px 14px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .table-wrap { overflow-x: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border-bottom: 1px solid var(--line);
+            padding: 9px 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            color: var(--muted);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            white-space: nowrap;
+        }
+        .tag { font-weight: 700; white-space: nowrap; }
+
+        @media (max-width: 760px) {
+            .page { padding: 12px; }
+            .top, .meta { grid-template-columns: 1fr; display: grid; }
+            .toolbar { justify-content: flex-start; }
+        }
+
+        @media print {
+            body { background: white; }
+            .page { max-width: none; padding: 0; }
+            .toolbar { display: none; }
+            .sheet, .panel {
+                border: 0;
+                border-radius: 0;
+                padding: 0;
+            }
+            .panel { break-inside: avoid; margin-top: 18px; }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <div class="toolbar">
+            <button type="button" onclick="window.print()">Print report</button>
+        </div>
+
+        <section class="sheet">
+            <div class="top">
+                <div>
+                    {% if branding_logo_url %}
+                    <img src="{{ branding_logo_url }}" alt="{{ branding.company_name }} logo" style="max-height: 62px; max-width: 220px; margin-bottom: 12px;">
+                    {% endif %}
+                    <div class="muted">{{ branding.company_name }}</div>
+                    <h1>{{ report_display_name }}</h1>
+                    <p class="muted">Current assigned asset list.</p>
+                </div>
+                <div class="muted">Printed on {{ printed_at }}</div>
+            </div>
+
+            <div class="meta">
+                <div><span>Department</span><strong>{{ person.department or "-" }}</strong></div>
+                <div><span>Total assets</span><strong>{{ assigned_assets|length }}</strong></div>
+                <div><span>Standard</span><strong>{{ assigned_standard_assets|length }}</strong></div>
+                <div><span>Low-cost</span><strong>{{ assigned_low_cost_assets|length }}</strong></div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Assigned Standard Assets</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Asset tag</th>
+                            <th>Description</th>
+                            <th>Brand</th>
+                            <th>Model</th>
+                            <th>Serial No.</th>
+                            <th>Status</th>
+                            <th>City</th>
+                            <th>Location</th>
+                            <th>Assignment date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for asset in assigned_standard_assets %}
+                        {% set assignment = asset.current_assignment or {} %}
+                        <tr>
+                            <td class="tag">{{ asset.asset_tag_number or "-" }}</td>
+                            <td>{{ asset.item_description or "-" }}</td>
+                            <td>{{ asset.brand_make or "-" }}</td>
+                            <td>{{ asset.model or "-" }}</td>
+                            <td>{{ asset.serial_chassis_number or asset.serial_number or "-" }}</td>
+                            <td>{{ asset.effective_status or "-" }}</td>
+                            <td>{{ assignment.city or "-" }}</td>
+                            <td>{{ assignment.location_name or assignment.department or "-" }}</td>
+                            <td>{{ assignment.assignment_date or "-" }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="9" class="muted">No active standard assets are currently assigned.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Assigned Low-cost Items</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Inventory code</th>
+                            <th>Description</th>
+                            <th>Brand</th>
+                            <th>Model</th>
+                            <th>Status</th>
+                            <th>City</th>
+                            <th>Department</th>
+                            <th>Assignment date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for asset in assigned_low_cost_assets %}
+                        {% set assignment = asset.current_assignment or {} %}
+                        <tr>
+                            <td class="tag">{{ asset.asset_tag_number or "-" }}</td>
+                            <td>{{ asset.item_description or "-" }}</td>
+                            <td>{{ asset.brand_make or "-" }}</td>
+                            <td>{{ asset.model or "-" }}</td>
+                            <td>{{ asset.effective_status or "-" }}</td>
+                            <td>{{ assignment.city or "-" }}</td>
+                            <td>{{ assignment.department or "-" }}</td>
+                            <td>{{ assignment.assignment_date or "-" }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="8" class="muted">No active low-cost items are currently assigned.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+</body>
+</html>
