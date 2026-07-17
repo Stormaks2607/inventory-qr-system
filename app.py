@@ -544,6 +544,15 @@ def get_default_branding_settings() -> dict:
     }
 
 
+def normalize_branding_settings(settings: dict) -> dict:
+    defaults = get_default_branding_settings()
+    normalized = defaults.copy()
+    normalized.update({key: value for key, value in (settings or {}).items() if key in defaults and value is not None})
+    if normalized.get("report_theme") not in {"classic", "corporate", "compact", "help_standard"}:
+        normalized["report_theme"] = defaults["report_theme"]
+    return normalized
+
+
 def sanitize_tenant_key(value: str) -> str:
     normalized = "".join(
         character.lower() if character.isalnum() else "-"
@@ -591,15 +600,7 @@ def load_branding_settings_from_supabase(tenant_key: str) -> Optional[dict]:
     if not response.data:
         return None
 
-    settings = get_default_branding_settings()
-    settings.update(
-        {
-            key: value
-            for key, value in response.data[0].items()
-            if key in settings and value is not None
-        }
-    )
-    return settings
+    return normalize_branding_settings(response.data[0])
 
 
 def load_branding_settings_from_file(tenant_key: str) -> dict:
@@ -614,7 +615,7 @@ def load_branding_settings_from_file(tenant_key: str) -> dict:
         with open(BRANDING_SETTINGS_PATH, "r", encoding="utf-8") as file:
             saved = json.load(file)
         settings.update({key: value for key, value in saved.items() if key in settings})
-    return settings
+    return normalize_branding_settings(settings)
 
 
 def load_branding_settings(tenant_key: str) -> tuple[dict, str]:
@@ -633,21 +634,25 @@ def resolve_branding_for_request(request: Request) -> tuple[str, dict, str]:
     tenant_key = get_current_tenant_key(request)
     branding, branding_storage = load_branding_settings(tenant_key)
     if not branding_matches_defaults(branding):
+        if branding_storage == "local" and save_branding_settings_to_supabase(tenant_key, branding):
+            branding_storage = "supabase"
         return tenant_key, branding, branding_storage
 
     legacy_tenant_key = get_legacy_tenant_key(request)
     if legacy_tenant_key != tenant_key:
         legacy_branding, legacy_storage = load_branding_settings(legacy_tenant_key)
         if not branding_matches_defaults(legacy_branding):
+            if save_branding_settings_to_supabase(tenant_key, legacy_branding):
+                legacy_storage = "supabase"
             return tenant_key, legacy_branding, legacy_storage
 
     return tenant_key, branding, branding_storage
 
 
 def save_branding_settings_to_supabase(tenant_key: str, settings: dict) -> bool:
-    payload = {"tenant_key": tenant_key, **settings}
+    payload = {"tenant_key": tenant_key, **normalize_branding_settings(settings)}
     try:
-        supabase.table(BRANDING_SUPABASE_TABLE).upsert(payload).execute()
+        supabase.table(BRANDING_SUPABASE_TABLE).upsert(payload, on_conflict="tenant_key").execute()
         return True
     except Exception:
         return False
@@ -657,7 +662,7 @@ def save_branding_settings_to_file(tenant_key: str, settings: dict) -> None:
     ensure_branding_storage()
     settings_path = get_branding_settings_path(tenant_key)
     with open(settings_path, "w", encoding="utf-8") as file:
-        json.dump(settings, file, ensure_ascii=False, indent=2)
+        json.dump(normalize_branding_settings(settings), file, ensure_ascii=False, indent=2)
 
 
 def save_branding_settings(tenant_key: str, settings: dict) -> str:
