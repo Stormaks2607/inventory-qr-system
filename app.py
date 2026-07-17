@@ -4610,14 +4610,15 @@ def build_telegram_asset_report_pdf(
     def paragraph(value) -> Paragraph:
         return Paragraph(pdf_text(value), body_style)
 
+    is_help_standard = branding.get("report_theme") == "help_standard"
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=landscape(A4),
-        rightMargin=10 * mm,
-        leftMargin=10 * mm,
-        topMargin=10 * mm,
-        bottomMargin=10 * mm,
+        pagesize=A4 if is_help_standard else landscape(A4),
+        rightMargin=12 * mm if is_help_standard else 10 * mm,
+        leftMargin=12 * mm if is_help_standard else 10 * mm,
+        topMargin=12 * mm if is_help_standard else 10 * mm,
+        bottomMargin=12 * mm if is_help_standard else 10 * mm,
         title=f"Asset List - {get_person_display_name(person)}",
     )
 
@@ -4658,6 +4659,163 @@ def build_telegram_asset_report_pdf(
 
     printed_at = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y")
     display_name = get_person_display_name(person)
+    report_display_name = get_person_report_name(person)
+
+    if is_help_standard:
+        help_title_style = ParagraphStyle(
+            "HelpStandardTitle",
+            parent=styles["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=13,
+            leading=16,
+            alignment=1,
+            textColor=colors.HexColor("#102033"),
+        )
+        help_label_style = ParagraphStyle(
+            "HelpStandardLabel",
+            parent=small_style,
+            fontName="Helvetica-Bold",
+            textColor=colors.HexColor("#657186"),
+        )
+        help_body_style = ParagraphStyle(
+            "HelpStandardBody",
+            parent=body_style,
+            fontSize=6.8,
+            leading=8.5,
+        )
+        help_story = [
+            Table(
+                [
+                    [
+                        Paragraph("<b>Help</b><br/><font size='7'>Hilfe zur Selbsthilfe</font>", title_style),
+                        Paragraph(f"<b>{pdf_text(branding.get('company_name') or 'Your Company')}</b><br/>Printed on<br/><b>{printed_at}</b>", right_style),
+                    ]
+                ],
+                colWidths=[125 * mm, 46 * mm],
+                style=TableStyle(
+                    [
+                        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#202833")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                        ("TOPPADDING", (0, 0), (-1, -1), 7),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                    ]
+                ),
+            ),
+            Spacer(1, 3 * mm),
+            Paragraph("Standard Asset List", help_title_style),
+            Paragraph("Appendix to the agreement on material responsibility", subtitle_style),
+            Spacer(1, 4 * mm),
+            Table(
+                [
+                    [Paragraph("Employee", help_label_style), Paragraph(pdf_text(report_display_name), body_style)],
+                    [Paragraph("Assigned assets", help_label_style), Paragraph(pdf_text(len(assigned_assets)), body_style)],
+                    [Paragraph("Document type", help_label_style), Paragraph("Standard Asset List", body_style)],
+                    [Paragraph("Template", help_label_style), Paragraph("Help Standard", body_style)],
+                    [Paragraph("Reference date", help_label_style), Paragraph(printed_at, body_style)],
+                ],
+                colWidths=[36 * mm, 135 * mm],
+                style=TableStyle(
+                    [
+                        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#202833")),
+                        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#202833")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]
+                ),
+            ),
+            Spacer(1, 4 * mm),
+        ]
+
+        rows = [
+            [
+                Paragraph("#", small_style),
+                Paragraph("Asset / Specification", small_style),
+                Paragraph("Brand", small_style),
+                Paragraph("Model", small_style),
+                Paragraph("Serial No.", small_style),
+                Paragraph("Inventory No.", small_style),
+                Paragraph("Status", small_style),
+            ]
+        ]
+        if not assigned_assets:
+            rows.append([Paragraph("No active assets are currently assigned to this employee.", body_style), "", "", "", "", "", ""])
+        for index, asset in enumerate(assigned_assets, start=1):
+            qty_line = f"<br/><font color='#657186'>Qty: {pdf_text(asset.get('quantity'))}</font>" if asset.get("quantity") else ""
+            rows.append(
+                [
+                    Paragraph(str(index), body_style),
+                    Paragraph(f"<b>{pdf_text(asset.get('item_description'))}</b>{qty_line}", help_body_style),
+                    paragraph(asset.get("brand_make")),
+                    paragraph(asset.get("model")),
+                    paragraph(asset.get("serial_chassis_number") or asset.get("serial_number")),
+                    paragraph(asset.get("asset_tag_number")),
+                    paragraph(asset.get("effective_status")),
+                ]
+            )
+
+        help_story.extend(
+            [
+                Table(
+                    rows,
+                    colWidths=[8 * mm, 68 * mm, 20 * mm, 28 * mm, 22 * mm, 18 * mm, 16 * mm],
+                    repeatRows=1,
+                    style=TableStyle(
+                        [
+                            ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#202833")),
+                            ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#202833")),
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f6f8")),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                            ("TOPPADDING", (0, 0), (-1, -1), 4),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ]
+                    ),
+                ),
+                Spacer(1, 4 * mm),
+                Paragraph(pdf_text(branding.get("footer_note") or "Internal use only"), small_style),
+                Spacer(1, 2 * mm),
+                Paragraph(
+                    "This document is an appendix to the agreement on material responsibility and confirms the list of assets assigned to the employee.",
+                    help_body_style,
+                ),
+                Spacer(1, 2 * mm),
+                Paragraph(
+                    "By signing this document, the employee confirms full responsibility for the safekeeping, proper use, and maintenance of the assigned equipment in working condition, and undertakes to return it in working condition upon termination of cooperation. In the event of damage, malfunction, or loss of equipment, the employee must immediately inform the responsible person of the organization and reimburse the organization's costs for repair or replacement in accordance with internal rules and applicable agreements between the parties.",
+                    help_body_style,
+                ),
+                Spacer(1, 2 * mm),
+                Paragraph("Acknowledged and agreed __________________", help_body_style),
+                Spacer(1, 5 * mm),
+                Table(
+                    [
+                        [
+                            Paragraph(f"Issued by<br/><br/><br/>____________________________<br/>{pdf_text(branding.get('issuer_signature_label') or 'Signature')}", body_style),
+                            Paragraph(f"Received by<br/><br/><br/>____________________________<br/>{pdf_text(branding.get('receiver_signature_label') or report_display_name + ' signature')}", body_style),
+                        ]
+                    ],
+                    colWidths=[85 * mm, 85 * mm],
+                    style=TableStyle(
+                        [
+                            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#202833")),
+                            ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#202833")),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                            ("TOPPADDING", (0, 0), (-1, -1), 6),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                        ]
+                    ),
+                ),
+            ]
+        )
+        doc.build(help_story)
+        return buffer.getvalue()
+
     story = [
         Table(
             [
