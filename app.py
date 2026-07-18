@@ -5208,7 +5208,16 @@ AUTH_KEYBOARD = {
 
 
 @app.get("/")
-def root():
+def root(request: Request):
+    if is_admin_authenticated(request):
+        return RedirectResponse(url="/admin", status_code=303)
+    if is_account_authenticated(request):
+        return RedirectResponse(url="/account", status_code=303)
+    return RedirectResponse(url="/account/login", status_code=303)
+
+
+@app.get("/health")
+def health():
     return {"status": "ok", "message": "Inventory system is running"}
 
 
