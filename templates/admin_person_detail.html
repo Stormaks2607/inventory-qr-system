@@ -206,6 +206,10 @@
         margin-bottom: 14px;
     }
 
+    .print-only {
+        display: none;
+    }
+
     .theme-corporate .report-banner {
         background:
             linear-gradient(90deg, color-mix(in srgb, var(--report-primary) 18%, white) 0%, transparent 22%),
@@ -588,18 +592,6 @@
 </div>
 {% endif %}
 
-{% if branding.report_theme == 'help_standard' %}
-<div class="help-print-toolbar screen-only">
-    <div class="toolbar" style="margin-bottom: 0;">
-        <a class="btn secondary" href="/admin/people">Back to people</a>
-        <a class="btn secondary" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
-        {% if person.is_active is not sameas false %}
-        <a class="btn secondary" href="/admin/people/{{ person.person_id }}/offboard">Offboard</a>
-        {% endif %}
-        <button class="btn" type="button" data-print-report>Print report</button>
-    </div>
-</div>
-{% else %}
 <section class="hero">
     <div class="report-header">
         <div>
@@ -639,10 +631,9 @@
         </div>
     </div>
 </section>
-{% endif %}
 
 {% if branding.report_theme == 'help_standard' %}
-<section class="report-sheet">
+<section class="report-sheet print-only">
     <article class="help-sheet">
         <header class="help-sheet-header">
             <div class="help-sheet-topline">
@@ -748,6 +739,126 @@
             </div>
         </footer>
     </article>
+</section>
+<section class="panel screen-only">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Employee Record</h3>
+            <p class="muted" style="margin: 0;">Live fields loaded from the `persons` table in Supabase.</p>
+        </div>
+        <a class="btn" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in person_field_rows %}
+                <tr>
+                    <td><strong>{{ row.label }}</strong></td>
+                    <td>{{ row.value if row.value is not none and row.value != "" else "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel screen-only">
+    <h3>Assigned Standard Assets</h3>
+    <p class="muted">Current standard assets assigned to this employee.</p>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Asset tag</th>
+                    <th>Description</th>
+                    <th>Status</th>
+                    <th>City</th>
+                    <th>Location</th>
+                    <th>Assignment date</th>
+                    <th>Open</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for asset in assigned_standard_assets %}
+                {% set assignment = asset.current_assignment or {} %}
+                <tr>
+                    <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                    <td>
+                        {{ asset.item_description or "-" }}<br>
+                        <span class="muted">{{ asset.brand_make or "-" }} / {{ asset.model or "-" }}</span>
+                    </td>
+                    <td>
+                        <span class="badge {% if (asset.effective_status or '')|upper == 'LOST' %}warn{% endif %}">
+                            {{ asset.effective_status or "-" }}
+                        </span>
+                    </td>
+                    <td>{{ assignment.city or "-" }}</td>
+                    <td>{{ assignment.location_name or "-" }}</td>
+                    <td>{{ assignment.assignment_date or "-" }}</td>
+                    <td><a href="/admin/assets/{{ asset.asset_id }}">Open asset</a></td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="7" class="muted">No active standard assets are currently assigned to this employee.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel screen-only">
+    <h3>Assigned Low-cost Items</h3>
+    <p class="muted">Mouse, keyboard, lamp, powerbank, headset, and other low-cost items currently assigned to this employee.</p>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Inventory code</th>
+                    <th>Description</th>
+                    <th>Status</th>
+                    <th>City</th>
+                    <th>Department</th>
+                    <th>Assignment date</th>
+                    <th>Open</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for asset in assigned_low_cost_assets %}
+                {% set assignment = asset.current_assignment or {} %}
+                <tr>
+                    <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                    <td>
+                        {{ asset.item_description or "-" }}<br>
+                        <span class="muted">{{ asset.brand_make or "-" }} / {{ asset.model or "-" }}</span>
+                    </td>
+                    <td>
+                        <span class="badge {% if (asset.effective_status or '')|upper == 'LOST' %}warn{% endif %}">
+                            {{ asset.effective_status or "-" }}
+                        </span>
+                    </td>
+                    <td>{{ assignment.city or "-" }}</td>
+                    <td>{{ assignment.department or "-" }}</td>
+                    <td>{{ assignment.assignment_date or "-" }}</td>
+                    <td><a href="/admin/assets/{{ asset.asset_id }}">Open item</a></td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="7" class="muted">No active low-cost items are currently assigned to this employee.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </section>
 {% else %}
 <section class="report-sheet">
