@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page_title or "Employee Account" }}</title>
+    <style>
+        :root {
+            --ink: #102033;
+            --muted: #657186;
+            --line: #dfe7ef;
+            --panel: #ffffff;
+            --soft: #eef3f6;
+            --brand: #236b5b;
+            --warn: #9f5f13;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--soft);
+            color: var(--ink);
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+
+        .shell {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .topbar,
+        .hero,
+        .panel,
+        .stat {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            padding: 12px 14px;
+            margin-bottom: 16px;
+        }
+
+        .brand {
+            font-size: 18px;
+            font-weight: 800;
+        }
+
+        .nav {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .nav a,
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 0;
+            border-radius: 8px;
+            background: var(--brand);
+            color: #ffffff;
+            cursor: pointer;
+            font-weight: 700;
+            padding: 9px 12px;
+            text-decoration: none;
+        }
+
+        .nav a.secondary,
+        .btn.secondary {
+            background: #e8eef3;
+            color: var(--ink);
+        }
+
+        .hero {
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        h1, h2, h3, p { margin-top: 0; }
+        h1 { font-size: 26px; margin-bottom: 6px; }
+        h2 { font-size: 20px; margin-bottom: 6px; }
+        h3 { font-size: 16px; margin-bottom: 6px; }
+        .muted { color: var(--muted); }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .stat {
+            padding: 14px;
+        }
+
+        .stat span {
+            color: var(--muted);
+            display: block;
+            font-size: 12px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .stat strong {
+            display: block;
+            font-size: 28px;
+            margin-top: 6px;
+        }
+
+        .panel {
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .table-wrap { overflow-x: auto; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            border-bottom: 1px solid var(--line);
+            padding: 9px 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            color: var(--muted);
+            font-size: 11px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .tag {
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            background: #e5f2ee;
+            color: #16614f;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 4px 8px;
+            white-space: nowrap;
+        }
+
+        .badge.shared {
+            background: #fff3d8;
+            color: var(--warn);
+        }
+
+        .flash {
+            border: 1px solid #b7dfc8;
+            border-radius: 8px;
+            background: #edf9f1;
+            color: #155c35;
+            margin-bottom: 16px;
+            padding: 12px 14px;
+        }
+
+        .flash.error {
+            border-color: #f0c4c4;
+            background: #fff1f1;
+            color: #8a1d1d;
+        }
+
+        @media (max-width: 760px) {
+            .shell { padding: 12px; }
+            .topbar,
+            .stats {
+                grid-template-columns: 1fr;
+                display: grid;
+            }
+            .nav a,
+            .btn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="shell">
+        <header class="topbar">
+            <div>
+                <div class="brand">Scanventory Account</div>
+                {% if display_name %}
+                <div class="muted">{{ display_name }}</div>
+                {% endif %}
+            </div>
+            <nav class="nav">
+                <a class="secondary {% if active_page == 'assets' %}active{% endif %}" href="/account/assets">My assets</a>
+                <a href="/account/report.pdf">Download PDF</a>
+                <a class="secondary" href="/account/logout">Log out</a>
+            </nav>
+        </header>
+
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

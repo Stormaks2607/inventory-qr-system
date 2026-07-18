@@ -61,9 +61,11 @@
                 <tr><th>Department</th><td>{{ asset.current_assignment.department or "-" }}</td></tr>
                 <tr><th>City</th><td>{{ asset.current_assignment.city or "-" }}</td></tr>
                 <tr><th>Location</th><td>{{ asset.current_assignment.location_name or "-" }}</td></tr>
+                <tr><th>Assignment type</th><td>{{ (asset.current_assignment.assignment_scope or "personal")|replace("_", " ")|title }}</td></tr>
                 <tr><th>Assignment date</th><td>{{ asset.current_assignment.assignment_date or "-" }}</td></tr>
                 <tr><th>Status</th><td>{{ asset.current_assignment.status or "-" }}</td></tr>
                 <tr><th>Condition on handover</th><td>{{ asset.current_assignment.handover_condition or "-" }}</td></tr>
+                <tr><th>Custody note</th><td>{{ asset.current_assignment.custody_note or "-" }}</td></tr>
                 <tr><th>Notes</th><td>{{ asset.current_assignment.notes or "-" }}</td></tr>
             </tbody>
         </table>
@@ -614,9 +616,23 @@
                 <input id="status" name="status" type="text" value="{{ assignment_form.status }}">
             </div>
 
+            <div class="field">
+                <label for="assignment_scope">Assignment type</label>
+                <select id="assignment_scope" name="assignment_scope">
+                    <option value="personal" {% if assignment_form.assignment_scope == 'personal' %}selected{% endif %}>Personal asset</option>
+                    <option value="department_shared" {% if assignment_form.assignment_scope == 'department_shared' %}selected{% endif %}>Department/shared responsibility</option>
+                    <option value="warehouse" {% if assignment_form.assignment_scope == 'warehouse' %}selected{% endif %}>Warehouse custody</option>
+                </select>
+            </div>
+
             <div class="field full">
                 <label for="handover_condition">Asset condition on handover</label>
                 <textarea id="handover_condition" name="handover_condition" rows="3">{{ assignment_form.handover_condition }}</textarea>
+            </div>
+
+            <div class="field full">
+                <label for="custody_note">Custody note</label>
+                <textarea id="custody_note" name="custody_note" rows="2">{{ assignment_form.custody_note }}</textarea>
             </div>
 
             <div class="field full">
@@ -641,6 +657,7 @@
                 <th>Responsible person</th>
                 <th>Department</th>
                 <th>City</th>
+                <th>Assignment type</th>
                 <th>Status</th>
                 <th>Condition on handover</th>
                 <th>Notes</th>
@@ -654,6 +671,7 @@
                 <td>{{ assignment.responsible_person or "-" }}</td>
                 <td>{{ assignment.department or "-" }}</td>
                 <td>{{ assignment.city or "-" }}</td>
+                <td>{{ (assignment.assignment_scope or "personal")|replace("_", " ")|title }}</td>
                 <td>
                     <span class="badge {% if (assignment.status or '')|upper == 'LOST' %}warn{% endif %}">
                         {{ assignment.status or "-" }}
@@ -664,7 +682,7 @@
             </tr>
             {% else %}
             <tr>
-                <td colspan="8" class="muted">No assignment history found for this asset.</td>
+                <td colspan="9" class="muted">No assignment history found for this asset.</td>
             </tr>
             {% endfor %}
         </tbody>

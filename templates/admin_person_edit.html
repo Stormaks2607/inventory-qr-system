@@ -43,6 +43,12 @@
         </div>
         {% endfor %}
 
+        <div class="field full">
+            <label for="account_password">New account password</label>
+            <input id="account_password" name="account_password" type="password" value="" autocomplete="new-password">
+            <span class="muted">Leave blank to keep the current password. Used for employee cabinet login with this employee email.</span>
+        </div>
+
         <div class="toolbar" style="margin-bottom: 0;">
             <button class="btn" type="submit">Save employee</button>
             <a class="btn secondary" href="/admin/people/{{ person.person_id }}">Cancel</a>

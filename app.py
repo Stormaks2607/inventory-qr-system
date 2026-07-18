@@ -1,6 +1,7 @@
 from typing import Optional
 import base64
 import csv
+import hashlib
 import html
 import io
 from copy import copy
@@ -718,11 +719,40 @@ def is_admin_authenticated(request: Request) -> bool:
     return request.session.get("admin_authenticated") is True
 
 
+def is_account_authenticated(request: Request) -> bool:
+    return request.session.get("account_person_id") is not None
+
+
 def normalize_credential(value: str) -> str:
     normalized = (value or "").strip()
     if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
         normalized = normalized[1:-1]
     return normalized
+
+
+def normalize_email(value: str) -> str:
+    return (value or "").strip().casefold()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    iterations = 260000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"), iterations)
+    return f"pbkdf2_sha256${iterations}${salt}${digest.hex()}"
+
+
+def verify_password(password: str, stored_hash: Optional[str]) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        algorithm, iterations_raw, salt, expected_hex = stored_hash.split("$", 3)
+        iterations = int(iterations_raw)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"), iterations)
+    return secrets.compare_digest(digest.hex(), expected_hex)
 
 
 def parse_int_field(value: str) -> Optional[int]:
@@ -769,12 +799,31 @@ def require_admin(request: Request) -> Optional[RedirectResponse]:
     return RedirectResponse(url=redirect_url, status_code=303)
 
 
+def require_account(request: Request) -> Optional[RedirectResponse]:
+    if is_account_authenticated(request):
+        return None
+
+    next_path = request.url.path
+    if request.url.query:
+        next_path = f"{next_path}?{request.url.query}"
+    redirect_url = f"/account/login?next={next_path}"
+    return RedirectResponse(url=redirect_url, status_code=303)
+
+
 def set_flash(request: Request, level: str, message: str) -> None:
     request.session["admin_flash"] = {"level": level, "message": message}
 
 
 def pop_flash(request: Request) -> Optional[dict]:
     return request.session.pop("admin_flash", None)
+
+
+def set_account_flash(request: Request, level: str, message: str) -> None:
+    request.session["account_flash"] = {"level": level, "message": message}
+
+
+def pop_account_flash(request: Request) -> Optional[dict]:
+    return request.session.pop("account_flash", None)
 
 
 def ensure_sync_storage() -> None:
@@ -2784,6 +2833,8 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
         "status": assignment.get("status"),
         "notes": assignment.get("notes"),
         "handover_condition": assignment.get("handover_condition"),
+        "assignment_scope": assignment.get("assignment_scope") or "personal",
+        "custody_note": assignment.get("custody_note"),
         "responsible_person": (
             person.get("name_eng")
             or person.get("name")
@@ -2837,6 +2888,8 @@ def enrich_assignment(assignment: dict) -> dict:
         "status": assignment.get("status"),
         "notes": assignment.get("notes"),
         "handover_condition": assignment.get("handover_condition"),
+        "assignment_scope": assignment.get("assignment_scope") or "personal",
+        "custody_note": assignment.get("custody_note"),
         "responsible_person": (
             person.get("name_eng")
             or person.get("name")
@@ -3346,6 +3399,36 @@ def get_person_by_id(person_id: int) -> Optional[dict]:
     return response.data[0]
 
 
+def get_person_by_email(email: str) -> Optional[dict]:
+    normalized_email = normalize_email(email)
+    if not normalized_email:
+        return None
+    response = (
+        supabase.table("persons")
+        .select("*")
+        .ilike("email", normalized_email)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        return None
+    return response.data[0]
+
+
+def get_account_person(request: Request) -> Optional[dict]:
+    person_id = request.session.get("account_person_id")
+    if not person_id:
+        return None
+    try:
+        person = get_person_by_id(int(person_id))
+    except (TypeError, ValueError):
+        return None
+    if not person or not is_person_active(person):
+        request.session.pop("account_person_id", None)
+        return None
+    return person
+
+
 def find_warehouse_person(people: Optional[list[dict]] = None) -> Optional[dict]:
     people = people if people is not None else list_people()
     for person in people:
@@ -3567,6 +3650,9 @@ PERSON_FIELD_LABELS = {
     "telegram": "Telegram",
     "notes": "Notes",
     "comment": "Comment",
+    "account_role": "Account role",
+    "must_change_password": "Must change password",
+    "last_login_at": "Last login at",
 }
 
 PERSON_FIELD_ORDER = [
@@ -3582,11 +3668,15 @@ PERSON_FIELD_ORDER = [
     "email",
     "phone",
     "telegram",
+    "account_role",
+    "must_change_password",
+    "last_login_at",
     "notes",
     "comment",
 ]
 
-READONLY_PERSON_FIELDS = {"person_id"}
+HIDDEN_PERSON_FIELDS = {"password_hash"}
+READONLY_PERSON_FIELDS = {"person_id", "last_login_at"}
 
 
 def format_person_field_label(field_name: str) -> str:
@@ -3594,7 +3684,7 @@ def format_person_field_label(field_name: str) -> str:
 
 
 def get_person_field_names(person: dict) -> list[str]:
-    keys = list(person.keys())
+    keys = [key for key in person.keys() if key not in HIDDEN_PERSON_FIELDS]
     ordered = [field for field in PERSON_FIELD_ORDER if field in keys]
     remaining = sorted(field for field in keys if field not in ordered)
     return ordered + remaining
@@ -3632,6 +3722,41 @@ def build_person_edit_fields(person: dict) -> list[dict]:
                     "options": [
                         {"value": "true", "label": "Active (TRUE)"},
                         {"value": "false", "label": "Inactive (FALSE)"},
+                    ],
+                }
+            )
+            continue
+        if row["name"] == "account_role":
+            fields.append(
+                {
+                    "name": row["name"],
+                    "label": row["label"],
+                    "value": value or "employee",
+                    "multiline": False,
+                    "input_type": "text",
+                    "control": "select",
+                    "options": [
+                        {"value": "employee", "label": "Employee"},
+                        {"value": "department_manager", "label": "Department manager"},
+                        {"value": "asset_manager", "label": "Asset manager"},
+                        {"value": "viewer", "label": "Viewer"},
+                        {"value": "admin", "label": "Admin"},
+                    ],
+                }
+            )
+            continue
+        if row["name"] == "must_change_password":
+            fields.append(
+                {
+                    "name": row["name"],
+                    "label": row["label"],
+                    "value": "true" if value is True else "false",
+                    "multiline": False,
+                    "input_type": "text",
+                    "control": "select",
+                    "options": [
+                        {"value": "false", "label": "No (FALSE)"},
+                        {"value": "true", "label": "Yes (TRUE)"},
                     ],
                 }
             )
@@ -3801,6 +3926,8 @@ def get_assignment_form_context(asset: dict) -> dict:
             "status": current_assignment.get("status") or asset.get("current_status") or "",
             "notes": current_assignment.get("notes") or "",
             "handover_condition": current_assignment.get("handover_condition") or "",
+            "assignment_scope": current_assignment.get("assignment_scope") or "personal",
+            "custody_note": current_assignment.get("custody_note") or "",
         },
     }
 
@@ -3815,6 +3942,8 @@ def describe_assignment_update_error(error: Exception) -> str:
 
     if "handover_condition" in combined and "column" in combined:
         return "The database schema is missing the handover_condition column in asset_assignments."
+    if "assignment_scope" in combined and "column" in combined:
+        return "The database schema is missing the assignment_scope column in asset_assignments. Apply the employee account migration first."
 
     return f"Assignment could not be saved: {message}"
 
@@ -4584,6 +4713,27 @@ def split_person_assets_by_usage(person: dict) -> tuple[list[dict], list[dict], 
     return assigned_assets, assigned_standard_assets, assigned_low_cost_assets
 
 
+def get_assignment_scope(asset: dict) -> str:
+    assignment = asset.get("current_assignment") or {}
+    scope = assignment.get("assignment_scope") or "personal"
+    return scope if scope in {"personal", "department_shared", "warehouse"} else "personal"
+
+
+def split_person_assets_by_responsibility(assets: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    personal_assets = []
+    department_shared_assets = []
+    warehouse_assets = []
+    for asset in assets:
+        scope = get_assignment_scope(asset)
+        if scope == "department_shared":
+            department_shared_assets.append(asset)
+        elif scope == "warehouse":
+            warehouse_assets.append(asset)
+        else:
+            personal_assets.append(asset)
+    return personal_assets, department_shared_assets, warehouse_assets
+
+
 def build_telegram_asset_report_pdf(
     person: dict,
     assigned_assets: list[dict],
@@ -5126,6 +5276,128 @@ def telegram_person_asset_list_pdf(request: Request, token: str):
     person = load_telegram_asset_list_person(token)
     if not person:
         raise HTTPException(status_code=404, detail="Asset list not found")
+
+    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
+    _, branding, _ = resolve_branding_for_request(request)
+    pdf_bytes = build_telegram_asset_report_pdf(
+        person,
+        assigned_assets,
+        assigned_standard_assets,
+        assigned_low_cost_assets,
+        branding,
+    )
+    filename_name = re.sub(r"[^A-Za-z0-9_-]+", "_", get_person_display_name(person)).strip("_") or "employee"
+    headers = {
+        "Content-Disposition": f'attachment; filename="asset_list_{filename_name}.pdf"',
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
+
+
+@app.get("/account")
+def account_home(request: Request):
+    redirect = require_account(request)
+    if redirect:
+        return redirect
+    return RedirectResponse(url="/account/assets", status_code=303)
+
+
+@app.get("/account/login", response_class=HTMLResponse, name="account_login")
+def account_login(request: Request, next: str = "/account"):
+    if is_account_authenticated(request):
+        return RedirectResponse(url=next or "/account", status_code=303)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="account_login.html",
+        context={
+            "error": None,
+            "next_url": next or "/account",
+            "page_title": "Employee Login",
+        },
+    )
+
+
+@app.post("/account/login", response_class=HTMLResponse)
+def account_login_submit(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    next: str = Form("/account"),
+):
+    normalized_email = normalize_email(email)
+    person = get_person_by_email(normalized_email)
+    if not person or not is_person_active(person) or not verify_password(password, person.get("password_hash")):
+        return templates.TemplateResponse(
+            request=request,
+            name="account_login.html",
+            context={
+                "error": "Invalid email or password.",
+                "next_url": next or "/account",
+                "page_title": "Employee Login",
+            },
+            status_code=401,
+        )
+
+    request.session["account_person_id"] = person.get("person_id")
+    request.session["account_display_name"] = get_person_display_name(person)
+    try:
+        supabase.table("persons").update({"last_login_at": datetime.now(ZoneInfo("Europe/Kyiv")).isoformat()}).eq("person_id", person.get("person_id")).execute()
+    except Exception:
+        pass
+    return RedirectResponse(url=next or "/account", status_code=303)
+
+
+@app.get("/account/logout")
+def account_logout(request: Request):
+    request.session.pop("account_person_id", None)
+    request.session.pop("account_display_name", None)
+    return RedirectResponse(url="/account/login", status_code=303)
+
+
+@app.get("/account/assets", response_class=HTMLResponse)
+def account_assets(request: Request):
+    redirect = require_account(request)
+    if redirect:
+        return redirect
+
+    person = get_account_person(request)
+    if not person:
+        return RedirectResponse(url="/account/login", status_code=303)
+
+    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
+    personal_assets, department_shared_assets, warehouse_assets = split_person_assets_by_responsibility(assigned_assets)
+    _, branding, _ = resolve_branding_for_request(request)
+    return templates.TemplateResponse(
+        request=request,
+        name="account_assets.html",
+        context={
+            "person": person,
+            "display_name": get_person_display_name(person),
+            "report_display_name": get_person_report_name(person),
+            "assigned_assets": assigned_assets,
+            "assigned_standard_assets": assigned_standard_assets,
+            "assigned_low_cost_assets": assigned_low_cost_assets,
+            "personal_assets": personal_assets,
+            "department_shared_assets": department_shared_assets,
+            "warehouse_assets": warehouse_assets,
+            "branding": branding,
+            "flash": pop_account_flash(request),
+            "active_page": "assets",
+            "page_title": "My Assets",
+        },
+    )
+
+
+@app.get("/account/report.pdf")
+def account_asset_report_pdf(request: Request):
+    redirect = require_account(request)
+    if redirect:
+        return redirect
+
+    person = get_account_person(request)
+    if not person:
+        return RedirectResponse(url="/account/login", status_code=303)
 
     assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
     _, branding, _ = resolve_branding_for_request(request)
@@ -5948,10 +6220,33 @@ async def admin_person_edit_submit(request: Request, person_id: int):
     for field in build_person_edit_fields(person):
         raw_value = form.get(field["name"], "")
         normalized = str(raw_value).strip() if raw_value is not None else ""
-        if field["name"] == "is_active":
+        if field["name"] in {"is_active", "must_change_password"}:
             update_data[field["name"]] = normalized.casefold() == "true"
             continue
+        if field["name"] == "account_role":
+            update_data[field["name"]] = normalized if normalized in {"employee", "department_manager", "asset_manager", "viewer", "admin"} else "employee"
+            continue
         update_data[field["name"]] = normalized or None
+
+    new_account_password = str(form.get("account_password", "") or "").strip()
+    if new_account_password:
+        if len(new_account_password) < 8:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin_person_edit.html",
+                context={
+                    "person": {**person, **update_data},
+                    "display_name": get_person_display_name({**person, **update_data}),
+                    "person_field_rows": build_person_field_rows({**person, **update_data}),
+                    "person_edit_fields": build_person_edit_fields({**person, **update_data}),
+                    "flash": {"level": "error", "message": "Account password must be at least 8 characters."},
+                    "active_page": "people",
+                    "page_title": f"Edit {get_person_display_name(person)}",
+                    "admin_username": request.session.get("admin_username"),
+                },
+                status_code=400,
+            )
+        update_data["password_hash"] = hash_password(new_account_password)
 
     if not update_data.get("name") and not update_data.get("name_eng"):
         return templates.TemplateResponse(
@@ -5978,7 +6273,7 @@ async def admin_person_edit_submit(request: Request, person_id: int):
             entity_label=get_person_display_name({**person, **update_data}),
             old_record=person,
             new_record=update_data,
-            fields=list(update_data.keys()),
+            fields=[field for field in update_data.keys() if field != "password_hash"],
             request=request,
         )
     except Exception as exc:
@@ -6374,6 +6669,8 @@ def admin_asset_assignment_update(
     status: str = Form(""),
     notes: str = Form(""),
     handover_condition: str = Form(""),
+    assignment_scope: str = Form("personal"),
+    custody_note: str = Form(""),
 ):
     redirect = require_admin(request)
     if redirect:
@@ -6389,6 +6686,8 @@ def admin_asset_assignment_update(
     status = status.strip()
     notes = notes.strip()
     handover_condition = handover_condition.strip()
+    assignment_scope = assignment_scope.strip() if assignment_scope.strip() in {"personal", "department_shared", "warehouse"} else "personal"
+    custody_note = custody_note.strip()
     parsed_person_id = int(person_id) if person_id else None
     parsed_location_id = int(location_id) if location_id else None
 
@@ -6445,6 +6744,8 @@ def admin_asset_assignment_update(
         "status": status or None,
         "notes": notes or None,
         "handover_condition": handover_condition or None,
+        "assignment_scope": assignment_scope,
+        "custody_note": custody_note or None,
     }
 
     if (
@@ -6459,6 +6760,8 @@ def admin_asset_assignment_update(
                 "status": status or None,
                 "notes": notes or None,
                 "handover_condition": handover_condition or None,
+                "assignment_scope": assignment_scope,
+                "custody_note": custody_note or None,
             })
             .eq("assignment_id", current_assignment["assignment_id"])
             .execute()

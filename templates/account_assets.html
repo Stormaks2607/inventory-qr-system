@@ -1,0 +1,87 @@
+{% extends "account_base.html" %}
+
+{% macro asset_table(assets, empty_text, scope_label, shared=False) %}
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Asset tag</th>
+                <th>Description</th>
+                <th>Brand / Model</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>City</th>
+                <th>Department</th>
+                <th>Assigned</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for asset in assets %}
+            {% set assignment = asset.current_assignment or {} %}
+            <tr>
+                <td class="tag">{{ asset.asset_tag_number or "-" }}</td>
+                <td>{{ asset.item_description or "-" }}</td>
+                <td>{{ [asset.brand_make, asset.model]|select|join(" / ") or "-" }}</td>
+                <td><span class="badge {% if shared %}shared{% endif %}">{{ scope_label }}</span></td>
+                <td>{{ asset.effective_status or "-" }}</td>
+                <td>{{ assignment.city or "-" }}</td>
+                <td>{{ assignment.department or "-" }}</td>
+                <td>{{ assignment.assignment_date or "-" }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8" class="muted">{{ empty_text }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endmacro %}
+
+{% block content %}
+<section class="hero">
+    <h1>My Assets</h1>
+    <p>Current assets assigned personally to you and department/shared assets under your responsibility.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="stats">
+    <article class="stat">
+        <span>Personal assets</span>
+        <strong>{{ personal_assets|length }}</strong>
+    </article>
+    <article class="stat">
+        <span>Department/shared</span>
+        <strong>{{ department_shared_assets|length }}</strong>
+    </article>
+    <article class="stat">
+        <span>Low-cost items</span>
+        <strong>{{ assigned_low_cost_assets|length }}</strong>
+    </article>
+</section>
+
+<section class="panel">
+    <h2>Personal Assets</h2>
+    <p class="muted">Assets issued to you personally.</p>
+    {{ asset_table(personal_assets, "No personal assets are currently assigned to you.", "Personal") }}
+</section>
+
+<section class="panel">
+    <h2>Department / Shared Responsibility</h2>
+    <p class="muted">Shared assets located in your department or area where you are recorded as the responsible person.</p>
+    {{ asset_table(department_shared_assets, "No department/shared assets are currently under your responsibility.", "Department shared", True) }}
+</section>
+
+{% if warehouse_assets %}
+<section class="panel">
+    <h2>Warehouse Custody</h2>
+    <p class="muted">Assets temporarily assigned to you as warehouse custody.</p>
+    {{ asset_table(warehouse_assets, "No warehouse custody assets.", "Warehouse", True) }}
+</section>
+{% endif %}
+{% endblock %}
