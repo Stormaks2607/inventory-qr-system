@@ -723,6 +723,15 @@ def is_account_authenticated(request: Request) -> bool:
     return request.session.get("account_person_id") is not None
 
 
+def normalize_account_role(value: Optional[str]) -> str:
+    normalized = (value or "employee").strip().casefold()
+    return normalized if normalized in {"employee", "department_manager", "asset_manager", "viewer", "admin"} else "employee"
+
+
+def account_role_has_admin_access(value: Optional[str]) -> bool:
+    return normalize_account_role(value) == "admin"
+
+
 def normalize_credential(value: str) -> str:
     normalized = (value or "").strip()
     if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
@@ -5212,6 +5221,8 @@ def root(request: Request):
     if is_admin_authenticated(request):
         return RedirectResponse(url="/admin", status_code=303)
     if is_account_authenticated(request):
+        if account_role_has_admin_access(request.session.get("account_role")):
+            return RedirectResponse(url="/admin", status_code=303)
         return RedirectResponse(url="/account", status_code=303)
     return RedirectResponse(url="/account/login", status_code=303)
 
@@ -5308,12 +5319,21 @@ def account_home(request: Request):
     redirect = require_account(request)
     if redirect:
         return redirect
+    person = get_account_person(request)
+    if person and account_role_has_admin_access(person.get("account_role")):
+        request.session["admin_authenticated"] = True
+        request.session["admin_username"] = get_person_display_name(person)
+        request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
+        request.session["admin_login_source"] = "account"
+        return RedirectResponse(url="/admin", status_code=303)
     return RedirectResponse(url="/account/assets", status_code=303)
 
 
 @app.get("/account/login", response_class=HTMLResponse, name="account_login")
 def account_login(request: Request, next: str = "/account"):
     if is_account_authenticated(request):
+        if account_role_has_admin_access(request.session.get("account_role")):
+            return RedirectResponse(url="/admin", status_code=303)
         return RedirectResponse(url=next or "/account", status_code=303)
 
     return templates.TemplateResponse(
@@ -5350,10 +5370,20 @@ def account_login_submit(
 
     request.session["account_person_id"] = person.get("person_id")
     request.session["account_display_name"] = get_person_display_name(person)
+    request.session["account_role"] = normalize_account_role(person.get("account_role"))
     try:
         supabase.table("persons").update({"last_login_at": datetime.now(ZoneInfo("Europe/Kyiv")).isoformat()}).eq("person_id", person.get("person_id")).execute()
     except Exception:
         pass
+
+    if account_role_has_admin_access(person.get("account_role")):
+        request.session["admin_authenticated"] = True
+        request.session["admin_username"] = get_person_display_name(person)
+        request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
+        request.session["admin_login_source"] = "account"
+        if not next or next.startswith("/account"):
+            next = "/admin"
+
     return RedirectResponse(url=next or "/account", status_code=303)
 
 
@@ -5361,6 +5391,12 @@ def account_login_submit(
 def account_logout(request: Request):
     request.session.pop("account_person_id", None)
     request.session.pop("account_display_name", None)
+    request.session.pop("account_role", None)
+    if request.session.get("admin_login_source") == "account":
+        request.session.pop("admin_authenticated", None)
+        request.session.pop("admin_username", None)
+        request.session.pop("admin_tenant_key", None)
+        request.session.pop("admin_login_source", None)
     return RedirectResponse(url="/account/login", status_code=303)
 
 
@@ -5373,6 +5409,8 @@ def account_assets(request: Request):
     person = get_account_person(request)
     if not person:
         return RedirectResponse(url="/account/login", status_code=303)
+    if account_role_has_admin_access(person.get("account_role")):
+        return RedirectResponse(url="/admin", status_code=303)
 
     assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
     personal_assets, department_shared_assets, warehouse_assets = split_person_assets_by_responsibility(assigned_assets)
