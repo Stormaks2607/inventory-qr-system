@@ -119,6 +119,9 @@ ASSET_USAGE_TYPE_OPTIONS = [
 ]
 
 ASSET_USAGE_TYPE_LABELS = dict(ASSET_USAGE_TYPE_OPTIONS)
+ADMIN_AREA_ROLES = {"admin", "asset_manager", "viewer"}
+ADMIN_WRITE_ROLES = {"admin", "asset_manager"}
+ADMIN_READONLY_ROLES = {"viewer"}
 
 
 def infer_asset_usage_type(asset_tag_number: Optional[str]) -> str:
@@ -719,6 +722,20 @@ def is_admin_authenticated(request: Request) -> bool:
     return request.session.get("admin_authenticated") is True
 
 
+def get_admin_role(request: Request) -> str:
+    if not is_admin_authenticated(request):
+        return ""
+    return normalize_account_role(request.session.get("admin_role") or "admin")
+
+
+def admin_role_can_write(request: Request) -> bool:
+    return get_admin_role(request) in ADMIN_WRITE_ROLES
+
+
+def is_admin_readonly(request: Request) -> bool:
+    return get_admin_role(request) in ADMIN_READONLY_ROLES
+
+
 def is_account_authenticated(request: Request) -> bool:
     return request.session.get("account_person_id") is not None
 
@@ -729,7 +746,7 @@ def normalize_account_role(value: Optional[str]) -> str:
 
 
 def account_role_has_admin_access(value: Optional[str]) -> bool:
-    return normalize_account_role(value) == "admin"
+    return normalize_account_role(value) in ADMIN_AREA_ROLES
 
 
 def normalize_credential(value: str) -> str:
@@ -797,6 +814,12 @@ def validate_asset_tag_format(asset_tag_number: str) -> Optional[str]:
 
 def require_admin(request: Request) -> Optional[RedirectResponse]:
     if is_admin_authenticated(request):
+        path = request.url.path
+        if is_admin_readonly(request) and (
+            request.method not in {"GET", "HEAD", "OPTIONS"} or is_viewer_blocked_admin_get_path(path)
+        ):
+            set_flash(request, "error", "Viewer role has read-only access.")
+            return RedirectResponse(url="/admin", status_code=303)
         return None
 
     login_url = app.url_path_for("admin_login")
@@ -833,6 +856,23 @@ def set_account_flash(request: Request, level: str, message: str) -> None:
 
 def pop_account_flash(request: Request) -> Optional[dict]:
     return request.session.pop("account_flash", None)
+
+
+VIEWER_BLOCKED_ADMIN_GET_PATHS = (
+    "/admin/assets/new",
+    "/admin/people/new",
+    "/admin/branding",
+    "/admin/sync",
+)
+
+
+def is_viewer_blocked_admin_get_path(path: str) -> bool:
+    if path in VIEWER_BLOCKED_ADMIN_GET_PATHS:
+        return True
+    return (
+        re.fullmatch(r"/admin/people/\d+/edit", path) is not None
+        or re.fullmatch(r"/admin/people/\d+/offboard", path) is not None
+    )
 
 
 def ensure_sync_storage() -> None:
@@ -5323,6 +5363,7 @@ def account_home(request: Request):
     if person and account_role_has_admin_access(person.get("account_role")):
         request.session["admin_authenticated"] = True
         request.session["admin_username"] = get_person_display_name(person)
+        request.session["admin_role"] = normalize_account_role(person.get("account_role"))
         request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
         request.session["admin_login_source"] = "account"
         return RedirectResponse(url="/admin", status_code=303)
@@ -5379,6 +5420,7 @@ def account_login_submit(
     if account_role_has_admin_access(person.get("account_role")):
         request.session["admin_authenticated"] = True
         request.session["admin_username"] = get_person_display_name(person)
+        request.session["admin_role"] = normalize_account_role(person.get("account_role"))
         request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
         request.session["admin_login_source"] = "account"
         if not next or next.startswith("/account"):
@@ -5395,6 +5437,7 @@ def account_logout(request: Request):
     if request.session.get("admin_login_source") == "account":
         request.session.pop("admin_authenticated", None)
         request.session.pop("admin_username", None)
+        request.session.pop("admin_role", None)
         request.session.pop("admin_tenant_key", None)
         request.session.pop("admin_login_source", None)
     return RedirectResponse(url="/account/login", status_code=303)
@@ -5506,6 +5549,7 @@ def admin_login_submit(
 
     request.session["admin_authenticated"] = True
     request.session["admin_username"] = input_username
+    request.session["admin_role"] = "admin"
     request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
     return RedirectResponse(url=next or "/admin", status_code=303)
 
