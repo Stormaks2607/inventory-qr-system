@@ -1,6 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
+{% set can_write = request.session.get('admin_role', 'admin') != 'viewer' %}
 <section class="hero">
     <h2>{{ asset.asset_tag_number }}</h2>
     <p>Detailed admin view for this asset. This screen is the base for future edit, reassignment, audit, and sync review actions.</p>
@@ -154,7 +155,9 @@
                     <th>Currency</th>
                     <th>Status</th>
                     <th>Notes</th>
+                    {% if can_write %}
                     <th>Actions</th>
+                    {% endif %}
                 </tr>
             </thead>
             <tbody>
@@ -167,6 +170,7 @@
                     <td>{{ payment.currency or "-" }}</td>
                     <td>{{ payment.payment_status or "-" }}</td>
                     <td>{{ payment.notes or "-" }}</td>
+                    {% if can_write %}
                     <td>
                         <details>
                             <summary>Edit</summary>
@@ -211,6 +215,7 @@
                             </form>
                         </details>
                     </td>
+                    {% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
@@ -220,6 +225,7 @@
     <p class="muted">No payment records are linked to this asset yet.</p>
     {% endif %}
 
+    {% if can_write %}
     <div style="margin-top: 24px;">
         <h3>Add Payment</h3>
         <form method="post" action="/admin/assets/{{ asset.asset_id }}/payments" class="form-grid">
@@ -253,6 +259,7 @@
             </div>
         </form>
     </div>
+    {% endif %}
 </section>
 
 <section class="panel" style="margin-top: 24px;">
@@ -333,7 +340,9 @@
                     <th>Role</th>
                     <th>Primary</th>
                     <th>Notes</th>
+                    {% if can_write %}
                     <th>Actions</th>
+                    {% endif %}
                 </tr>
             </thead>
             <tbody>
@@ -354,6 +363,7 @@
                     </td>
                     <td>{% if item.is_primary %}Yes{% else %}-{% endif %}</td>
                     <td>{{ item.funding_note or "-" }}</td>
+                    {% if can_write %}
                     <td>
                         <details>
                             <summary>Edit</summary>
@@ -424,6 +434,7 @@
                             </form>
                         </details>
                     </td>
+                    {% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
@@ -433,6 +444,7 @@
     <p class="muted">No project funding allocations are currently linked to this asset.</p>
     {% endif %}
 
+    {% if can_write %}
     <div style="margin-top: 24px;">
         <div class="toolbar" style="justify-content: space-between; align-items: center;">
             <h3 style="margin: 0;">Add Allocation</h3>
@@ -501,8 +513,10 @@
             </div>
         </form>
     </div>
+    {% endif %}
 </section>
 
+{% if can_write %}
 <section class="two-column" style="margin-top: 24px;">
     <article class="panel">
         <h3>Edit Asset</h3>
@@ -646,6 +660,7 @@
         </form>
     </article>
 </section>
+{% endif %}
 
 <section class="panel">
     <h3>Assignment History</h3>

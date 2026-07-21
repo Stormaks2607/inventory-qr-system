@@ -1,6 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
+{% set can_write = request.session.get('admin_role', 'admin') != 'viewer' %}
 <section class="hero">
     <h2>Asset Workspace</h2>
     <p>Search the live asset inventory with current assignment data. This is the first operational layer for editing, reassignment, and exception handling.</p>
@@ -19,7 +20,9 @@
             <button class="btn" type="submit">Search</button>
             <a class="btn secondary" href="/admin/assets">Reset</a>
         </form>
+        {% if can_write %}
         <a class="btn" href="/admin/assets/new">Add asset</a>
+        {% endif %}
     </div>
 
     <p class="muted">Showing {{ total_found }} assets from the live inventory dataset. Use quick search for broad matching, or open filters inside the column headers for narrower matching.</p>
