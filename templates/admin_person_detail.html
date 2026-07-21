@@ -1,6 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
+{% set can_write = request.session.get('admin_role', 'admin') != 'viewer' %}
 <style>
     .branding-scope {
         --report-primary: {{ branding.primary_color }};
@@ -600,9 +601,11 @@
         </div>
         <div class="toolbar screen-only" style="margin-bottom: 0;">
             <a class="btn secondary" href="/admin/people">Back to people</a>
+            {% if can_write %}
             <a class="btn secondary" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
             {% if person.is_active is not sameas false %}
             <a class="btn secondary" href="/admin/people/{{ person.person_id }}/offboard">Offboard</a>
+            {% endif %}
             {% endif %}
             <button class="btn" type="button" data-print-report>Print report</button>
         </div>
@@ -746,7 +749,9 @@
             <h3 style="margin-bottom: 6px;">Employee Record</h3>
             <p class="muted" style="margin: 0;">Live fields loaded from the `persons` table in Supabase.</p>
         </div>
+        {% if can_write %}
         <a class="btn" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
+        {% endif %}
     </div>
 
     <div class="table-wrap">
@@ -1014,7 +1019,9 @@
                 <h3 style="margin-bottom: 6px;">Employee Record</h3>
                 <p class="muted" style="margin: 0;">Live fields loaded from the `persons` table in Supabase.</p>
             </div>
+            {% if can_write %}
             <a class="btn" href="/admin/people/{{ person.person_id }}/edit">Edit employee</a>
+            {% endif %}
         </div>
 
         <div class="table-wrap">

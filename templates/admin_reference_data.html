@@ -1,6 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
+{% set can_write = request.session.get('admin_role', 'admin') != 'viewer' %}
 <section class="hero">
     <h2>Reference Data</h2>
     <p>Manage low-frequency reference records used across the asset system. Projects and donors configured here become available in asset funding allocations.</p>
@@ -22,6 +23,7 @@
             <div class="badge">{{ projects|length }} total</div>
         </div>
 
+        {% if can_write %}
         <form method="post" action="{% if edit_project %}/admin/reference-data/projects/{{ edit_project.project_id }}{% else %}/admin/reference-data/projects{% endif %}" class="form-grid">
             <div class="field">
                 <label for="project_number">Project number</label>
@@ -55,6 +57,7 @@
                 {% endif %}
             </div>
         </form>
+        {% endif %}
 
         <div class="table-wrap" style="margin-top: 22px;">
             <table>
@@ -64,7 +67,9 @@
                         <th>Project name</th>
                         <th>Dates</th>
                         <th>Status</th>
+                        {% if can_write %}
                         <th>Action</th>
+                        {% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -77,11 +82,13 @@
                             <span class="muted">{{ project.end_date or "-" }}</span>
                         </td>
                         <td>{{ project.status or "-" }}</td>
+                        {% if can_write %}
                         <td><a href="/admin/reference-data?edit_project_id={{ project.project_id }}#projects">Edit</a></td>
+                        {% endif %}
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="5" class="muted">No projects have been added yet.</td>
+                        <td colspan="{% if can_write %}5{% else %}4{% endif %}" class="muted">No projects have been added yet.</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -98,6 +105,7 @@
             <div class="badge">{{ donors|length }} total</div>
         </div>
 
+        {% if can_write %}
         <form method="post" action="{% if edit_donor %}/admin/reference-data/donors/{{ edit_donor.donor_id }}{% else %}/admin/reference-data/donors{% endif %}" class="form-grid">
             <div class="field">
                 <label for="donor_name">Donor name</label>
@@ -121,6 +129,7 @@
                 {% endif %}
             </div>
         </form>
+        {% endif %}
 
         <div class="table-wrap" style="margin-top: 22px;">
             <table>
@@ -129,7 +138,9 @@
                         <th>Donor name</th>
                         <th>Contact person</th>
                         <th>Contact email</th>
+                        {% if can_write %}
                         <th>Action</th>
+                        {% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -138,11 +149,13 @@
                         <td><strong>{{ donor.donor_name or "-" }}</strong></td>
                         <td>{{ donor.contact_person or "-" }}</td>
                         <td>{{ donor.contact_email or "-" }}</td>
+                        {% if can_write %}
                         <td><a href="/admin/reference-data?edit_donor_id={{ donor.donor_id }}#donors">Edit</a></td>
+                        {% endif %}
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="4" class="muted">No donors have been added yet.</td>
+                        <td colspan="{% if can_write %}4{% else %}3{% endif %}" class="muted">No donors have been added yet.</td>
                     </tr>
                     {% endfor %}
                 </tbody>

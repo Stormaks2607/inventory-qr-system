@@ -1,6 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
+{% set can_write = request.session.get('admin_role', 'admin') != 'viewer' %}
 <style>
     .person-row-unassigned {
         background: #fbfcfd;
@@ -29,7 +30,9 @@
 
 <section class="panel">
     <div class="toolbar">
+        {% if can_write %}
         <a class="btn" href="/admin/people/new">Add employee</a>
+        {% endif %}
         <form method="get" class="search compact" style="width: 100%;">
             <input type="text" name="q" value="{{ query }}" placeholder="Search by employee name or department">
             <select name="status" style="max-width: 160px;">
