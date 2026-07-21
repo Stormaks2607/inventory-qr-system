@@ -98,9 +98,11 @@
             </select>
         </form>
         <a class="btn secondary" href="/admin/audit-log">View all changes</a>
+        {% if request.session.get('admin_role', 'admin') != 'viewer' %}
         <form method="post" action="/admin/audit/backfill-transfer-log" style="margin: 0;">
             <button class="btn secondary" type="submit">Backfill from Transfer log</button>
         </form>
+        {% endif %}
     </div>
 
     <div class="table-wrap">
