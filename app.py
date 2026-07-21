@@ -337,6 +337,26 @@ def normalize_audit_page_size(value, default: int = 100) -> int:
     return page_size if page_size in {50, 100, 200} else default
 
 
+AUDIT_LOG_BATCH_SIZE = 1000
+AUDIT_LOG_MAX_ROWS = 20000
+
+
+def build_pagination_items(page: int, page_count: int) -> list[Optional[int]]:
+    if page_count <= 9:
+        return list(range(1, page_count + 1))
+
+    visible_pages = {1, 2, page - 1, page, page + 1, page_count - 1, page_count}
+    ordered_pages = [number for number in sorted(visible_pages) if 1 <= number <= page_count]
+    items: list[Optional[int]] = []
+    previous_number = 0
+    for number in ordered_pages:
+        if previous_number and number - previous_number > 1:
+            items.append(None)
+        items.append(number)
+        previous_number = number
+    return items
+
+
 def enrich_audit_rows(rows: list[dict]) -> list[dict]:
     for row in rows:
         row["created_at_display"] = format_audit_datetime(row.get("event_date") or row.get("created_at"))
@@ -369,6 +389,31 @@ def audit_row_matches_query(row: dict, query: str) -> bool:
     return normalized_query in haystack
 
 
+def fetch_audit_log_candidates(entity_type: str = "", source: str = "", *, use_event_date: bool = True) -> list[dict]:
+    rows: list[dict] = []
+    offset = 0
+
+    while len(rows) < AUDIT_LOG_MAX_ROWS:
+        query = supabase.table("audit_log").select("*")
+        if entity_type:
+            query = query.eq("entity_type", entity_type)
+        if source:
+            query = query.eq("source", source)
+        if use_event_date:
+            query = query.order("event_date", desc=True)
+        query = query.order("created_at", desc=True)
+
+        response = query.range(offset, offset + AUDIT_LOG_BATCH_SIZE - 1).execute()
+        batch = response.data or []
+        rows.extend(batch)
+
+        if len(batch) < AUDIT_LOG_BATCH_SIZE:
+            break
+        offset += AUDIT_LOG_BATCH_SIZE
+
+    return rows[:AUDIT_LOG_MAX_ROWS]
+
+
 def list_audit_log_events(
     *,
     q: str = "",
@@ -379,51 +424,38 @@ def list_audit_log_events(
 ) -> dict:
     page = max(page, 1)
     page_size = normalize_audit_page_size(page_size)
-    fetch_limit = max(page * page_size + 1, page_size + 1)
 
     try:
-        query = supabase.table("audit_log").select("*")
-        if entity_type:
-            query = query.eq("entity_type", entity_type)
-        if source:
-            query = query.eq("source", source)
-        response = (
-            query
-            .order("event_date", desc=True)
-            .order("created_at", desc=True)
-            .limit(fetch_limit)
-            .execute()
-        )
+        candidate_rows = fetch_audit_log_candidates(entity_type, source)
     except Exception as error:
         if isinstance(error, APIError):
             combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
             if "event_date" in combined:
                 try:
-                    query = supabase.table("audit_log").select("*")
-                    if entity_type:
-                        query = query.eq("entity_type", entity_type)
-                    if source:
-                        query = query.eq("source", source)
-                    response = query.order("created_at", desc=True).limit(fetch_limit).execute()
+                    candidate_rows = fetch_audit_log_candidates(entity_type, source, use_event_date=False)
                 except Exception:
-                    return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_loaded": 0}
+                    return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_matches": 0, "page_count": 1}
             else:
-                return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_loaded": 0}
+                return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_matches": 0, "page_count": 1}
         else:
-            return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_loaded": 0}
+            return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_matches": 0, "page_count": 1}
 
-    all_rows = [row for row in (response.data or []) if audit_row_matches_query(row, q)]
+    all_rows = [row for row in candidate_rows if audit_row_matches_query(row, q)]
+    total_matches = len(all_rows)
+    page_count = max((total_matches + page_size - 1) // page_size, 1)
+    page = min(page, page_count)
     start = (page - 1) * page_size
     end = start + page_size
     page_rows = enrich_audit_rows(all_rows[start:end])
-    has_next = len(all_rows) > end
+    has_next = page < page_count
 
     return {
         "rows": page_rows,
         "page": page,
         "page_size": page_size,
         "has_next": has_next,
-        "total_loaded": len(all_rows),
+        "total_matches": total_matches,
+        "page_count": page_count,
     }
 
 
@@ -5642,9 +5674,21 @@ def admin_audit_log(
         "source": source.strip(),
         "page_size": page_size,
     }
-    base_query_string = urlencode({key: value for key, value in query_params.items() if value not in ("", None)})
-    previous_page_url = f"/admin/audit-log?{base_query_string}&page={page - 1}" if page > 1 else ""
-    next_page_url = f"/admin/audit-log?{base_query_string}&page={page + 1}" if result["has_next"] else ""
+    page = result["page"]
+
+    def audit_page_url(target_page: int) -> str:
+        params = {
+            **query_params,
+            "page": target_page,
+        }
+        return f"/admin/audit-log?{urlencode({key: value for key, value in params.items() if value not in ('', None)})}"
+
+    previous_page_url = audit_page_url(page - 1) if page > 1 else ""
+    next_page_url = audit_page_url(page + 1) if result["has_next"] else ""
+    pagination_items = [
+        {"page": item, "url": audit_page_url(item)} if item else {"page": None, "url": ""}
+        for item in build_pagination_items(page, result["page_count"])
+    ]
 
     return templates.TemplateResponse(
         request=request,
@@ -5657,7 +5701,9 @@ def admin_audit_log(
             "page": result["page"],
             "page_size": result["page_size"],
             "has_next": result["has_next"],
-            "total_loaded": result["total_loaded"],
+            "total_matches": result["total_matches"],
+            "page_count": result["page_count"],
+            "pagination_items": pagination_items,
             "page_size_options": [50, 100, 200],
             "entity_type_options": list_audit_filter_values("entity_type"),
             "source_options": list_audit_filter_values("source"),

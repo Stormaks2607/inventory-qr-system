@@ -60,12 +60,23 @@
     <div class="toolbar" style="justify-content: space-between; align-items: center;">
         <div>
             <h3 style="margin-bottom: 6px;">Changes</h3>
-            <p class="muted" style="margin: 0;">Page {{ page }} | Showing {{ audit_rows|length }} rows{% if total_loaded %} from {{ total_loaded }} loaded matches{% endif %}.</p>
+            <p class="muted" style="margin: 0;">Page {{ page }} of {{ page_count }} | Showing {{ audit_rows|length }} rows{% if total_matches %} from {{ total_matches }} matches{% endif %}.</p>
         </div>
-        <div class="toolbar" style="margin-bottom: 0;">
+        <div class="toolbar audit-pagination" style="margin-bottom: 0;">
             {% if previous_page_url %}
             <a class="btn secondary" href="{{ previous_page_url }}">Previous</a>
             {% endif %}
+            {% for item in pagination_items %}
+                {% if item.page %}
+                    {% if item.page == page %}
+                    <span class="btn" aria-current="page">{{ item.page }}</span>
+                    {% else %}
+                    <a class="btn secondary" href="{{ item.url }}">{{ item.page }}</a>
+                    {% endif %}
+                {% else %}
+                    <span class="muted">...</span>
+                {% endif %}
+            {% endfor %}
             {% if next_page_url %}
             <a class="btn secondary" href="{{ next_page_url }}">Next</a>
             {% endif %}
