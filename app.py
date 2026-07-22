@@ -764,6 +764,18 @@ def admin_role_can_write(request: Request) -> bool:
     return get_admin_role(request) in ADMIN_WRITE_ROLES
 
 
+def admin_role_can_sync_import(request: Request) -> bool:
+    return get_admin_role(request) == "admin"
+
+
+def admin_role_can_sync_export(request: Request) -> bool:
+    return get_admin_role(request) in {"admin", "asset_manager"}
+
+
+def admin_role_can_manage_system(request: Request) -> bool:
+    return get_admin_role(request) == "admin"
+
+
 def is_admin_readonly(request: Request) -> bool:
     return get_admin_role(request) in ADMIN_READONLY_ROLES
 
@@ -860,6 +872,13 @@ def require_admin(request: Request) -> Optional[RedirectResponse]:
         next_path = f"{next_path}?{request.url.query}"
 
     redirect_url = f"{login_url}?next={next_path}"
+    return RedirectResponse(url=redirect_url, status_code=303)
+
+
+def require_admin_role(request: Request, message: str = "Only admin can perform this action.", redirect_url: str = "/admin") -> Optional[RedirectResponse]:
+    if admin_role_can_manage_system(request):
+        return None
+    set_flash(request, "error", message)
     return RedirectResponse(url=redirect_url, status_code=303)
 
 
@@ -5629,6 +5648,9 @@ def admin_audit_backfill_transfer_log(request: Request):
     redirect = require_admin(request)
     if redirect:
         return redirect
+    redirect = require_admin_role(request, "Only admin can backfill audit records.")
+    if redirect:
+        return redirect
 
     try:
         result = backfill_audit_from_transfer_log()
@@ -6075,6 +6097,9 @@ def admin_person_new(request: Request):
     redirect = require_admin(request)
     if redirect:
         return redirect
+    redirect = require_admin_role(request, "Only admin can create employee records.", "/admin/people")
+    if redirect:
+        return redirect
 
     return templates.TemplateResponse(
         request=request,
@@ -6097,6 +6122,9 @@ def admin_person_create(
     department: str = Form(""),
 ):
     redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can create employee records.", "/admin/people")
     if redirect:
         return redirect
 
@@ -6256,6 +6284,9 @@ def admin_person_offboard(request: Request, person_id: int):
     redirect = require_admin(request)
     if redirect:
         return redirect
+    redirect = require_admin_role(request, "Only admin can offboard employees.", f"/admin/people/{person_id}")
+    if redirect:
+        return redirect
 
     person = get_person_by_id(person_id)
     if not person:
@@ -6280,6 +6311,9 @@ def admin_person_offboard(request: Request, person_id: int):
 @app.post("/admin/people/{person_id}/offboard")
 async def admin_person_offboard_submit(request: Request, person_id: int):
     redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can offboard employees.", f"/admin/people/{person_id}")
     if redirect:
         return redirect
 
@@ -6321,6 +6355,9 @@ def admin_person_edit(request: Request, person_id: int):
     redirect = require_admin(request)
     if redirect:
         return redirect
+    redirect = require_admin_role(request, "Only admin can edit employee records and roles.", f"/admin/people/{person_id}")
+    if redirect:
+        return redirect
 
     person = get_person_by_id(person_id)
     if not person:
@@ -6345,6 +6382,9 @@ def admin_person_edit(request: Request, person_id: int):
 @app.post("/admin/people/{person_id}/edit")
 async def admin_person_edit_submit(request: Request, person_id: int):
     redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can edit employee records and roles.", f"/admin/people/{person_id}")
     if redirect:
         return redirect
 
@@ -6453,6 +6493,9 @@ def admin_branding(request: Request):
     redirect = require_admin(request)
     if redirect:
         return redirect
+    redirect = require_admin_role(request, "Only admin can manage branding settings.")
+    if redirect:
+        return redirect
 
     tenant_key, branding, branding_storage = resolve_branding_for_request(request)
     return templates.TemplateResponse(
@@ -6488,6 +6531,9 @@ def admin_branding_save(
     logo_file: Optional[UploadFile] = File(None),
 ):
     redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can manage branding settings.")
     if redirect:
         return redirect
 
@@ -6565,6 +6611,9 @@ def admin_reference_data_project_create(
     redirect = require_admin(request)
     if redirect:
         return redirect
+    redirect = require_admin_role(request, "Only admin can create reference projects.", "/admin/reference-data#projects")
+    if redirect:
+        return redirect
 
     project_number = project_number.strip().upper()
     if not project_number:
@@ -6601,6 +6650,9 @@ def admin_reference_data_project_update(
     status: str = Form(""),
 ):
     redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can update reference projects.", "/admin/reference-data#projects")
     if redirect:
         return redirect
 
@@ -6641,6 +6693,9 @@ def admin_reference_data_donor_create(
     redirect = require_admin(request)
     if redirect:
         return redirect
+    redirect = require_admin_role(request, "Only admin can create reference donors.", "/admin/reference-data#donors")
+    if redirect:
+        return redirect
 
     donor_name = donor_name.strip()
     if not donor_name:
@@ -6673,6 +6728,9 @@ def admin_reference_data_donor_update(
     contact_email: str = Form(""),
 ):
     redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can update reference donors.", "/admin/reference-data#donors")
     if redirect:
         return redirect
 
@@ -7399,6 +7457,8 @@ def admin_sync(request: Request):
             "excel_file_name": sync_state.get("file_name") or "No workbook uploaded yet",
             "sync_state": sync_state,
             "preview": sync_state.get("preview"),
+            "can_import_sync": admin_role_can_sync_import(request),
+            "can_export_sync": admin_role_can_sync_export(request),
             "flash": pop_flash(request),
             "active_page": "sync",
             "page_title": "Admin Sync",
@@ -7412,6 +7472,9 @@ async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)
     redirect = require_admin(request)
     if redirect:
         return redirect
+    if not admin_role_can_sync_import(request):
+        set_flash(request, "error", "Only admin can upload Excel workbooks for synchronization.")
+        return RedirectResponse(url="/admin/sync", status_code=303)
 
     filename = (excel_file.filename or "").strip()
     if not filename.lower().endswith(".xlsx"):
@@ -7468,6 +7531,9 @@ def admin_sync_apply(
     redirect = require_admin(request)
     if redirect:
         return redirect
+    if not admin_role_can_sync_import(request):
+        set_flash(request, "error", "Only admin can apply Excel synchronization changes.")
+        return RedirectResponse(url="/admin/sync", status_code=303)
 
     sync_state = load_sync_state()
     preview = sync_state.get("preview")
@@ -7510,6 +7576,9 @@ def admin_sync_export(request: Request):
     redirect = require_admin(request)
     if redirect:
         return redirect
+    if not admin_role_can_sync_export(request):
+        set_flash(request, "error", "You do not have permission to export Excel workbooks.")
+        return RedirectResponse(url="/admin", status_code=303)
 
     sync_state = load_sync_state()
     try:

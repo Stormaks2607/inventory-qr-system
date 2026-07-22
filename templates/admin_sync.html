@@ -35,13 +35,18 @@
 
 <section class="panel">
     <h3>Upload Workbook</h3>
+    {% if can_import_sync %}
     <p class="muted">Expected sheets: <strong>Standard Asset List Format</strong>, <strong>Low-cost-items</strong>, and <strong>Transfer log</strong>. Asset lists update the registry; transfer log rows are imported as movement history.</p>
     <form method="post" action="/admin/sync/upload" enctype="multipart/form-data" class="toolbar">
         <input type="file" name="excel_file" accept=".xlsx" required>
         <button class="btn" type="submit">Generate preview</button>
     </form>
+    {% else %}
+    <p class="muted">Excel import is available to admins only. Asset managers can export the current Supabase registry to Excel below.</p>
+    {% endif %}
 </section>
 
+{% if can_export_sync %}
 <section class="panel">
     <h3>Export Workbook</h3>
     <p class="muted">Generate a workbook from the current Supabase asset registry using the tracked official Excel file as the template. Standard assets and low-cost items are written to their matching sheets.</p>
@@ -60,8 +65,9 @@
     </div>
     {% endif %}
 </section>
+{% endif %}
 
-{% if preview %}
+{% if preview and can_import_sync %}
 <form method="post" action="/admin/sync/apply">
 <section class="grid">
     <article class="stat">

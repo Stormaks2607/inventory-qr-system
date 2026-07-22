@@ -1,7 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
-{% set can_write = request.session.get('admin_role', 'admin') != 'viewer' %}
+{% set can_write = request.session.get('admin_role', 'admin') == 'admin' %}
 <section class="hero">
     <h2>Reference Data</h2>
     <p>Manage low-frequency reference records used across the asset system. Projects and donors configured here become available in asset funding allocations.</p>
