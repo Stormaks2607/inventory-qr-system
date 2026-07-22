@@ -45,8 +45,8 @@
 
 {% block content %}
 <section class="hero">
-    <h1>Department Assets</h1>
-    <p>Read-only department view for {{ department }}. Use it to review assets assigned to employees and shared responsibility items in your department.</p>
+    <h1>Responsibility Area</h1>
+    <p>Read-only view of assets and employees inside your assigned responsibility scopes.</p>
 </section>
 
 {% if flash %}
@@ -86,8 +86,37 @@
 </section>
 
 <section class="panel">
+    <h2>Assigned Scopes</h2>
+    <p class="muted">These scopes define which assets and employees are visible in this cabinet.</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Scope</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for scope in responsibility_scopes %}
+                <tr>
+                    <td>{{ scope.scope_type_label }}</td>
+                    <td><strong>{{ scope.display_name }}</strong></td>
+                    <td>{{ scope.notes or "-" }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="3" class="muted">No responsibility scopes assigned yet. Ask an admin to assign your office, city, or department scope.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel">
     <h2>Department Employees</h2>
-    <p class="muted">Active employees in {{ department }} with their currently assigned assets.</p>
+    <p class="muted">Active employees found inside your assigned responsibility scopes.</p>
     <div class="table-wrap">
         <table>
             <thead>
@@ -108,7 +137,7 @@
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="4" class="muted">No active employees were found for this department.</td>
+                    <td colspan="4" class="muted">No active employees were found inside your responsibility scopes.</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -118,13 +147,13 @@
 
 <section class="panel">
     <h2>Department / Shared Assets</h2>
-    <p class="muted">Items marked as department/shared responsibility in your department.</p>
-    {{ department_asset_table(department_shared_assets, "No department/shared assets are currently recorded for this department.") }}
+    <p class="muted">Items marked as department/shared responsibility inside your responsibility scopes.</p>
+    {{ department_asset_table(department_shared_assets, "No department/shared assets are currently recorded inside your responsibility scopes.") }}
 </section>
 
 <section class="panel">
     <h2>All Department Assets</h2>
-    <p class="muted">All currently assigned assets whose assignment department matches {{ department }}.</p>
-    {{ department_asset_table(department_assets, "No assets are currently assigned to this department.") }}
+    <p class="muted">All currently assigned assets matching at least one assigned responsibility scope.</p>
+    {{ department_asset_table(department_assets, "No assets are currently assigned inside your responsibility scopes.") }}
 </section>
 {% endblock %}

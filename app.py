@@ -4000,6 +4000,112 @@ def list_locations() -> list[dict]:
     return response.data or []
 
 
+RESPONSIBILITY_SCOPE_TYPES = {
+    "department": "Department",
+    "city": "City",
+    "department_city": "Department + City",
+    "location": "Location",
+}
+
+
+def normalize_responsibility_scope_type(value: Optional[str]) -> str:
+    normalized = (value or "").strip().casefold()
+    return normalized if normalized in RESPONSIBILITY_SCOPE_TYPES else "department_city"
+
+
+def get_responsibility_scope_display(scope: dict) -> str:
+    scope_type = normalize_responsibility_scope_type(scope.get("scope_type"))
+    if scope_type == "department":
+        return scope.get("department") or "Department"
+    if scope_type == "city":
+        return scope.get("city") or "City"
+    if scope_type == "location":
+        return scope.get("location_display") or f"Location #{scope.get('location_id')}"
+    return " / ".join(part for part in [scope.get("department"), scope.get("city")] if part) or "Department + City"
+
+
+def enrich_responsibility_scope(scope: dict, locations_by_id: Optional[dict[int, dict]] = None) -> dict:
+    enriched = dict(scope)
+    enriched["scope_type"] = normalize_responsibility_scope_type(enriched.get("scope_type"))
+    enriched["scope_type_label"] = RESPONSIBILITY_SCOPE_TYPES.get(enriched["scope_type"], enriched["scope_type"])
+    location = (locations_by_id or {}).get(enriched.get("location_id")) or {}
+    enriched["location_display"] = get_location_display_name(location) if location else ""
+    enriched["display_name"] = get_responsibility_scope_display(enriched)
+    return enriched
+
+
+def list_person_responsibility_scopes(person_id: int, active_only: bool = False) -> list[dict]:
+    try:
+        query = (
+            supabase.table("person_responsibility_scopes")
+            .select("*")
+            .eq("person_id", person_id)
+            .order("scope_type")
+            .order("department")
+            .order("city")
+        )
+        if active_only:
+            query = query.eq("is_active", True)
+        response = query.execute()
+    except Exception:
+        return []
+
+    locations_by_id = {location.get("location_id"): location for location in list_locations()}
+    return [enrich_responsibility_scope(scope, locations_by_id) for scope in response.data or []]
+
+
+def scope_matches_assignment(scope: dict, assignment: dict) -> bool:
+    scope_type = normalize_responsibility_scope_type(scope.get("scope_type"))
+    if scope_type == "department":
+        return normalize_department_key(assignment.get("department")) == normalize_department_key(scope.get("department"))
+    if scope_type == "city":
+        return normalize_department_key(assignment.get("city")) == normalize_department_key(scope.get("city"))
+    if scope_type == "location":
+        return str(assignment.get("location_id") or "") == str(scope.get("location_id") or "")
+    return (
+        normalize_department_key(assignment.get("department")) == normalize_department_key(scope.get("department"))
+        and normalize_department_key(assignment.get("city")) == normalize_department_key(scope.get("city"))
+    )
+
+
+def scope_matches_person(scope: dict, person: dict) -> bool:
+    scope_type = normalize_responsibility_scope_type(scope.get("scope_type"))
+    if scope_type in {"department", "department_city"}:
+        return normalize_department_key(person.get("department")) == normalize_department_key(scope.get("department"))
+    return False
+
+
+def get_responsibility_scope_form_options() -> dict:
+    locations = [
+        {**location, "display_name": get_location_display_name(location)}
+        for location in list_locations()
+    ]
+    assets = list_assets()
+    departments = sorted(
+        {
+            str((asset.get("current_assignment") or {}).get("department") or "").strip()
+            for asset in assets
+            if (asset.get("current_assignment") or {}).get("department")
+        }
+    )
+    cities = sorted(
+        {
+            str((asset.get("current_assignment") or {}).get("city") or "").strip()
+            for asset in assets
+            if (asset.get("current_assignment") or {}).get("city")
+        }
+    )
+    return {
+        "scope_type_options": [
+            {"value": value, "label": label}
+            for value, label in RESPONSIBILITY_SCOPE_TYPES.items()
+        ],
+        "department_options": departments,
+        "city_options": cities,
+        "locations": locations,
+    }
+
+
 def close_current_assignments(asset_id: int, return_date: Optional[str]) -> None:
     current_assignments = (
         supabase.table("asset_assignments")
@@ -4843,22 +4949,34 @@ def normalize_department_key(value: Optional[str]) -> str:
 
 
 def get_department_manager_context(person: dict) -> dict:
-    department = person.get("department") or ""
-    department_key = normalize_department_key(department)
+    scopes = list_person_responsibility_scopes(int(person.get("person_id")), active_only=True)
     people = []
-    if department_key:
-        people = [
-            row
-            for row in list_people()
-            if is_person_active(row) and normalize_department_key(row.get("department")) == department_key
-        ]
     assets = []
+    people_by_id = {row.get("person_id"): row for row in list_people()}
 
-    if department_key:
+    if scopes:
         for asset in list_assets():
             assignment = asset.get("current_assignment") or {}
-            if normalize_department_key(assignment.get("department")) == department_key:
+            if any(scope_matches_assignment(scope, assignment) for scope in scopes):
                 assets.append(asset)
+
+        person_ids = {
+            (asset.get("current_assignment") or {}).get("person_id")
+            for asset in assets
+            if (asset.get("current_assignment") or {}).get("person_id")
+        }
+        people = [
+            people_by_id[person_id]
+            for person_id in person_ids
+            if person_id in people_by_id and is_person_active(people_by_id[person_id])
+        ]
+        for candidate in people_by_id.values():
+            if (
+                is_person_active(candidate)
+                and candidate.get("person_id") not in person_ids
+                and any(scope_matches_person(scope, candidate) for scope in scopes)
+            ):
+                people.append(candidate)
 
     standard_assets = [
         asset
@@ -4909,7 +5027,7 @@ def get_department_manager_context(person: dict) -> dict:
     assets.sort(key=lambda asset: (get_assignment_scope(asset), asset.get("asset_tag_number") or ""))
 
     return {
-        "department": department or "-",
+        "responsibility_scopes": scopes,
         "department_assets": assets,
         "department_standard_assets": standard_assets,
         "department_low_cost_assets": low_cost_assets,
@@ -5646,7 +5764,7 @@ def account_department(request: Request):
             "flash": pop_account_flash(request),
             "is_department_manager": True,
             "active_page": "department",
-            "page_title": "Department Assets",
+            "page_title": "Responsibility Area",
             **get_department_manager_context(person),
         },
     )
@@ -6383,6 +6501,8 @@ def admin_person_detail(request: Request, person_id: int):
         context={
             "person": person,
             "person_field_rows": build_person_field_rows(person),
+            "responsibility_scopes": list_person_responsibility_scopes(person_id),
+            "responsibility_scope_options": get_responsibility_scope_form_options(),
             "display_name": display_name,
             "report_display_name": report_display_name,
             "assigned_assets": assigned_assets,
@@ -6399,6 +6519,90 @@ def admin_person_detail(request: Request, person_id: int):
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.post("/admin/people/{person_id}/responsibility-scopes")
+def admin_person_responsibility_scope_create(
+    request: Request,
+    person_id: int,
+    scope_type: str = Form("department_city"),
+    department: str = Form(""),
+    city: str = Form(""),
+    location_id: str = Form(""),
+    notes: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can manage responsibility scopes.", f"/admin/people/{person_id}")
+    if redirect:
+        return redirect
+
+    person = get_person_by_id(person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    normalized_scope_type = normalize_responsibility_scope_type(scope_type)
+    location_value = location_id.strip()
+    payload = {
+        "person_id": person_id,
+        "scope_type": normalized_scope_type,
+        "department": department.strip() or None,
+        "city": city.strip() or None,
+        "location_id": int(location_value) if location_value.isdigit() else None,
+        "is_active": True,
+        "notes": notes.strip() or None,
+    }
+
+    if normalized_scope_type == "department":
+        payload["city"] = None
+        payload["location_id"] = None
+        if not payload["department"]:
+            set_flash(request, "error", "Department scope requires department.")
+            return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
+    elif normalized_scope_type == "city":
+        payload["department"] = None
+        payload["location_id"] = None
+        if not payload["city"]:
+            set_flash(request, "error", "City scope requires city.")
+            return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
+    elif normalized_scope_type == "location":
+        payload["department"] = None
+        payload["city"] = None
+        if not payload["location_id"]:
+            set_flash(request, "error", "Location scope requires location.")
+            return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
+    elif not payload["department"] or not payload["city"]:
+        set_flash(request, "error", "Department + City scope requires both department and city.")
+        return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
+
+    try:
+        supabase.table("person_responsibility_scopes").insert(payload).execute()
+    except Exception as error:
+        set_flash(request, "error", f"Responsibility scope could not be added: {error}")
+        return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
+
+    set_flash(request, "success", "Responsibility scope was added.")
+    return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
+
+
+@app.post("/admin/people/{person_id}/responsibility-scopes/{scope_id}/delete")
+def admin_person_responsibility_scope_delete(request: Request, person_id: int, scope_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can manage responsibility scopes.", f"/admin/people/{person_id}")
+    if redirect:
+        return redirect
+
+    try:
+        supabase.table("person_responsibility_scopes").delete().eq("scope_id", scope_id).eq("person_id", person_id).execute()
+    except Exception as error:
+        set_flash(request, "error", f"Responsibility scope could not be removed: {error}")
+        return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
+
+    set_flash(request, "success", "Responsibility scope was removed.")
+    return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
 
 
 @app.get("/admin/people/{person_id}/offboard", response_class=HTMLResponse)

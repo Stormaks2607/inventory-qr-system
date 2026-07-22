@@ -775,6 +775,104 @@
 </section>
 
 <section class="panel screen-only">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Responsibility Scopes</h3>
+            <p class="muted" style="margin: 0;">Defines what a department manager can see in the account responsibility area.</p>
+        </div>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Scope</th>
+                    <th>Status</th>
+                    <th>Notes</th>
+                    {% if can_write %}
+                    <th>Action</th>
+                    {% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for scope in responsibility_scopes %}
+                <tr>
+                    <td>{{ scope.scope_type_label }}</td>
+                    <td><strong>{{ scope.display_name }}</strong></td>
+                    <td>{% if scope.is_active %}Active{% else %}Inactive{% endif %}</td>
+                    <td>{{ scope.notes or "-" }}</td>
+                    {% if can_write %}
+                    <td>
+                        <form method="post" action="/admin/people/{{ person.person_id }}/responsibility-scopes/{{ scope.scope_id }}/delete" style="margin: 0;">
+                            <button class="btn danger" type="submit">Remove</button>
+                        </form>
+                    </td>
+                    {% endif %}
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="{% if can_write %}5{% else %}4{% endif %}" class="muted">No responsibility scopes assigned yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if can_write %}
+    <form method="post" action="/admin/people/{{ person.person_id }}/responsibility-scopes" class="form-grid" style="margin-top: 18px;">
+        <div class="field">
+            <label for="scope_type">Scope type</label>
+            <select id="scope_type" name="scope_type">
+                {% for option in responsibility_scope_options.scope_type_options %}
+                <option value="{{ option.value }}" {% if option.value == "department_city" %}selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="scope_department">Department</label>
+            <input id="scope_department" name="department" type="text" list="department-options" placeholder="e.g. PROGRAM">
+            <datalist id="department-options">
+                {% for option in responsibility_scope_options.department_options %}
+                <option value="{{ option }}">
+                {% endfor %}
+            </datalist>
+        </div>
+
+        <div class="field">
+            <label for="scope_city">City</label>
+            <input id="scope_city" name="city" type="text" list="city-options" placeholder="e.g. Kharkiv">
+            <datalist id="city-options">
+                {% for option in responsibility_scope_options.city_options %}
+                <option value="{{ option }}">
+                {% endfor %}
+            </datalist>
+        </div>
+
+        <div class="field">
+            <label for="scope_location_id">Location</label>
+            <select id="scope_location_id" name="location_id">
+                <option value="">No location</option>
+                {% for location in responsibility_scope_options.locations %}
+                <option value="{{ location.location_id }}">{{ location.display_name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="field full">
+            <label for="scope_notes">Notes</label>
+            <textarea id="scope_notes" name="notes" rows="2" placeholder="Optional note about responsibility boundary"></textarea>
+        </div>
+
+        <div class="toolbar" style="margin-bottom: 0;">
+            <button class="btn" type="submit">Add scope</button>
+        </div>
+    </form>
+    {% endif %}
+</section>
+
+<section class="panel screen-only">
     <h3>Assigned Standard Assets</h3>
     <p class="muted">Current standard assets assigned to this employee.</p>
 
