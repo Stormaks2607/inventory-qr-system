@@ -793,6 +793,10 @@ def account_role_has_admin_access(value: Optional[str]) -> bool:
     return normalize_account_role(value) in ADMIN_AREA_ROLES
 
 
+def account_role_is_department_manager(value: Optional[str]) -> bool:
+    return normalize_account_role(value) == "department_manager"
+
+
 def normalize_credential(value: str) -> str:
     normalized = (value or "").strip()
     if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
@@ -4834,6 +4838,89 @@ def split_person_assets_by_responsibility(assets: list[dict]) -> tuple[list[dict
     return personal_assets, department_shared_assets, warehouse_assets
 
 
+def normalize_department_key(value: Optional[str]) -> str:
+    return " ".join((value or "").strip().casefold().split())
+
+
+def get_department_manager_context(person: dict) -> dict:
+    department = person.get("department") or ""
+    department_key = normalize_department_key(department)
+    people = []
+    if department_key:
+        people = [
+            row
+            for row in list_people()
+            if is_person_active(row) and normalize_department_key(row.get("department")) == department_key
+        ]
+    assets = []
+
+    if department_key:
+        for asset in list_assets():
+            assignment = asset.get("current_assignment") or {}
+            if normalize_department_key(assignment.get("department")) == department_key:
+                assets.append(asset)
+
+    standard_assets = [
+        asset
+        for asset in assets
+        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "standard"
+    ]
+    low_cost_assets = [
+        asset
+        for asset in assets
+        if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "low_cost"
+    ]
+    personal_assets, department_shared_assets, warehouse_assets = split_person_assets_by_responsibility(assets)
+
+    assets_by_person_id: dict[int, list[dict]] = {}
+    unassigned_assets = []
+    for asset in assets:
+        assignment = asset.get("current_assignment") or {}
+        person_id = assignment.get("person_id")
+        if person_id:
+            assets_by_person_id.setdefault(person_id, []).append(asset)
+        else:
+            unassigned_assets.append(asset)
+
+    people_rows = []
+    for row in people:
+        person_assets = assets_by_person_id.get(row.get("person_id"), [])
+        person_standard_assets = [
+            asset
+            for asset in person_assets
+            if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "standard"
+        ]
+        person_low_cost_assets = [
+            asset
+            for asset in person_assets
+            if normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")) == "low_cost"
+        ]
+        people_rows.append(
+            {
+                "person_id": row.get("person_id"),
+                "display_name": get_person_display_name(row),
+                "department": row.get("department") or "-",
+                "assigned_count": len(person_assets),
+                "standard_count": len(person_standard_assets),
+                "low_cost_count": len(person_low_cost_assets),
+            }
+        )
+    people_rows.sort(key=lambda row: (-row["assigned_count"], row["display_name"]))
+    assets.sort(key=lambda asset: (get_assignment_scope(asset), asset.get("asset_tag_number") or ""))
+
+    return {
+        "department": department or "-",
+        "department_assets": assets,
+        "department_standard_assets": standard_assets,
+        "department_low_cost_assets": low_cost_assets,
+        "department_personal_assets": personal_assets,
+        "department_shared_assets": department_shared_assets,
+        "department_warehouse_assets": warehouse_assets,
+        "department_people": people_rows,
+        "department_unassigned_assets": unassigned_assets,
+    }
+
+
 def build_telegram_asset_report_pdf(
     person: dict,
     assigned_assets: list[dict],
@@ -5418,6 +5505,8 @@ def account_home(request: Request):
         request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
         request.session["admin_login_source"] = "account"
         return RedirectResponse(url="/admin", status_code=303)
+    if person and account_role_is_department_manager(person.get("account_role")):
+        return RedirectResponse(url="/account/department", status_code=303)
     return RedirectResponse(url="/account/assets", status_code=303)
 
 
@@ -5524,8 +5613,41 @@ def account_assets(request: Request):
             "warehouse_assets": warehouse_assets,
             "branding": branding,
             "flash": pop_account_flash(request),
+            "is_department_manager": account_role_is_department_manager(person.get("account_role")),
             "active_page": "assets",
             "page_title": "My Assets",
+        },
+    )
+
+
+@app.get("/account/department", response_class=HTMLResponse)
+def account_department(request: Request):
+    redirect = require_account(request)
+    if redirect:
+        return redirect
+
+    person = get_account_person(request)
+    if not person:
+        return RedirectResponse(url="/account/login", status_code=303)
+    if account_role_has_admin_access(person.get("account_role")):
+        return RedirectResponse(url="/admin", status_code=303)
+    if not account_role_is_department_manager(person.get("account_role")):
+        set_account_flash(request, "error", "Department view is available to department managers only.")
+        return RedirectResponse(url="/account/assets", status_code=303)
+
+    _, branding, _ = resolve_branding_for_request(request)
+    return templates.TemplateResponse(
+        request=request,
+        name="account_department.html",
+        context={
+            "person": person,
+            "display_name": get_person_display_name(person),
+            "branding": branding,
+            "flash": pop_account_flash(request),
+            "is_department_manager": True,
+            "active_page": "department",
+            "page_title": "Department Assets",
+            **get_department_manager_context(person),
         },
     )
 

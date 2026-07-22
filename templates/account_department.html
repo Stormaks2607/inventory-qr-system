@@ -1,0 +1,130 @@
+{% extends "account_base.html" %}
+
+{% macro department_asset_table(assets, empty_text) %}
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Asset tag</th>
+                <th>Description</th>
+                <th>Brand / Model</th>
+                <th>Responsible person</th>
+                <th>Scope</th>
+                <th>Status</th>
+                <th>City</th>
+                <th>Assigned</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for asset in assets %}
+            {% set assignment = asset.current_assignment or {} %}
+            {% set scope = assignment.assignment_scope or "personal" %}
+            <tr>
+                <td class="tag">{{ asset.asset_tag_number or "-" }}</td>
+                <td>{{ asset.item_description or "-" }}</td>
+                <td>{{ [asset.brand_make, asset.model]|select|join(" / ") or "-" }}</td>
+                <td>{{ assignment.responsible_person or "-" }}</td>
+                <td>
+                    <span class="badge {% if scope != 'personal' %}shared{% endif %}">
+                        {{ scope|replace("_", " ")|title }}
+                    </span>
+                </td>
+                <td>{{ asset.effective_status or "-" }}</td>
+                <td>{{ assignment.city or "-" }}</td>
+                <td>{{ assignment.assignment_date or "-" }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8" class="muted">{{ empty_text }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endmacro %}
+
+{% block content %}
+<section class="hero">
+    <h1>Department Assets</h1>
+    <p>Read-only department view for {{ department }}. Use it to review assets assigned to employees and shared responsibility items in your department.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="stats">
+    <article class="stat">
+        <span>Total department assets</span>
+        <strong>{{ department_assets|length }}</strong>
+    </article>
+    <article class="stat">
+        <span>Department employees</span>
+        <strong>{{ department_people|length }}</strong>
+    </article>
+    <article class="stat">
+        <span>Shared responsibility</span>
+        <strong>{{ department_shared_assets|length }}</strong>
+    </article>
+</section>
+
+<section class="stats">
+    <article class="stat">
+        <span>Standard assets</span>
+        <strong>{{ department_standard_assets|length }}</strong>
+    </article>
+    <article class="stat">
+        <span>Low-cost items</span>
+        <strong>{{ department_low_cost_assets|length }}</strong>
+    </article>
+    <article class="stat">
+        <span>Warehouse custody</span>
+        <strong>{{ department_warehouse_assets|length }}</strong>
+    </article>
+</section>
+
+<section class="panel">
+    <h2>Department Employees</h2>
+    <p class="muted">Active employees in {{ department }} with their currently assigned assets.</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Employee</th>
+                    <th>Total assets</th>
+                    <th>Standard</th>
+                    <th>Low-cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for employee in department_people %}
+                <tr>
+                    <td>{{ employee.display_name }}</td>
+                    <td>{{ employee.assigned_count }}</td>
+                    <td>{{ employee.standard_count }}</td>
+                    <td>{{ employee.low_cost_count }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4" class="muted">No active employees were found for this department.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Department / Shared Assets</h2>
+    <p class="muted">Items marked as department/shared responsibility in your department.</p>
+    {{ department_asset_table(department_shared_assets, "No department/shared assets are currently recorded for this department.") }}
+</section>
+
+<section class="panel">
+    <h2>All Department Assets</h2>
+    <p class="muted">All currently assigned assets whose assignment department matches {{ department }}.</p>
+    {{ department_asset_table(department_assets, "No assets are currently assigned to this department.") }}
+</section>
+{% endblock %}
