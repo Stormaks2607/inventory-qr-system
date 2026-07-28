@@ -1254,7 +1254,7 @@ def get_excel_payment_records(record: dict) -> list[dict]:
     if payments:
         return payments
 
-    purchase_date = parse_excel_purchase_period(record.get("purchase_date_raw"))
+    purchase_date = parse_excel_purchase_period(record.get("purchase_date_raw")) or parse_excel_purchase_period(remarks)
     if not purchase_date:
         return []
 
@@ -1755,12 +1755,10 @@ def get_excel_project_allocations(record: dict) -> list[dict]:
 def format_project_allocations(allocations: list[dict]) -> Optional[str]:
     if not allocations:
         return None
-    if len(allocations) == 1:
-        return allocations[0].get("project_number")
     parts = []
     for allocation in allocations:
-        allocation_percent = allocation.get("allocation_percent")
-        if allocation_percent is None:
+        allocation_percent = normalize_sync_number(allocation.get("allocation_percent"))
+        if allocation_percent is None or (len(allocations) == 1 and abs(allocation_percent - 100.0) < 0.001):
             parts.append(str(allocation.get("project_number")))
         else:
             parts.append(f"{allocation.get('project_number')} {allocation_percent:g}%")
@@ -1779,6 +1777,21 @@ def project_allocation_signature(allocations: list[dict]) -> tuple:
             for allocation in allocations
         )
     )
+
+
+def get_current_payment_period_for_preview(asset: dict, current_payments: list[dict]) -> Optional[str]:
+    payment_period = get_latest_payment_period(current_payments)
+    if payment_period:
+        return payment_period
+    remark_payments = get_excel_payment_records(
+        {
+            "remarks": asset.get("remarks"),
+            "purchase_date_raw": asset.get("purchase_date_raw"),
+            "purchase_price": asset.get("purchase_price"),
+            "currency": asset.get("currency"),
+        }
+    )
+    return get_latest_payment_period(remark_payments)
 
 
 def get_current_project_allocations(asset_projects: list[dict]) -> list[dict]:
@@ -2089,7 +2102,7 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict], tr
         excel_payments = get_excel_payment_records(record)
         excel_payment_period = get_latest_payment_period(excel_payments)
         current_payments = sync_context["payments_by_asset_id"].get(current_asset.get("asset_id"), [])
-        current_payment_period = get_latest_payment_period(current_payments)
+        current_payment_period = get_current_payment_period_for_preview(current_asset, current_payments)
         if excel_payment_period and current_payment_period != excel_payment_period:
             changed_fields.append("purchase_date_raw")
             current_values["purchase_date_raw"] = current_payment_period
@@ -2189,8 +2202,16 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
         transferred_donor = sync_context["donor_lookup"].get(transferred_donor_key)
 
     project_rows = sync_context.get("projects_by_asset_id", {}).get(asset_id, [])
-    existing_by_project_id = {row.get("project_id"): row for row in project_rows}
     supports_purchase_origin = sync_context.get("supports_asset_project_purchase_origin") is True
+
+    def project_row_key(project_id, donor_id, allocation_percent) -> tuple:
+        allocation = normalize_sync_number(allocation_percent)
+        return (project_id, donor_id, allocation)
+
+    existing_by_key = {
+        project_row_key(row.get("project_id"), row.get("donor_id"), row.get("allocation_percent")): row
+        for row in project_rows
+    }
 
     def resolve_allocations(allocations: list[dict]) -> Optional[list[dict]]:
         resolved = []
@@ -2217,7 +2238,7 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
 
     applied = 0
     has_transferred_project = bool(resolved_transferred)
-    rows_by_project_id = {}
+    rows_by_key = {}
 
     def merge_project_payload(
         allocation: dict,
@@ -2230,12 +2251,15 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
     ) -> None:
         project = allocation["project"]
         project_id = project.get("project_id")
-        payload = rows_by_project_id.setdefault(
-            project_id,
+        donor_id = donor.get("donor_id") if donor else None
+        allocation_percent = allocation.get("allocation_percent")
+        payload_key = project_row_key(project_id, donor_id, allocation_percent)
+        payload = rows_by_key.setdefault(
+            payload_key,
             {
                 "project_id": project_id,
-                "donor_id": donor.get("donor_id") if donor else None,
-                "allocation_percent": allocation.get("allocation_percent"),
+                "donor_id": donor_id,
+                "allocation_percent": allocation_percent,
                 "is_current": False,
                 "is_primary": False,
                 "transfer_date": None,
@@ -2276,8 +2300,8 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
             transfer_reason="Excel synchronization",
         )
 
-    for project_id, payload in rows_by_project_id.items():
-        existing = existing_by_project_id.get(project_id)
+    for payload_key, payload in rows_by_key.items():
+        existing = existing_by_key.get(payload_key)
 
         if existing:
             supabase.table("asset_projects").update(payload).eq("asset_project_id", existing["asset_project_id"]).execute()
@@ -2580,8 +2604,7 @@ def get_export_project_numbers(asset_projects: list[dict], mode: str) -> str:
         allocations = get_project_allocations_from_rows(get_purchased_project_rows(asset_projects))
     else:
         allocations = get_project_allocations_from_rows(get_current_project_rows(asset_projects))
-    project_numbers = [allocation.get("project_number") for allocation in allocations if allocation.get("project_number")]
-    return "/".join(project_numbers)
+    return format_project_allocations(allocations) or ""
 
 
 def get_export_donor_name(asset_projects: list[dict], mode: str) -> Optional[str]:
@@ -2634,7 +2657,7 @@ def build_database_excel_records(usage_type: Optional[str] = None) -> list[dict]
                 "department_name": assignment.get("department"),
                 "recipient_name": assignment.get("responsible_person"),
                 "recipient_position": None,
-                "purchase_date_raw": get_latest_payment_period(asset_payments),
+                "purchase_date_raw": get_current_payment_period_for_preview(asset, asset_payments),
                 "purchase_price": asset.get("purchase_price"),
                 "currency": asset.get("currency"),
                 "purchased_project_no": purchased_project_numbers,
