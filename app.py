@@ -58,6 +58,8 @@ SYNC_STORAGE_DIR = os.path.join("private_docs", "sync")
 SYNC_WORKBOOK_PATH = os.path.join(SYNC_STORAGE_DIR, "official_inventory.xlsx")
 SYNC_EXPORT_PATH = os.path.join(SYNC_STORAGE_DIR, "supabase_inventory_export.xlsx")
 SYNC_STATE_PATH = os.path.join(SYNC_STORAGE_DIR, "sync_state.json")
+SYNC_STORAGE_BUCKET = clean_env_value("SYNC_STORAGE_BUCKET") or "private-inventory-docs"
+SYNC_WORKBOOK_STORAGE_PATH = "sync/official_inventory.xlsx"
 EXCEL_SYNC_SHEET_NAME = "Standard Asset List Format"
 EXCEL_LOW_COST_SHEET_NAME = "Low-cost-items"
 EXCEL_TRANSFER_LOG_SHEET_NAME = "Transfer log"
@@ -934,12 +936,84 @@ def ensure_sync_storage() -> None:
     os.makedirs(SYNC_STORAGE_DIR, exist_ok=True)
 
 
+def get_sync_storage_bucket():
+    return supabase.storage.from_(SYNC_STORAGE_BUCKET)
+
+
+def ensure_sync_storage_bucket() -> None:
+    try:
+        buckets = supabase.storage.list_buckets()
+        if any(
+            (
+                getattr(bucket, "name", None) == SYNC_STORAGE_BUCKET
+                or getattr(bucket, "id", None) == SYNC_STORAGE_BUCKET
+                or (isinstance(bucket, dict) and bucket.get("name") == SYNC_STORAGE_BUCKET)
+                or (isinstance(bucket, dict) and bucket.get("id") == SYNC_STORAGE_BUCKET)
+            )
+            for bucket in buckets
+        ):
+            return
+        supabase.storage.create_bucket(SYNC_STORAGE_BUCKET, options={"public": False})
+    except Exception:
+        # Bucket creation may be restricted when the app is not using a service-role key.
+        # Upload/download will raise a clearer error if the private bucket is missing.
+        return
+
+
+def sync_storage_object_exists() -> bool:
+    try:
+        return bool(get_sync_storage_bucket().exists(SYNC_WORKBOOK_STORAGE_PATH))
+    except Exception:
+        return False
+
+
+def upload_sync_workbook_to_storage(file_bytes: bytes) -> None:
+    ensure_sync_storage_bucket()
+    bucket = get_sync_storage_bucket()
+    file_options = {
+        "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "cache-control": "0",
+        "upsert": "true",
+    }
+    try:
+        bucket.upload(SYNC_WORKBOOK_STORAGE_PATH, file_bytes, file_options=dict(file_options))
+    except Exception:
+        bucket.update(SYNC_WORKBOOK_STORAGE_PATH, file_bytes, file_options=dict(file_options))
+
+
+def download_sync_workbook_from_storage(target_path: str = SYNC_WORKBOOK_PATH) -> bool:
+    try:
+        file_bytes = get_sync_storage_bucket().download(SYNC_WORKBOOK_STORAGE_PATH)
+    except Exception:
+        return False
+    if not file_bytes:
+        return False
+    ensure_sync_storage()
+    with open(target_path, "wb") as file:
+        file.write(file_bytes)
+    return True
+
+
+def ensure_sync_workbook_template() -> None:
+    if os.path.exists(SYNC_WORKBOOK_PATH):
+        return
+    if download_sync_workbook_from_storage(SYNC_WORKBOOK_PATH):
+        return
+    raise ValueError("No official workbook is available. Upload an Excel file first.")
+
+
 def load_sync_state() -> dict:
     ensure_sync_storage()
     if not os.path.exists(SYNC_STATE_PATH):
-        return {}
-    with open(SYNC_STATE_PATH, "r", encoding="utf-8") as file:
-        return json.load(file)
+        state = {}
+    else:
+        with open(SYNC_STATE_PATH, "r", encoding="utf-8") as file:
+            state = json.load(file)
+    if not state.get("storage_bucket") and sync_storage_object_exists():
+        state["storage_bucket"] = SYNC_STORAGE_BUCKET
+        state["storage_path"] = SYNC_WORKBOOK_STORAGE_PATH
+        state.setdefault("file_name", "official_inventory.xlsx")
+    return state
 
 
 def save_sync_state(state: dict) -> None:
@@ -2783,8 +2857,7 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
 
 
 def export_supabase_to_excel() -> dict:
-    if not os.path.exists(SYNC_WORKBOOK_PATH):
-        raise ValueError("No official workbook is available. Upload an Excel file first.")
+    ensure_sync_workbook_template()
 
     try:
         from openpyxl import load_workbook  # type: ignore
@@ -7827,10 +7900,18 @@ async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)
         set_flash(request, "error", f"Excel sync preview failed: {error}")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
+    try:
+        upload_sync_workbook_to_storage(file_bytes)
+    except Exception as error:
+        set_flash(request, "error", f"Excel workbook was valid, but could not be saved to Supabase Storage: {error}")
+        return RedirectResponse(url="/admin/sync", status_code=303)
+
     save_sync_state(
         {
             "file_name": filename,
             "uploaded_at": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M"),
+            "storage_bucket": SYNC_STORAGE_BUCKET,
+            "storage_path": SYNC_WORKBOOK_STORAGE_PATH,
             "preview": preview,
         }
     )
