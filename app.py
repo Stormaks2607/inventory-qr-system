@@ -287,6 +287,38 @@ def audit_log_field_changes(
     return logged
 
 
+def normalize_assignment_compare_value(value) -> str:
+    return stringify_audit_value(value).strip()
+
+
+def build_assignment_field_changes(old_assignment: dict, new_assignment: dict) -> list[dict]:
+    fields = [
+        ("person_id", "Responsible person"),
+        ("location_id", "Location"),
+        ("assignment_date", "Assignment date"),
+        ("status", "Status"),
+        ("notes", "Notes"),
+        ("handover_condition", "Condition on handover"),
+        ("assignment_scope", "Assignment type"),
+        ("custody_note", "Custody note"),
+    ]
+    changes = []
+    for field_name, label in fields:
+        old_value = old_assignment.get(field_name)
+        new_value = new_assignment.get(field_name)
+        if normalize_assignment_compare_value(old_value) == normalize_assignment_compare_value(new_value):
+            continue
+        changes.append(
+            {
+                "field_name": field_name,
+                "label": label,
+                "old_value": old_value,
+                "new_value": new_value,
+            }
+        )
+    return changes
+
+
 def format_audit_datetime(value) -> str:
     if not value:
         return "-"
@@ -1623,6 +1655,34 @@ def list_asset_transfer_records(batch_size: int = 1000) -> list[dict]:
     return rows
 
 
+_ASSET_ASSIGNMENT_ACTOR_COLUMNS_SUPPORTED: Optional[bool] = None
+
+
+def supports_asset_assignment_actor_columns() -> bool:
+    global _ASSET_ASSIGNMENT_ACTOR_COLUMNS_SUPPORTED
+    if _ASSET_ASSIGNMENT_ACTOR_COLUMNS_SUPPORTED is not None:
+        return _ASSET_ASSIGNMENT_ACTOR_COLUMNS_SUPPORTED
+
+    try:
+        supabase.table("asset_assignments").select("created_by,updated_by").limit(1).execute()
+    except Exception:
+        _ASSET_ASSIGNMENT_ACTOR_COLUMNS_SUPPORTED = False
+        return False
+
+    _ASSET_ASSIGNMENT_ACTOR_COLUMNS_SUPPORTED = True
+    return True
+
+
+def add_assignment_actor_fields(payload: dict, actor: str, *, created: bool = True) -> dict:
+    if not supports_asset_assignment_actor_columns():
+        return payload
+    updated_payload = dict(payload)
+    if created:
+        updated_payload["created_by"] = actor
+    updated_payload["updated_by"] = actor
+    return updated_payload
+
+
 _ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED: Optional[bool] = None
 
 
@@ -2145,9 +2205,10 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict], tr
 def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> int:
     excel_recipient = normalize_sync_string(record.get("recipient_name"))
     assignment_date = record.get("last_transfer_date") or datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
+    actor = "Excel import"
 
     if not excel_recipient:
-        close_current_assignments(asset_id, assignment_date)
+        close_current_assignments(asset_id, assignment_date, actor)
         return 1
 
     person = resolve_excel_person(record, sync_context["person_lookup"])
@@ -2174,17 +2235,20 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     if record.get("remarks"):
         notes_parts.append(f"Remarks: {record.get('remarks')}")
 
-    close_current_assignments(asset_id, assignment_date)
+    close_current_assignments(asset_id, assignment_date, actor)
     supabase.table("asset_assignments").insert(
-        {
-            "asset_id": asset_id,
-            "person_id": person.get("person_id"),
-            "location_id": location.get("location_id"),
-            "assignment_date": assignment_date,
-            "return_date": None,
-            "status": record.get("current_status"),
-            "notes": " | ".join(notes_parts) if notes_parts else None,
-        }
+        add_assignment_actor_fields(
+            {
+                "asset_id": asset_id,
+                "person_id": person.get("person_id"),
+                "location_id": location.get("location_id"),
+                "assignment_date": assignment_date,
+                "return_date": None,
+                "status": record.get("current_status"),
+                "notes": " | ".join(notes_parts) if notes_parts else None,
+            },
+            actor,
+        )
     ).execute()
     return 1
 
@@ -3039,6 +3103,8 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
         "handover_condition": assignment.get("handover_condition"),
         "assignment_scope": assignment.get("assignment_scope") or "personal",
         "custody_note": assignment.get("custody_note"),
+        "created_by": assignment.get("created_by"),
+        "updated_by": assignment.get("updated_by"),
         "responsible_person": (
             person.get("name_eng")
             or person.get("name")
@@ -3094,6 +3160,8 @@ def enrich_assignment(assignment: dict) -> dict:
         "handover_condition": assignment.get("handover_condition"),
         "assignment_scope": assignment.get("assignment_scope") or "personal",
         "custody_note": assignment.get("custody_note"),
+        "created_by": assignment.get("created_by"),
+        "updated_by": assignment.get("updated_by"),
         "responsible_person": (
             person.get("name_eng")
             or person.get("name")
@@ -3776,7 +3844,7 @@ def apply_person_offboarding(person: dict, form) -> dict:
         if target_person_id and not target_location_id:
             raise ValueError("Location is required when a responsible person is selected.")
 
-        close_current_assignments(asset_id, offboarding_date)
+        close_current_assignments(asset_id, offboarding_date, "Offboarding")
 
         if target_person_id or target_location_id:
             current_assignment = asset.get("current_assignment") or {}
@@ -3785,16 +3853,19 @@ def apply_person_offboarding(person: dict, form) -> dict:
             if offboarding_note:
                 notes = f"{notes}: {offboarding_note}"
             supabase.table("asset_assignments").insert(
-                {
-                    "asset_id": asset_id,
-                    "person_id": target_person_id,
-                    "location_id": target_location_id,
-                    "assignment_date": offboarding_date,
-                    "return_date": None,
-                    "status": status,
-                    "notes": notes,
-                    "handover_condition": current_assignment.get("handover_condition"),
-                }
+                add_assignment_actor_fields(
+                    {
+                        "asset_id": asset_id,
+                        "person_id": target_person_id,
+                        "location_id": target_location_id,
+                        "assignment_date": offboarding_date,
+                        "return_date": None,
+                        "status": status,
+                        "notes": notes,
+                        "handover_condition": current_assignment.get("handover_condition"),
+                    },
+                    "Offboarding",
+                )
             ).execute()
             transfer_id = create_asset_transfer_from_assignment_change(
                 asset=asset,
@@ -4206,7 +4277,7 @@ def get_responsibility_scope_form_options() -> dict:
     }
 
 
-def close_current_assignments(asset_id: int, return_date: Optional[str]) -> None:
+def close_current_assignments(asset_id: int, return_date: Optional[str], actor: Optional[str] = None) -> None:
     current_assignments = (
         supabase.table("asset_assignments")
         .select("assignment_id")
@@ -4216,9 +4287,12 @@ def close_current_assignments(asset_id: int, return_date: Optional[str]) -> None
     )
 
     for row in current_assignments.data or []:
+        update_payload = {"return_date": return_date}
+        if actor:
+            update_payload = add_assignment_actor_fields(update_payload, actor, created=False)
         (
             supabase.table("asset_assignments")
-            .update({"return_date": return_date})
+            .update(update_payload)
             .eq("assignment_id", row["assignment_id"])
             .execute()
         )
@@ -7311,6 +7385,7 @@ def admin_asset_assignment_update(
     custody_note = custody_note.strip()
     parsed_person_id = int(person_id) if person_id else None
     parsed_location_id = int(location_id) if location_id else None
+    actor = get_admin_actor(request)
 
     if not assignment_date:
         set_flash(request, "error", "Assignment date is required.")
@@ -7325,7 +7400,7 @@ def admin_asset_assignment_update(
 
     if not parsed_person_id and not parsed_location_id:
         if current_assignment:
-            close_current_assignments(asset_id, assignment_date)
+            close_current_assignments(asset_id, assignment_date, actor)
             if status:
                 supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
             transfer_id = create_asset_transfer_from_assignment_change(
@@ -7374,39 +7449,41 @@ def admin_asset_assignment_update(
         and current_assignment.get("person_id") == parsed_person_id
         and current_assignment.get("location_id") == parsed_location_id
     ):
-        (
-            supabase.table("asset_assignments")
-            .update({
-                "assignment_date": assignment_date,
-                "status": status or None,
-                "notes": notes or None,
-                "handover_condition": handover_condition or None,
-                "assignment_scope": assignment_scope,
-                "custody_note": custody_note or None,
-            })
-            .eq("assignment_id", current_assignment["assignment_id"])
-            .execute()
-        )
+        assignment_changes = build_assignment_field_changes(current_assignment, new_assignment)
+        if not assignment_changes:
+            set_flash(request, "success", "Current assignment already matches the submitted values.")
+            return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
         try:
+            close_current_assignments(asset_id, assignment_date, actor)
+            supabase.table("asset_assignments").insert(add_assignment_actor_fields(new_assignment, actor)).execute()
             if status:
                 supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
         except Exception as exc:
             set_flash(request, "error", describe_assignment_update_error(exc))
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
         set_flash(request, "success", "Current assignment was updated.")
-        audit_log_event(
-            entity_type="Assignment",
-            entity_id=asset_id,
-            entity_label=asset.get("asset_tag_number"),
-            action="updated",
-            summary=f"Assignment updated for {asset.get('asset_tag_number')}",
-            request=request,
-        )
+        for change in assignment_changes:
+            audit_log_event(
+                entity_type="Assignment",
+                entity_id=asset_id,
+                entity_label=asset.get("asset_tag_number"),
+                action="updated",
+                field_name=change["field_name"],
+                old_value=change["old_value"],
+                new_value=change["new_value"],
+                summary=(
+                    f"{asset.get('asset_tag_number')} assignment {change['label']}: "
+                    f"{stringify_audit_value(change['old_value']) or '-'} -> "
+                    f"{stringify_audit_value(change['new_value']) or '-'}"
+                ),
+                request=request,
+                event_date=assignment_date,
+            )
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     try:
-        close_current_assignments(asset_id, assignment_date)
-        supabase.table("asset_assignments").insert(new_assignment).execute()
+        close_current_assignments(asset_id, assignment_date, actor)
+        supabase.table("asset_assignments").insert(add_assignment_actor_fields(new_assignment, actor)).execute()
         if status:
             supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
     except Exception as exc:

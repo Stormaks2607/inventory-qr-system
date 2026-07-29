@@ -65,6 +65,7 @@
                 <tr><th>Assignment type</th><td>{{ (asset.current_assignment.assignment_scope or "personal")|replace("_", " ")|title }}</td></tr>
                 <tr><th>Assignment date</th><td>{{ asset.current_assignment.assignment_date or "-" }}</td></tr>
                 <tr><th>Status</th><td>{{ asset.current_assignment.status or "-" }}</td></tr>
+                <tr><th>Changed by</th><td>{{ asset.current_assignment.updated_by or asset.current_assignment.created_by or "-" }}</td></tr>
                 <tr><th>Condition on handover</th><td>{{ asset.current_assignment.handover_condition or "-" }}</td></tr>
                 <tr><th>Custody note</th><td>{{ asset.current_assignment.custody_note or "-" }}</td></tr>
                 <tr><th>Notes</th><td>{{ asset.current_assignment.notes or "-" }}</td></tr>
@@ -674,6 +675,7 @@
                 <th>City</th>
                 <th>Assignment type</th>
                 <th>Status</th>
+                <th>Changed by</th>
                 <th>Condition on handover</th>
                 <th>Notes</th>
             </tr>
@@ -692,12 +694,13 @@
                         {{ assignment.status or "-" }}
                     </span>
                 </td>
+                <td>{{ assignment.updated_by or assignment.created_by or "-" }}</td>
                 <td>{{ assignment.handover_condition or "-" }}</td>
                 <td>{{ assignment.notes or "-" }}</td>
             </tr>
             {% else %}
             <tr>
-                <td colspan="9" class="muted">No assignment history found for this asset.</td>
+                <td colspan="10" class="muted">No assignment history found for this asset.</td>
             </tr>
             {% endfor %}
         </tbody>
