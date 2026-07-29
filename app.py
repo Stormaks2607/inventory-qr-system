@@ -2040,7 +2040,11 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict], tr
         excel_values = {}
         warnings = []
         for field_name in synced_fields:
-            current_value = current_asset.get(field_name)
+            if field_name == "current_status":
+                current_assignment = sync_context["assignment_by_asset_id"].get(current_asset.get("asset_id")) or {}
+                current_value = current_assignment.get("status") or current_asset.get(field_name)
+            else:
+                current_value = current_asset.get(field_name)
             excel_value = record.get(field_name)
             if not sync_values_equal(field_name, current_value, excel_value):
                 changed_fields.append(field_name)
