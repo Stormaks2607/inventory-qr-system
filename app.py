@@ -4359,8 +4359,18 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
         "payment_date": "",
         "payment_amount": "",
         "payment_currency": asset.get("currency") or "",
+        "payment_eur_amount": "",
         "payment_status": "paid",
         "payment_notes": "",
+        "payments": [
+            {
+                "payment_date": "",
+                "payment_amount": "",
+                "payment_currency": asset.get("currency") or "",
+                "payment_eur_amount": "",
+                "payment_status": "paid",
+            }
+        ],
     }
 
 
@@ -4420,6 +4430,98 @@ def build_asset_payment_payload(
         "payment_status": payment_status.strip() or "paid",
         "notes": notes.strip() or None,
     }
+
+
+def format_payment_note_date(payment_date: str) -> str:
+    try:
+        return datetime.strptime(str(payment_date)[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        return str(payment_date or "").strip()
+
+
+def build_payment_note_line(payment_amount: str, currency: str, payment_date: str) -> str:
+    amount = (payment_amount or "").strip()
+    code = (currency or "").strip() or "EUR"
+    parsed_date = parse_payment_date_field(payment_date)
+    if not amount or not parsed_date:
+        return ""
+    return f"{amount} {code} - {format_payment_note_date(parsed_date)}"
+
+
+def build_create_payment_forms(
+    payment_dates: list[str],
+    payment_amounts: list[str],
+    payment_currencies: list[str],
+    payment_eur_amounts: list[str],
+    payment_statuses: list[str],
+) -> list[dict]:
+    def ensure_list(value) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [str(value)]
+
+    payment_dates = ensure_list(payment_dates)
+    payment_amounts = ensure_list(payment_amounts)
+    payment_currencies = ensure_list(payment_currencies)
+    payment_eur_amounts = ensure_list(payment_eur_amounts)
+    payment_statuses = ensure_list(payment_statuses)
+
+    row_count = max(
+        1,
+        len(payment_dates),
+        len(payment_amounts),
+        len(payment_currencies),
+        len(payment_eur_amounts),
+        len(payment_statuses),
+    )
+    rows = []
+    for index in range(row_count):
+        rows.append(
+            {
+                "payment_date": (payment_dates[index] if index < len(payment_dates) else "").strip(),
+                "payment_amount": (payment_amounts[index] if index < len(payment_amounts) else "").strip(),
+                "payment_currency": (payment_currencies[index] if index < len(payment_currencies) else "").strip(),
+                "payment_eur_amount": (payment_eur_amounts[index] if index < len(payment_eur_amounts) else "").strip(),
+                "payment_status": (payment_statuses[index] if index < len(payment_statuses) else "paid").strip() or "paid",
+            }
+        )
+    return rows
+
+
+def get_filled_payment_forms(payment_forms: list[dict]) -> list[dict]:
+    return [
+        payment
+        for payment in payment_forms
+        if any(
+            [
+                payment.get("payment_date"),
+                payment.get("payment_amount"),
+                payment.get("payment_currency"),
+                payment.get("payment_eur_amount"),
+            ]
+        )
+    ]
+
+
+def build_payment_notes_by_row(payment_forms: list[dict], payment_notes: str) -> list[str]:
+    manual_lines = [line.strip() for line in (payment_notes or "").splitlines() if line.strip()]
+    notes = []
+    for index, payment in enumerate(payment_forms):
+        note = manual_lines[index] if index < len(manual_lines) else ""
+        if not note:
+            note = build_payment_note_line(
+                payment.get("payment_amount") or "",
+                payment.get("payment_currency") or "",
+                payment.get("payment_date") or "",
+            )
+        eur_amount = (payment.get("payment_eur_amount") or "").strip()
+        if eur_amount:
+            eur_note = f"EUR equivalent: {eur_amount} EUR"
+            note = f"{note} | {eur_note}" if note else eur_note
+        notes.append(note)
+    return notes
 
 
 def describe_asset_payment_error(error: Exception) -> str:
@@ -4522,6 +4624,7 @@ def get_asset_create_options() -> dict:
 
     if not currencies:
         currencies = list_distinct_asset_field_values("currency")
+    currencies = merge_preferred_options(["EUR", "UAH", "USD"], currencies)
 
     return {
         "status_options": ASSET_STATUS_SELECT_OPTIONS,
@@ -6277,12 +6380,14 @@ def admin_asset_create(
     current_status: str = Form(""),
     current_status_custom: str = Form(""),
     remarks: str = Form(""),
-    payment_date: str = Form(""),
-    payment_amount: str = Form(""),
-    payment_currency: str = Form(""),
-    payment_status: str = Form("paid"),
+    payment_date: list[str] = Form([]),
+    payment_amount: list[str] = Form([]),
+    payment_currency: list[str] = Form([]),
+    payment_eur_amount: list[str] = Form([]),
+    payment_status: list[str] = Form([]),
     payment_notes: str = Form(""),
     confirm_nonstandard_asset_tag: str = Form(""),
+    confirm_payment_total_mismatch: str = Form(""),
 ):
     redirect = require_admin(request)
     if redirect:
@@ -6290,6 +6395,13 @@ def admin_asset_create(
 
     resolved_status = current_status_custom.strip() if current_status == "__custom__" else current_status.strip()
     asset_tag_standards = get_asset_tag_standards()
+    payment_forms = build_create_payment_forms(
+        payment_date,
+        payment_amount,
+        payment_currency,
+        payment_eur_amount,
+        payment_status,
+    )
     asset_form = {
         "asset_tag_number": normalize_asset_tag(asset_tag_number),
         "usage_type": normalize_asset_usage_type(usage_type, asset_tag_number),
@@ -6306,11 +6418,13 @@ def admin_asset_create(
         "current_status_select": current_status.strip(),
         "current_status_custom": current_status_custom.strip(),
         "remarks": remarks.strip(),
-        "payment_date": payment_date.strip(),
-        "payment_amount": payment_amount.strip(),
-        "payment_currency": payment_currency.strip() or currency.strip(),
-        "payment_status": payment_status.strip() or "paid",
+        "payment_date": payment_forms[0].get("payment_date") if payment_forms else "",
+        "payment_amount": payment_forms[0].get("payment_amount") if payment_forms else "",
+        "payment_currency": payment_forms[0].get("payment_currency") if payment_forms else "",
+        "payment_eur_amount": payment_forms[0].get("payment_eur_amount") if payment_forms else "",
+        "payment_status": payment_forms[0].get("payment_status") if payment_forms else "paid",
         "payment_notes": payment_notes.strip(),
+        "payments": payment_forms,
     }
     asset_tag_standard = asset_tag_standards.get(asset_form["usage_type"]) or asset_tag_standards.get("standard") or {}
 
@@ -6423,17 +6537,22 @@ def admin_asset_create(
             status_code=400,
         )
 
-    if asset_form["payment_date"] or asset_form["payment_amount"]:
+    filled_payment_forms = get_filled_payment_forms(asset_form["payments"])
+    payment_note_lines = build_payment_notes_by_row(filled_payment_forms, asset_form["payment_notes"])
+
+    for payment in filled_payment_forms:
         try:
+            if payment.get("payment_eur_amount"):
+                parse_float_field(payment.get("payment_eur_amount") or "")
             build_asset_payment_payload(
                 asset_id=0,
                 payment_number=1,
-                payment_date=asset_form["payment_date"],
-                payment_amount=asset_form["payment_amount"],
-                currency=asset_form["payment_currency"],
-                payment_status=asset_form["payment_status"],
-                notes=asset_form["payment_notes"],
-                fallback_amount=insert_data.get("purchase_price"),
+                payment_date=payment.get("payment_date") or "",
+                payment_amount=payment.get("payment_amount") or "",
+                currency=payment.get("payment_currency") or asset_form["currency"],
+                payment_status=payment.get("payment_status") or "paid",
+                notes="",
+                fallback_amount=insert_data.get("purchase_price") if len(filled_payment_forms) == 1 else None,
             )
         except Exception as error:
             return templates.TemplateResponse(
@@ -6446,6 +6565,41 @@ def admin_asset_create(
                     "asset_tag_standards": asset_tag_standards,
                     "asset_tag_warning": asset_tag_warning,
                     "flash": {"level": "error", "message": describe_asset_payment_error(error)},
+                    "active_page": "assets",
+                    "page_title": "New Asset",
+                    "admin_username": request.session.get("admin_username"),
+                },
+                status_code=400,
+            )
+
+    purchase_price_eur = insert_data.get("purchase_price") if (asset_form["currency"] or "").upper() == "EUR" else None
+    if purchase_price_eur is not None and filled_payment_forms and confirm_payment_total_mismatch != "yes":
+        payment_total_eur = 0.0
+        for payment in filled_payment_forms:
+            eur_amount = parse_float_field(payment.get("payment_eur_amount") or "")
+            if eur_amount is not None:
+                payment_total_eur += eur_amount
+                continue
+            if (payment.get("payment_currency") or asset_form["currency"] or "").upper() == "EUR":
+                payment_total_eur += parse_float_field(payment.get("payment_amount") or "") or 0
+
+        if abs(payment_total_eur - purchase_price_eur) > 0.01:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin_asset_create.html",
+                context={
+                    "asset_form": asset_form,
+                    **get_asset_create_options(),
+                    "asset_tag_standard": asset_tag_standard,
+                    "asset_tag_standards": asset_tag_standards,
+                    "asset_tag_warning": asset_tag_warning,
+                    "flash": {
+                        "level": "error",
+                        "message": (
+                            "Payment total mismatch warning. Purchase price differs from the sum of payment EUR equivalents. "
+                            "Confirm the warning in the browser dialog or correct the payments."
+                        ),
+                    },
                     "active_page": "assets",
                     "page_title": "New Asset",
                     "admin_username": request.session.get("admin_username"),
@@ -6487,25 +6641,29 @@ def admin_asset_create(
         set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
         return RedirectResponse(url="/admin/assets", status_code=303)
 
-    if asset_form["payment_date"] or asset_form["payment_amount"]:
+    if filled_payment_forms:
         try:
-            payment_payload = build_asset_payment_payload(
-                asset_id=created_asset_id,
-                payment_number=1,
-                payment_date=asset_form["payment_date"],
-                payment_amount=asset_form["payment_amount"],
-                currency=asset_form["payment_currency"],
-                payment_status=asset_form["payment_status"],
-                notes=asset_form["payment_notes"],
-                fallback_amount=parse_float_field(asset_form["purchase_price"]),
-            )
-            supabase.table("asset_payments").insert(payment_payload).execute()
+            payment_payloads = []
+            for index, payment in enumerate(filled_payment_forms, start=1):
+                payment_payloads.append(
+                    build_asset_payment_payload(
+                        asset_id=created_asset_id,
+                        payment_number=index,
+                        payment_date=payment.get("payment_date") or "",
+                        payment_amount=payment.get("payment_amount") or "",
+                        currency=payment.get("payment_currency") or asset_form["currency"],
+                        payment_status=payment.get("payment_status") or "paid",
+                        notes=payment_note_lines[index - 1] if index - 1 < len(payment_note_lines) else "",
+                        fallback_amount=parse_float_field(asset_form["purchase_price"]) if len(filled_payment_forms) == 1 else None,
+                    )
+                )
+            supabase.table("asset_payments").insert(payment_payloads).execute()
             audit_log_event(
                 entity_type="Payment",
                 entity_id=created_asset_id,
                 entity_label=asset_form["asset_tag_number"],
                 action="created",
-                summary=f"Added initial payment for {asset_form['asset_tag_number']}: {payment_payload.get('payment_amount') or '-'} {payment_payload.get('currency') or ''}",
+                summary=f"Added {len(payment_payloads)} payment(s) for {asset_form['asset_tag_number']}",
                 request=request,
             )
         except Exception as error:

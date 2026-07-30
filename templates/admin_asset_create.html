@@ -28,10 +28,37 @@
         font-size: 13px;
     }
 
+    .asset-payment-row {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+        gap: 10px;
+        align-items: end;
+        margin-bottom: 12px;
+    }
+
+    .asset-payment-row .btn {
+        min-height: 40px;
+        white-space: nowrap;
+    }
+
+    .label-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 6px;
+    }
+
     @media (max-width: 900px) {
         .asset-create-top-row,
-        .asset-status-row {
+        .asset-status-row,
+        .asset-payment-row {
             grid-template-columns: 1fr;
+        }
+
+        .label-row {
+            align-items: stretch;
+            flex-direction: column;
         }
     }
 </style>
@@ -63,6 +90,7 @@
 
     <form method="post" action="/admin/assets/new" class="form-grid" data-asset-create-form>
         <input type="hidden" name="confirm_nonstandard_asset_tag" value="" data-confirm-nonstandard>
+        <input type="hidden" name="confirm_payment_total_mismatch" value="" data-confirm-payment-mismatch>
         <div class="asset-create-top-row field full">
             <div class="field">
                 <label for="asset_tag_number">Asset tag/Inventory No.</label>
@@ -176,36 +204,51 @@
         </div>
 
         <div class="field full">
-            <h3 style="margin: 0;">First Payment</h3>
+            <h3 style="margin: 0;">Payments</h3>
         </div>
 
-        <div class="field">
-            <label for="payment_date">Payment date</label>
-            <input id="payment_date" name="payment_date" type="date" value="{{ asset_form.payment_date }}">
+        <div class="field full" data-payments-list>
+            {% for payment in asset_form.payments %}
+            <div class="asset-payment-row" data-payment-row>
+                <div class="field">
+                    <label>Payment date</label>
+                    <input name="payment_date" type="date" value="{{ payment.payment_date }}">
+                </div>
+                <div class="field">
+                    <label>Payment amount</label>
+                    <input name="payment_amount" type="text" value="{{ payment.payment_amount }}" placeholder="e.g. 21704">
+                </div>
+                <div class="field">
+                    <label>Payment currency</label>
+                    <select name="payment_currency">
+                        <option value="">Use asset currency</option>
+                        {% for option in currency_options %}
+                        <option value="{{ option }}" {% if payment.payment_currency == option %}selected{% endif %}>{{ option }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="field">
+                    <label>EUR equivalent</label>
+                    <input name="payment_eur_amount" type="text" value="{{ payment.payment_eur_amount }}" placeholder="e.g. 542.60">
+                </div>
+                <div class="field">
+                    <label>Payment status</label>
+                    <input name="payment_status" type="text" value="{{ payment.payment_status or 'paid' }}">
+                </div>
+                <button class="btn secondary" type="button" data-remove-payment>Remove</button>
+            </div>
+            {% endfor %}
         </div>
 
-        <div class="field">
-            <label for="payment_amount">Payment amount</label>
-            <input id="payment_amount" name="payment_amount" type="text" value="{{ asset_form.payment_amount }}" placeholder="Defaults to purchase price">
-        </div>
-
-        <div class="field">
-            <label for="payment_currency">Payment currency</label>
-            <select id="payment_currency" name="payment_currency">
-                <option value="">Use asset currency</option>
-                {% for option in currency_options %}
-                <option value="{{ option }}" {% if asset_form.payment_currency == option %}selected{% endif %}>{{ option }}</option>
-                {% endfor %}
-            </select>
-        </div>
-
-        <div class="field">
-            <label for="payment_status">Payment status</label>
-            <input id="payment_status" name="payment_status" type="text" value="{{ asset_form.payment_status }}">
+        <div class="toolbar field full" style="margin-top: -8px;">
+            <button class="btn secondary" type="button" data-add-payment>Add payment</button>
         </div>
 
         <div class="field full">
-            <label for="payment_notes">Payment notes</label>
+            <div class="label-row">
+                <label for="payment_notes">Payment notes</label>
+                <button class="btn secondary" type="button" data-fill-payment-notes>Fill from payments</button>
+            </div>
             <textarea id="payment_notes" name="payment_notes" rows="2">{{ asset_form.payment_notes }}</textarea>
         </div>
 
@@ -227,6 +270,13 @@
         const usageTypeSelect = form.querySelector("#usage_type");
         const assetTagHelper = form.querySelector("[data-asset-tag-helper]");
         const confirmField = form.querySelector("[data-confirm-nonstandard]");
+        const confirmPaymentMismatchField = form.querySelector("[data-confirm-payment-mismatch]");
+        const purchasePriceInput = form.querySelector("#purchase_price");
+        const assetCurrencySelect = form.querySelector("#currency");
+        const paymentsList = form.querySelector("[data-payments-list]");
+        const addPaymentButton = form.querySelector("[data-add-payment]");
+        const fillPaymentNotesButton = form.querySelector("[data-fill-payment-notes]");
+        const paymentNotesInput = form.querySelector("#payment_notes");
         const statusSelect = form.querySelector("[data-asset-status-select]");
         const statusCustomInput = form.querySelector("[data-asset-status-custom]");
         const statusRow = form.querySelector("[data-asset-status-row]");
@@ -237,6 +287,106 @@
 
         function normalizeAssetTag(value) {
             return (value || "").trim().toUpperCase().replace(/\s+/g, " ");
+        }
+
+        function parseDecimal(value) {
+            const normalized = (value || "").toString().trim().replace(/\s+/g, "").replace(",", ".");
+            if (!normalized) {
+                return null;
+            }
+            const parsed = Number(normalized);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+
+        function formatDisplayDate(value) {
+            if (!value) {
+                return "";
+            }
+            const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (!match) {
+                return value;
+            }
+            return `${match[3]}.${match[2]}.${match[1]}`;
+        }
+
+        function getPaymentRows() {
+            return Array.from(paymentsList?.querySelectorAll("[data-payment-row]") || []);
+        }
+
+        function getPaymentRowValues(row) {
+            const date = row.querySelector('[name="payment_date"]')?.value || "";
+            const amount = row.querySelector('[name="payment_amount"]')?.value || "";
+            const currency = row.querySelector('[name="payment_currency"]')?.value || assetCurrencySelect?.value || "EUR";
+            const eurAmount = row.querySelector('[name="payment_eur_amount"]')?.value || "";
+            return {date, amount, currency, eurAmount};
+        }
+
+        function updateRemovePaymentButtons() {
+            const rows = getPaymentRows();
+            rows.forEach((row) => {
+                const removeButton = row.querySelector("[data-remove-payment]");
+                if (removeButton) {
+                    removeButton.hidden = rows.length <= 1;
+                }
+            });
+        }
+
+        function addPaymentRow() {
+            const firstRow = paymentsList?.querySelector("[data-payment-row]");
+            if (!paymentsList || !firstRow) {
+                return;
+            }
+            const newRow = firstRow.cloneNode(true);
+            newRow.querySelectorAll("input").forEach((input) => {
+                input.value = input.name === "payment_status" ? "paid" : "";
+            });
+            newRow.querySelectorAll("select").forEach((select) => {
+                select.value = assetCurrencySelect?.value || "";
+            });
+            paymentsList.appendChild(newRow);
+            updateRemovePaymentButtons();
+        }
+
+        function fillPaymentNotesFromRows() {
+            const lines = getPaymentRows()
+                .map(getPaymentRowValues)
+                .filter((payment) => payment.amount && payment.date)
+                .map((payment) => `${payment.amount} ${payment.currency || "EUR"} - ${formatDisplayDate(payment.date)}`);
+            if (paymentNotesInput) {
+                paymentNotesInput.value = lines.join("\n");
+            }
+        }
+
+        function getPaymentEurTotal() {
+            return getPaymentRows().reduce((total, row) => {
+                const payment = getPaymentRowValues(row);
+                const directEquivalent = parseDecimal(payment.eurAmount);
+                if (directEquivalent !== null) {
+                    return total + directEquivalent;
+                }
+                if ((payment.currency || "").toUpperCase() === "EUR") {
+                    return total + (parseDecimal(payment.amount) || 0);
+                }
+                return total;
+            }, 0);
+        }
+
+        function shouldWarnAboutPaymentTotalMismatch() {
+            const assetCurrency = (assetCurrencySelect?.value || "").toUpperCase();
+            const purchasePrice = parseDecimal(purchasePriceInput?.value);
+            if (assetCurrency !== "EUR" || purchasePrice === null) {
+                return false;
+            }
+
+            const rowsWithPaymentData = getPaymentRows().filter((row) => {
+                const payment = getPaymentRowValues(row);
+                return payment.amount || payment.date || payment.eurAmount;
+            });
+            if (!rowsWithPaymentData.length) {
+                return false;
+            }
+
+            return Math.abs(getPaymentEurTotal() - purchasePrice) > 0.01;
         }
 
         function getSelectedAssetTagStandard() {
@@ -300,22 +450,53 @@
 
         statusSelect?.addEventListener("change", syncCustomStatusField);
         syncCustomStatusField();
+        addPaymentButton?.addEventListener("click", addPaymentRow);
+        fillPaymentNotesButton?.addEventListener("click", fillPaymentNotesFromRows);
+        paymentsList?.addEventListener("click", (event) => {
+            const removeButton = event.target.closest("[data-remove-payment]");
+            if (!removeButton) {
+                return;
+            }
+            removeButton.closest("[data-payment-row]")?.remove();
+            updateRemovePaymentButtons();
+        });
+        updateRemovePaymentButtons();
 
         form.addEventListener("submit", (event) => {
             confirmField.value = "";
+            if (confirmPaymentMismatchField) {
+                confirmPaymentMismatchField.value = "";
+            }
             if (!isNonstandardAssetTag(assetTagInput?.value)) {
-                return;
+                if (!shouldWarnAboutPaymentTotalMismatch()) {
+                    return;
+                }
+            } else {
+                const confirmed = window.confirm(
+                    "This inventory number differs from the numbering pattern currently used in the database. Do you want to save it anyway?"
+                );
+                if (!confirmed) {
+                    event.preventDefault();
+                    return;
+                }
+
+                confirmField.value = "yes";
             }
 
-            const confirmed = window.confirm(
-                "This inventory number differs from the numbering pattern currently used in the database. Do you want to save it anyway?"
-            );
-            if (!confirmed) {
-                event.preventDefault();
-                return;
+            if (shouldWarnAboutPaymentTotalMismatch()) {
+                const purchasePrice = parseDecimal(purchasePriceInput?.value) || 0;
+                const paymentTotal = getPaymentEurTotal();
+                const confirmed = window.confirm(
+                    `Payment total mismatch warning.\n\nPurchase price is ${purchasePrice.toFixed(2)} EUR, but the sum of payment EUR equivalents is ${paymentTotal.toFixed(2)} EUR.\n\nDo you want to save anyway or cancel and correct the payments?`
+                );
+                if (!confirmed) {
+                    event.preventDefault();
+                    return;
+                }
+                if (confirmPaymentMismatchField) {
+                    confirmPaymentMismatchField.value = "yes";
+                }
             }
-
-            confirmField.value = "yes";
         });
     })();
 </script>
