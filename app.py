@@ -287,6 +287,56 @@ def audit_log_field_changes(
     return logged
 
 
+def format_project_audit_value(field_name: str, value) -> str:
+    if value in (None, ""):
+        return "-"
+    if field_name == "project_id":
+        try:
+            project = get_project_by_id(int(value))
+        except (TypeError, ValueError):
+            project = None
+        return project.get("project_number") if project else "-"
+    if field_name == "donor_id":
+        try:
+            donor = get_donor_by_id(int(value))
+        except (TypeError, ValueError):
+            donor = None
+        return donor.get("donor_name") if donor else "-"
+    return stringify_audit_value(value) or "-"
+
+
+def audit_log_project_field_changes(
+    *,
+    entity_id: Optional[int],
+    entity_label: Optional[str],
+    old_record: dict,
+    new_record: dict,
+    fields: list[str],
+    request: Optional[Request] = None,
+) -> int:
+    logged = 0
+    for field_name in fields:
+        old_value = old_record.get(field_name)
+        new_value = new_record.get(field_name)
+        if stringify_audit_value(old_value) == stringify_audit_value(new_value):
+            continue
+        old_display = format_project_audit_value(field_name, old_value)
+        new_display = format_project_audit_value(field_name, new_value)
+        audit_log_event(
+            entity_type="Project",
+            entity_id=entity_id,
+            entity_label=entity_label,
+            action="updated",
+            field_name=field_name,
+            old_value=old_display,
+            new_value=new_display,
+            summary=f"{field_name}: {old_display} -> {new_display}",
+            request=request,
+        )
+        logged += 1
+    return logged
+
+
 def normalize_assignment_compare_value(value) -> str:
     return (stringify_audit_value(value) or "").strip()
 
@@ -3519,6 +3569,22 @@ def get_asset_project_total_percent(asset_id: int, exclude_asset_project_id: Opt
             except Exception:
                 continue
     return total
+
+
+def describe_project_funding_payload(payload: dict) -> str:
+    project = get_project_by_id(payload.get("project_id")) if payload.get("project_id") else None
+    donor = get_donor_by_id(payload.get("donor_id")) if payload.get("donor_id") else None
+    project_label = project.get("project_number") if project else f"Project #{payload.get('project_id') or '-'}"
+    parts = [project_label]
+    if donor:
+        parts.append(f"donor {donor.get('donor_name')}")
+    if payload.get("allocation_percent") is not None:
+        parts.append(f"{payload.get('allocation_percent')}%")
+    if payload.get("is_purchase_origin") is True:
+        parts.append("purchase origin")
+    if payload.get("is_current") is True:
+        parts.append("current")
+    return " | ".join(str(part) for part in parts if part)
 
 
 def get_asset_project_form_context(asset_id: int) -> dict:
@@ -8191,7 +8257,7 @@ def admin_asset_project_create(
             entity_id=asset_id,
             entity_label=asset.get("asset_tag_number"),
             action="created",
-            summary=f"Added project funding for {asset.get('asset_tag_number')}: project #{payload.get('project_id')}",
+            summary=f"Added project funding for {asset.get('asset_tag_number')}: {describe_project_funding_payload(payload)}",
             request=request,
         )
     except Exception as error:
@@ -8272,8 +8338,7 @@ def admin_asset_project_update(
         if payload["is_primary"]:
             supabase.table("asset_projects").update({"is_primary": False}).eq("asset_id", asset_id).execute()
         supabase.table("asset_projects").update(payload).eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
-        audit_log_field_changes(
-            entity_type="Project",
+        audit_log_project_field_changes(
             entity_id=asset_project_id,
             entity_label=asset.get("asset_tag_number"),
             old_record=old_project,
@@ -8315,7 +8380,7 @@ def admin_asset_project_delete(request: Request, asset_id: int, asset_project_id
             entity_id=asset_project_id,
             entity_label=asset.get("asset_tag_number"),
             action="deleted",
-            summary=f"Removed project funding for {asset.get('asset_tag_number')}: project #{old_project.get('project_id') or '-'}",
+            summary=f"Removed project funding for {asset.get('asset_tag_number')}: {describe_project_funding_payload(old_project)}",
             request=request,
         )
     except Exception as error:
