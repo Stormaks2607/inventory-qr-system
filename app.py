@@ -1957,7 +1957,7 @@ def build_sync_context() -> dict:
                 "responsible_person": get_person_display_name(person) if person else None,
                 "department": assignment.get("assignment_department") or person.get("department") or location.get("department"),
                 "city": location.get("city") or location.get("name"),
-                "location_name": get_location_display_name(location) if location else None,
+                "location_name": get_office_location_name(location) if location else None,
             }
 
     projects_by_asset_id: dict[int, list[dict]] = {}
@@ -3151,7 +3151,7 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
             or (location.get("department") if location else None)
         ),
         "city": location.get("city") if location else None,
-        "location_name": get_location_display_name(location) if location else None,
+        "location_name": get_office_location_name(location) if location else None,
     }
 
 
@@ -3210,7 +3210,7 @@ def enrich_assignment(assignment: dict) -> dict:
             or (location.get("department") if location else None)
         ),
         "city": location.get("city") if location else None,
-        "location_name": get_location_display_name(location) if location else None,
+        "location_name": get_office_location_name(location) if location else None,
     }
 
 
@@ -3335,6 +3335,19 @@ def get_donor_by_id(donor_id: int) -> Optional[dict]:
     return response.data[0]
 
 
+def get_location_by_id(location_id: int) -> Optional[dict]:
+    response = (
+        supabase.table("locations")
+        .select("*")
+        .eq("location_id", location_id)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        return None
+    return response.data[0]
+
+
 def get_project_form_values(project: Optional[dict] = None) -> dict:
     project = project or {}
     return {
@@ -3355,6 +3368,14 @@ def get_donor_form_values(donor: Optional[dict] = None) -> dict:
     }
 
 
+def get_location_form_values(location: Optional[dict] = None) -> dict:
+    location = location or {}
+    return {
+        "city": location.get("city") or "",
+        "name": location.get("name") or location.get("office") or "",
+    }
+
+
 def describe_reference_data_error(error: Exception, entity_label: str, unique_field: str) -> str:
     if not isinstance(error, APIError):
         return f"{entity_label} could not be saved due to an unexpected database error."
@@ -3364,7 +3385,11 @@ def describe_reference_data_error(error: Exception, entity_label: str, unique_fi
     combined = " ".join(part for part in [message, details] if part).lower()
 
     if unique_field in combined and ("duplicate" in combined or "unique" in combined):
-        field_label = "Project number" if unique_field == "project_number" else "Donor name"
+        field_label = {
+            "project_number": "Project number",
+            "donor_name": "Donor name",
+            "name": "Location name",
+        }.get(unique_field, unique_field.replace("_", " ").title())
         return f"{field_label} already exists."
 
     if entity_label == "Project" and "projects_pkey" in combined:
@@ -3372,6 +3397,8 @@ def describe_reference_data_error(error: Exception, entity_label: str, unique_fi
 
     if entity_label == "Donor" and "donors_pkey" in combined:
         return "Donor could not be saved because the database donor_id sequence is out of sync."
+    if entity_label == "Location" and "locations_pkey" in combined:
+        return "Location could not be saved because the database location_id sequence is out of sync."
 
     return f"{entity_label} could not be saved: {message}"
 
@@ -3756,6 +3783,11 @@ def get_location_display_name(location: dict) -> str:
     if office and city and str(office).strip().casefold() != str(city).strip().casefold():
         return f"{city} / {office}"
     return str(office or city or "").strip() or f"Location #{location.get('location_id')}"
+
+
+def get_office_location_name(location: dict) -> Optional[str]:
+    value = location.get("name") or location.get("office") or location.get("building") or location.get("room")
+    return str(value).strip() if value else None
 
 
 def get_default_offboarding_location_id(asset: dict, locations: list[dict]) -> Optional[int]:
@@ -4243,6 +4275,15 @@ def list_assignment_department_options() -> list[str]:
     return sorted(values, key=lambda value: value.casefold())
 
 
+def list_assignment_city_options() -> list[str]:
+    values = {
+        str(location.get("city") or "").strip()
+        for location in list_locations()
+        if str(location.get("city") or "").strip()
+    }
+    return sorted(values, key=lambda value: value.casefold())
+
+
 RESPONSIBILITY_SCOPE_TYPES = {
     "department": "Department",
     "city": "City",
@@ -4377,14 +4418,21 @@ def get_assignment_form_context(asset: dict) -> dict:
     if current_department and current_department not in department_options:
         department_options.append(current_department)
         department_options.sort(key=lambda value: value.casefold())
+    city_options = list_assignment_city_options()
+    current_city = current_assignment.get("city") or ""
+    if current_city and current_city not in city_options:
+        city_options.append(current_city)
+        city_options.sort(key=lambda value: value.casefold())
     return {
         "people": list_people(),
         "locations": list_assignment_location_options(current_assignment.get("location_id")),
         "department_options": department_options,
+        "city_options": city_options,
         "assignment_form": {
             "person_id": current_assignment.get("person_id") or "",
             "location_id": current_assignment.get("location_id") or "",
             "assignment_department": current_department,
+            "city": current_city,
             "assignment_date": current_assignment.get("assignment_date") or "",
             "status": current_assignment.get("status") or asset.get("current_status") or "",
             "notes": current_assignment.get("notes") or "",
@@ -7351,6 +7399,7 @@ def admin_reference_data(
     request: Request,
     edit_project_id: Optional[int] = None,
     edit_donor_id: Optional[int] = None,
+    edit_location_id: Optional[int] = None,
 ):
     redirect = require_admin(request)
     if redirect:
@@ -7358,8 +7407,10 @@ def admin_reference_data(
 
     projects = list_projects()
     donors = list_donors()
+    locations = list_assignment_location_options()
     edit_project = get_project_by_id(edit_project_id) if edit_project_id else None
     edit_donor = get_donor_by_id(edit_donor_id) if edit_donor_id else None
+    edit_location = get_location_by_id(edit_location_id) if edit_location_id else None
 
     return templates.TemplateResponse(
         request=request,
@@ -7367,16 +7418,101 @@ def admin_reference_data(
         context={
             "projects": projects,
             "donors": donors,
+            "locations": locations,
             "edit_project": edit_project,
             "edit_donor": edit_donor,
+            "edit_location": edit_location,
             "project_form": get_project_form_values(edit_project),
             "donor_form": get_donor_form_values(edit_donor),
+            "location_form": get_location_form_values(edit_location),
             "flash": pop_flash(request),
             "active_page": "reference_data",
             "page_title": "Reference Data",
             "admin_username": request.session.get("admin_username"),
         },
     )
+
+
+@app.post("/admin/reference-data/locations")
+def admin_reference_data_location_create(
+    request: Request,
+    city: str = Form(""),
+    name: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can create office locations.", "/admin/reference-data#locations")
+    if redirect:
+        return redirect
+
+    city = city.strip()
+    name = name.strip()
+    if not city:
+        set_flash(request, "error", "City is required.")
+        return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
+    if not name:
+        set_flash(request, "error", "Office / location name is required.")
+        return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
+
+    payload = {
+        "location_id": get_next_numeric_id("locations", "location_id"),
+        "city": city,
+        "name": name,
+        "department": None,
+    }
+
+    try:
+        supabase.table("locations").insert(payload).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_reference_data_error(error, "Location", "name"))
+        return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
+
+    set_flash(request, "success", f"Location {city} / {name} was added.")
+    return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
+
+
+@app.post("/admin/reference-data/locations/{location_id}")
+def admin_reference_data_location_update(
+    request: Request,
+    location_id: int,
+    city: str = Form(""),
+    name: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can update office locations.", "/admin/reference-data#locations")
+    if redirect:
+        return redirect
+
+    location = get_location_by_id(location_id)
+    if not location:
+        raise HTTPException(status_code=404, detail="Location not found")
+
+    city = city.strip()
+    name = name.strip()
+    if not city:
+        set_flash(request, "error", "City is required.")
+        return RedirectResponse(url=f"/admin/reference-data?edit_location_id={location_id}#locations", status_code=303)
+    if not name:
+        set_flash(request, "error", "Office / location name is required.")
+        return RedirectResponse(url=f"/admin/reference-data?edit_location_id={location_id}#locations", status_code=303)
+
+    payload = {
+        "city": city,
+        "name": name,
+        "department": None,
+    }
+
+    try:
+        supabase.table("locations").update(payload).eq("location_id", location_id).execute()
+    except Exception as error:
+        set_flash(request, "error", describe_reference_data_error(error, "Location", "name"))
+        return RedirectResponse(url=f"/admin/reference-data?edit_location_id={location_id}#locations", status_code=303)
+
+    set_flash(request, "success", f"Location {city} / {name} was updated.")
+    return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
 
 
 @app.post("/admin/reference-data/projects")

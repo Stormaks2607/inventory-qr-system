@@ -620,15 +620,26 @@
             </div>
 
             <div class="field">
+                <label for="assignment_city">City</label>
+                <select id="assignment_city" name="assignment_city" data-city-select>
+                    <option value="">No city</option>
+                    {% for city in city_options %}
+                    <option value="{{ city }}" {% if assignment_form.city == city %}selected{% endif %}>{{ city }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field">
                 <label for="location_id">Office / location</label>
-                <select id="location_id" name="location_id">
-                    <option value="">No location</option>
+                <select id="location_id" name="location_id" data-location-select>
+                    <option value="" data-city="">No office / location</option>
                     {% for location in locations %}
-                    <option value="{{ location.location_id }}" {% if assignment_form.location_id|string == location.location_id|string %}selected{% endif %}>
-                        {{ location.display_name or location.city or location.name or ('Location #' ~ location.location_id) }}
+                    <option value="{{ location.location_id }}" data-city="{{ location.city or '' }}" {% if assignment_form.location_id|string == location.location_id|string %}selected{% endif %}>
+                        {{ location.name or location.office or location.display_name or ('Location #' ~ location.location_id) }}
                     </option>
                     {% endfor %}
                 </select>
+                <div class="muted asset-helper"><a href="/admin/reference-data#locations">Manage office locations</a></div>
             </div>
 
             <div class="field">
@@ -726,6 +737,8 @@
 
         const personSelect = form.querySelector("[data-person-select]");
         const departmentSelect = form.querySelector("[data-department-select]");
+        const citySelect = form.querySelector("[data-city-select]");
+        const locationSelect = form.querySelector("[data-location-select]");
         let departmentTouched = Boolean(departmentSelect?.value);
 
         departmentSelect?.addEventListener("change", () => {
@@ -742,6 +755,28 @@
                 departmentSelect.value = department;
             }
         });
+
+        function filterLocationsByCity() {
+            if (!citySelect || !locationSelect) {
+                return;
+            }
+            const selectedCity = (citySelect.value || "").trim().toLowerCase();
+            let selectedLocationVisible = false;
+            Array.from(locationSelect.options).forEach((option) => {
+                const optionCity = (option.dataset.city || "").trim().toLowerCase();
+                const visible = !option.value || !selectedCity || optionCity === selectedCity;
+                option.hidden = !visible;
+                if (option.selected && visible) {
+                    selectedLocationVisible = true;
+                }
+            });
+            if (!selectedLocationVisible) {
+                locationSelect.value = "";
+            }
+        }
+
+        citySelect?.addEventListener("change", filterLocationsByCity);
+        filterLocationsByCity();
     })();
 </script>
 {% endif %}

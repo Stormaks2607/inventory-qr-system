@@ -4,7 +4,7 @@
 {% set can_write = request.session.get('admin_role', 'admin') == 'admin' %}
 <section class="hero">
     <h2>Reference Data</h2>
-    <p>Manage low-frequency reference records used across the asset system. Projects and donors configured here become available in asset funding allocations.</p>
+    <p>Manage low-frequency reference records used across the asset system: projects, donors, and office locations.</p>
 </section>
 
 {% if flash %}
@@ -162,5 +162,65 @@
             </table>
         </div>
     </article>
+</section>
+
+<section class="panel" id="locations" style="margin-top: 24px;">
+    <div class="toolbar" style="justify-content: space-between; align-items: center;">
+        <div>
+            <h3 style="margin-bottom: 6px;">Office Locations</h3>
+            <p class="muted" style="margin: 0;">Maintain physical offices and storage locations used in asset assignment.</p>
+        </div>
+        <div class="badge">{{ locations|length }} total</div>
+    </div>
+
+    {% if can_write %}
+    <form method="post" action="{% if edit_location %}/admin/reference-data/locations/{{ edit_location.location_id }}{% else %}/admin/reference-data/locations{% endif %}" class="form-grid">
+        <div class="field">
+            <label for="location_city">City</label>
+            <input id="location_city" name="city" type="text" value="{{ location_form.city }}" required>
+        </div>
+
+        <div class="field">
+            <label for="location_name">Office / location</label>
+            <input id="location_name" name="name" type="text" value="{{ location_form.name }}" placeholder="e.g. Office 3, Warehouse, Main office" required>
+        </div>
+
+        <div class="toolbar field full" style="margin-bottom: 0;">
+            <button class="btn" type="submit">{% if edit_location %}Save location{% else %}Add location{% endif %}</button>
+            {% if edit_location %}
+            <a class="btn secondary" href="/admin/reference-data#locations">Cancel edit</a>
+            {% endif %}
+        </div>
+    </form>
+    {% endif %}
+
+    <div class="table-wrap" style="margin-top: 22px;">
+        <table>
+            <thead>
+                <tr>
+                    <th>City</th>
+                    <th>Office / location</th>
+                    {% if can_write %}
+                    <th>Action</th>
+                    {% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for location in locations %}
+                <tr>
+                    <td><strong>{{ location.city or "-" }}</strong></td>
+                    <td>{{ location.name or location.office or location.display_name or "-" }}</td>
+                    {% if can_write %}
+                    <td><a href="/admin/reference-data?edit_location_id={{ location.location_id }}#locations">Edit</a></td>
+                    {% endif %}
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="{% if can_write %}3{% else %}2{% endif %}" class="muted">No office locations have been added yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </section>
 {% endblock %}
