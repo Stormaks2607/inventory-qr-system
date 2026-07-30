@@ -340,7 +340,12 @@ def format_assignment_change_value(field_name: str, value) -> str:
     return stringify_audit_value(value) or "-"
 
 
-def log_assignment_field_changes(asset: dict, assignment_changes: list[dict], request: Request, event_date: str) -> None:
+def log_assignment_field_changes(
+    asset: dict,
+    assignment_changes: list[dict],
+    request: Request,
+    event_date: Optional[str] = None,
+) -> None:
     for change in assignment_changes:
         old_display = format_assignment_change_value(change["field_name"], change["old_value"])
         new_display = format_assignment_change_value(change["field_name"], change["new_value"])
@@ -7890,7 +7895,6 @@ def admin_asset_assignment_update(
                 new_value="Warehouse",
                 summary=f"Assignment closed for {asset.get('asset_tag_number')}: {old_responsible} -> Warehouse",
                 request=request,
-                event_date=assignment_date,
                 event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
             )
             set_flash(request, "success", "Current assignment was closed and the asset is now unassigned.")
@@ -7935,7 +7939,7 @@ def admin_asset_assignment_update(
             set_flash(request, "error", describe_assignment_update_error(exc))
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
         set_flash(request, "success", "Current assignment was updated.")
-        log_assignment_field_changes(asset, assignment_changes, request, assignment_date)
+        log_assignment_field_changes(asset, assignment_changes, request)
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     try:
@@ -7969,7 +7973,6 @@ def admin_asset_assignment_update(
         new_value=new_responsible,
         summary=f"{asset.get('asset_tag_number')} reassigned: {old_responsible} -> {new_responsible}",
         request=request,
-        event_date=assignment_date,
         event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
     )
     transfer_logged_fields = {"person_id"}
@@ -7977,7 +7980,6 @@ def admin_asset_assignment_update(
         asset,
         [change for change in assignment_changes if change["field_name"] not in transfer_logged_fields],
         request,
-        assignment_date,
     )
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
