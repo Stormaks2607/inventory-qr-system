@@ -4573,15 +4573,34 @@ def describe_asset_create_error(error: Exception) -> str:
     return f"Asset could not be created: {message}"
 
 
-def get_asset_tag_standard(usage_type: Optional[str] = None) -> dict:
+def list_asset_tag_rows(batch_size: int = 1000) -> list[dict]:
+    rows: list[dict] = []
+    start = 0
+    while True:
+        response = (
+            supabase.table("assets")
+            .select("asset_tag_number")
+            .order("asset_tag_number")
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        start += len(batch)
+    return rows
+
+
+def get_asset_tag_standard(usage_type: Optional[str] = None, asset_tag_rows: Optional[list[dict]] = None) -> dict:
     try:
-        response = supabase.table("assets").select("asset_tag_number").execute()
+        rows = asset_tag_rows if asset_tag_rows is not None else list_asset_tag_rows()
     except Exception:
         return {"prefix": "", "width": 0, "example": "", "suggested_next": ""}
 
     requested_usage_type = usage_type if usage_type in ASSET_USAGE_TYPE_LABELS else None
     sequence_map: dict[str, dict[str, int]] = {}
-    for row in response.data or []:
+    for row in rows:
         asset_tag = normalize_asset_tag(row.get("asset_tag_number") or "")
         if requested_usage_type and infer_asset_usage_type(asset_tag) != requested_usage_type:
             continue
@@ -4616,9 +4635,13 @@ def get_asset_tag_standard(usage_type: Optional[str] = None) -> dict:
 
 
 def get_asset_tag_standards() -> dict:
+    try:
+        asset_tag_rows = list_asset_tag_rows()
+    except Exception:
+        asset_tag_rows = []
     return {
-        "standard": get_asset_tag_standard("standard"),
-        "low_cost": get_asset_tag_standard("low_cost"),
+        "standard": get_asset_tag_standard("standard", asset_tag_rows),
+        "low_cost": get_asset_tag_standard("low_cost", asset_tag_rows),
     }
 
 
