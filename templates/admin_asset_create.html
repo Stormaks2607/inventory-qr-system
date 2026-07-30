@@ -67,7 +67,7 @@
             <div class="field">
                 <label for="asset_tag_number">Asset tag/Inventory No.</label>
                 <input id="asset_tag_number" name="asset_tag_number" type="text" value="{{ asset_form.asset_tag_number }}" required>
-                <div class="muted asset-helper">
+                <div class="muted asset-helper" data-asset-tag-helper>
                     {% if asset_tag_standard.suggested_next %}
                     Suggested next number: {{ asset_tag_standard.suggested_next }}
                     {% endif %}
@@ -224,20 +224,50 @@
         }
 
         const assetTagInput = form.querySelector("#asset_tag_number");
+        const usageTypeSelect = form.querySelector("#usage_type");
+        const assetTagHelper = form.querySelector("[data-asset-tag-helper]");
         const confirmField = form.querySelector("[data-confirm-nonstandard]");
         const statusSelect = form.querySelector("[data-asset-status-select]");
         const statusCustomInput = form.querySelector("[data-asset-status-custom]");
         const statusRow = form.querySelector("[data-asset-status-row]");
-        const standardPrefix = {{ asset_tag_standard.prefix|tojson }};
-        const standardWidth = {{ asset_tag_standard.width|tojson }};
-        const hasStandard = Boolean(standardPrefix) && Boolean(standardWidth);
+        const assetTagStandards = {{ asset_tag_standards|tojson }};
+        const suggestedTags = Object.values(assetTagStandards || {})
+            .map((standard) => normalizeAssetTag(standard?.suggested_next))
+            .filter(Boolean);
 
         function normalizeAssetTag(value) {
             return (value || "").trim().toUpperCase().replace(/\s+/g, " ");
         }
 
+        function getSelectedAssetTagStandard() {
+            return assetTagStandards?.[usageTypeSelect?.value || "standard"] || assetTagStandards?.standard || {};
+        }
+
+        function updateAssetTagHelper() {
+            const suggestedNext = getSelectedAssetTagStandard()?.suggested_next || "";
+            if (assetTagHelper) {
+                assetTagHelper.textContent = suggestedNext ? `Suggested next number: ${suggestedNext}` : "";
+            }
+        }
+
+        function syncAssetTagForUsageType() {
+            const selectedStandard = getSelectedAssetTagStandard();
+            const suggestedNext = normalizeAssetTag(selectedStandard?.suggested_next);
+            const currentTag = normalizeAssetTag(assetTagInput?.value);
+            const canReplace = !currentTag || suggestedTags.includes(currentTag);
+
+            if (assetTagInput && suggestedNext && canReplace) {
+                assetTagInput.value = suggestedNext;
+            }
+            updateAssetTagHelper();
+        }
+
         function isNonstandardAssetTag(value) {
             const normalized = normalizeAssetTag(value);
+            const selectedStandard = getSelectedAssetTagStandard();
+            const standardPrefix = selectedStandard?.prefix || "";
+            const standardWidth = selectedStandard?.width || 0;
+            const hasStandard = Boolean(standardPrefix) && Boolean(standardWidth);
             if (!normalized || !hasStandard) {
                 return false;
             }
@@ -264,6 +294,9 @@
                 statusCustomInput.value = "";
             }
         }
+
+        usageTypeSelect?.addEventListener("change", syncAssetTagForUsageType);
+        syncAssetTagForUsageType();
 
         statusSelect?.addEventListener("change", syncCustomStatusField);
         syncCustomStatusField();

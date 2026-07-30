@@ -4573,15 +4573,18 @@ def describe_asset_create_error(error: Exception) -> str:
     return f"Asset could not be created: {message}"
 
 
-def get_asset_tag_standard() -> dict:
+def get_asset_tag_standard(usage_type: Optional[str] = None) -> dict:
     try:
         response = supabase.table("assets").select("asset_tag_number").execute()
     except Exception:
         return {"prefix": "", "width": 0, "example": "", "suggested_next": ""}
 
+    requested_usage_type = usage_type if usage_type in ASSET_USAGE_TYPE_LABELS else None
     sequence_map: dict[str, dict[str, int]] = {}
     for row in response.data or []:
         asset_tag = normalize_asset_tag(row.get("asset_tag_number") or "")
+        if requested_usage_type and infer_asset_usage_type(asset_tag) != requested_usage_type:
+            continue
         match = re.match(r"^(.*?)(\d+)$", asset_tag)
         if not match:
             continue
@@ -4612,8 +4615,15 @@ def get_asset_tag_standard() -> dict:
     }
 
 
-def suggest_next_asset_tag() -> str:
-    return get_asset_tag_standard().get("suggested_next") or ""
+def get_asset_tag_standards() -> dict:
+    return {
+        "standard": get_asset_tag_standard("standard"),
+        "low_cost": get_asset_tag_standard("low_cost"),
+    }
+
+
+def suggest_next_asset_tag(usage_type: str = "standard") -> str:
+    return get_asset_tag_standard(usage_type).get("suggested_next") or ""
 
 
 def get_asset_tag_warning(asset_tag_number: str, standard: Optional[dict] = None) -> str:
@@ -6208,7 +6218,8 @@ def admin_asset_new(request: Request):
     if redirect:
         return redirect
 
-    asset_tag_standard = get_asset_tag_standard()
+    asset_tag_standards = get_asset_tag_standards()
+    asset_tag_standard = asset_tag_standards.get("standard") or {}
     return templates.TemplateResponse(
         request=request,
         name="admin_asset_create.html",
@@ -6216,6 +6227,7 @@ def admin_asset_new(request: Request):
             "asset_form": get_asset_form_values(),
             **get_asset_create_options(),
             "asset_tag_standard": asset_tag_standard,
+            "asset_tag_standards": asset_tag_standards,
             "asset_tag_warning": "",
             "flash": pop_flash(request),
             "active_page": "assets",
@@ -6254,7 +6266,7 @@ def admin_asset_create(
         return redirect
 
     resolved_status = current_status_custom.strip() if current_status == "__custom__" else current_status.strip()
-    asset_tag_standard = get_asset_tag_standard()
+    asset_tag_standards = get_asset_tag_standards()
     asset_form = {
         "asset_tag_number": normalize_asset_tag(asset_tag_number),
         "usage_type": normalize_asset_usage_type(usage_type, asset_tag_number),
@@ -6277,6 +6289,7 @@ def admin_asset_create(
         "payment_status": payment_status.strip() or "paid",
         "payment_notes": payment_notes.strip(),
     }
+    asset_tag_standard = asset_tag_standards.get(asset_form["usage_type"]) or asset_tag_standards.get("standard") or {}
 
     format_error = validate_asset_tag_format(asset_form["asset_tag_number"])
     if format_error:
@@ -6287,6 +6300,7 @@ def admin_asset_create(
                 "asset_form": asset_form,
                 **get_asset_create_options(),
                 "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": "",
                 "flash": {"level": "error", "message": format_error},
                 "active_page": "assets",
@@ -6304,6 +6318,7 @@ def admin_asset_create(
                 "asset_form": asset_form,
                 **get_asset_create_options(),
                 "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": "",
                 "flash": {"level": "error", "message": "Enter a custom asset status or choose one from the list."},
                 "active_page": "assets",
@@ -6322,6 +6337,7 @@ def admin_asset_create(
                 "asset_form": asset_form,
                 **get_asset_create_options(),
                 "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
                 "flash": {"level": "error", "message": "Please confirm saving this non-standard inventory number."},
                 "active_page": "assets",
@@ -6339,6 +6355,7 @@ def admin_asset_create(
                 "asset_form": asset_form,
                 **get_asset_create_options(),
                 "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
                 "flash": {"level": "error", "message": f"Asset tag/Inventory No. '{asset_form['asset_tag_number']}' already exists."},
                 "active_page": "assets",
@@ -6373,6 +6390,7 @@ def admin_asset_create(
                 "asset_form": asset_form,
                 **get_asset_create_options(),
                 "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
                 "flash": {"level": "error", "message": "Quantity must be an integer and purchase price must be a number."},
                 "active_page": "assets",
@@ -6402,6 +6420,7 @@ def admin_asset_create(
                     "asset_form": asset_form,
                     **get_asset_create_options(),
                     "asset_tag_standard": asset_tag_standard,
+                    "asset_tag_standards": asset_tag_standards,
                     "asset_tag_warning": asset_tag_warning,
                     "flash": {"level": "error", "message": describe_asset_payment_error(error)},
                     "active_page": "assets",
@@ -6425,6 +6444,7 @@ def admin_asset_create(
                 "asset_form": asset_form,
                 **get_asset_create_options(),
                 "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
                 "flash": {"level": "error", "message": describe_asset_create_error(exc)},
                 "active_page": "assets",
