@@ -711,6 +711,7 @@
                 <th>Responsible person</th>
                 <th>Department</th>
                 <th>City</th>
+                <th>Office / location</th>
                 <th>Assignment type</th>
                 <th>Status</th>
                 <th>Changed by</th>
@@ -726,6 +727,7 @@
                 <td>{{ assignment.responsible_person or "-" }}</td>
                 <td>{{ assignment.department or "-" }}</td>
                 <td>{{ assignment.city or "-" }}</td>
+                <td>{{ assignment.location_name or "-" }}</td>
                 <td>{{ (assignment.assignment_scope or "personal")|replace("_", " ")|title }}</td>
                 <td>
                     <span class="badge {% if (assignment.status or '')|upper == 'LOST' %}warn{% endif %}">
@@ -738,7 +740,7 @@
             </tr>
             {% else %}
             <tr>
-                <td colspan="10" class="muted">No assignment history found for this asset.</td>
+                <td colspan="11" class="muted">No assignment history found for this asset.</td>
             </tr>
             {% endfor %}
         </tbody>

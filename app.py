@@ -295,7 +295,7 @@ def build_assignment_field_changes(old_assignment: dict, new_assignment: dict) -
     fields = [
         ("person_id", "Responsible person"),
         ("assignment_department", "Department"),
-        ("location_id", "Location"),
+        ("location_id", "Office / location"),
         ("assignment_date", "Assignment date"),
         ("status", "Status"),
         ("notes", "Notes"),
@@ -318,6 +318,44 @@ def build_assignment_field_changes(old_assignment: dict, new_assignment: dict) -
             }
         )
     return changes
+
+
+def format_assignment_change_value(field_name: str, value) -> str:
+    if value in (None, ""):
+        return "-"
+    if field_name == "person_id":
+        try:
+            person = get_person_by_id(int(value))
+        except (TypeError, ValueError):
+            person = None
+        return get_person_display_name(person) if person else "-"
+    if field_name == "location_id":
+        try:
+            location = get_location_by_id(int(value))
+        except (TypeError, ValueError):
+            location = None
+        if not location:
+            return "-"
+        return get_office_location_name(location) or get_location_display_name(location)
+    return stringify_audit_value(value) or "-"
+
+
+def log_assignment_field_changes(asset: dict, assignment_changes: list[dict], request: Request, event_date: str) -> None:
+    for change in assignment_changes:
+        old_display = format_assignment_change_value(change["field_name"], change["old_value"])
+        new_display = format_assignment_change_value(change["field_name"], change["new_value"])
+        audit_log_event(
+            entity_type="Assignment",
+            entity_id=asset.get("asset_id"),
+            entity_label=asset.get("asset_tag_number"),
+            action="updated",
+            field_name=change["field_name"],
+            old_value=old_display,
+            new_value=new_display,
+            summary=f"{asset.get('asset_tag_number')} assignment {change['label']}: {old_display} -> {new_display}",
+            request=request,
+            event_date=event_date,
+        )
 
 
 def format_audit_datetime(value) -> str:
@@ -7878,12 +7916,13 @@ def admin_asset_assignment_update(
         assignment_department,
     )
 
+    assignment_changes = build_assignment_field_changes(current_assignment or {}, new_assignment)
+
     if (
         current_assignment
         and current_assignment.get("person_id") == parsed_person_id
         and current_assignment.get("location_id") == parsed_location_id
     ):
-        assignment_changes = build_assignment_field_changes(current_assignment, new_assignment)
         if not assignment_changes:
             set_flash(request, "success", "Current assignment already matches the submitted values.")
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -7896,23 +7935,7 @@ def admin_asset_assignment_update(
             set_flash(request, "error", describe_assignment_update_error(exc))
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
         set_flash(request, "success", "Current assignment was updated.")
-        for change in assignment_changes:
-            audit_log_event(
-                entity_type="Assignment",
-                entity_id=asset_id,
-                entity_label=asset.get("asset_tag_number"),
-                action="updated",
-                field_name=change["field_name"],
-                old_value=change["old_value"],
-                new_value=change["new_value"],
-                summary=(
-                    f"{asset.get('asset_tag_number')} assignment {change['label']}: "
-                    f"{stringify_audit_value(change['old_value']) or '-'} -> "
-                    f"{stringify_audit_value(change['new_value']) or '-'}"
-                ),
-                request=request,
-                event_date=assignment_date,
-            )
+        log_assignment_field_changes(asset, assignment_changes, request, assignment_date)
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     try:
@@ -7948,6 +7971,13 @@ def admin_asset_assignment_update(
         request=request,
         event_date=assignment_date,
         event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
+    )
+    transfer_logged_fields = {"person_id"}
+    log_assignment_field_changes(
+        asset,
+        [change for change in assignment_changes if change["field_name"] not in transfer_logged_fields],
+        request,
+        assignment_date,
     )
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
