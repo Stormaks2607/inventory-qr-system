@@ -2,6 +2,24 @@
 
 {% block content %}
 {% set can_write = request.session.get('admin_role', 'admin') != 'viewer' %}
+<style>
+    .assignment-form-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+    }
+
+    .assignment-form-grid .field.full,
+    .assignment-form-grid .toolbar {
+        grid-column: 1 / -1;
+    }
+
+    @media (max-width: 900px) {
+        .assignment-form-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
 <section class="hero">
     <h2>{{ asset.asset_tag_number }}</h2>
     <p>Detailed admin view for this asset. This screen is the base for future edit, reassignment, audit, and sync review actions.</p>
@@ -595,7 +613,7 @@
     <article class="panel">
         <h3>Update Assignment</h3>
         <p class="muted">Choose a location to create or replace the active assignment. Responsible person is optional for shared assets. Leave both empty to close the current assignment.</p>
-        <form method="post" action="/admin/assets/{{ asset.asset_id }}/assignment" class="form-grid" data-assignment-form>
+        <form method="post" action="/admin/assets/{{ asset.asset_id }}/assignment" class="assignment-form-grid" data-assignment-form>
             <div class="field">
                 <label for="person_id">Responsible person</label>
                 <select id="person_id" name="person_id" data-person-select>
@@ -639,7 +657,6 @@
                     </option>
                     {% endfor %}
                 </select>
-                <div class="muted asset-helper"><a href="/admin/reference-data#locations">Manage office locations</a></div>
             </div>
 
             <div class="field">
