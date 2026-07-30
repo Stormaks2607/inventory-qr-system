@@ -288,7 +288,7 @@ def audit_log_field_changes(
 
 
 def normalize_assignment_compare_value(value) -> str:
-    return stringify_audit_value(value).strip()
+    return (stringify_audit_value(value) or "").strip()
 
 
 def build_assignment_field_changes(old_assignment: dict, new_assignment: dict) -> list[dict]:
