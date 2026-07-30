@@ -294,6 +294,7 @@ def normalize_assignment_compare_value(value) -> str:
 def build_assignment_field_changes(old_assignment: dict, new_assignment: dict) -> list[dict]:
     fields = [
         ("person_id", "Responsible person"),
+        ("assignment_department", "Department"),
         ("location_id", "Location"),
         ("assignment_date", "Assignment date"),
         ("status", "Status"),
@@ -1683,6 +1684,32 @@ def add_assignment_actor_fields(payload: dict, actor: str, *, created: bool = Tr
     return updated_payload
 
 
+_ASSET_ASSIGNMENT_DEPARTMENT_SUPPORTED: Optional[bool] = None
+
+
+def supports_asset_assignment_department_column() -> bool:
+    global _ASSET_ASSIGNMENT_DEPARTMENT_SUPPORTED
+    if _ASSET_ASSIGNMENT_DEPARTMENT_SUPPORTED is not None:
+        return _ASSET_ASSIGNMENT_DEPARTMENT_SUPPORTED
+
+    try:
+        supabase.table("asset_assignments").select("assignment_department").limit(1).execute()
+    except Exception:
+        _ASSET_ASSIGNMENT_DEPARTMENT_SUPPORTED = False
+        return False
+
+    _ASSET_ASSIGNMENT_DEPARTMENT_SUPPORTED = True
+    return True
+
+
+def add_assignment_department_field(payload: dict, department: Optional[str]) -> dict:
+    if not supports_asset_assignment_department_column():
+        return payload
+    updated_payload = dict(payload)
+    updated_payload["assignment_department"] = (department or "").strip() or None
+    return updated_payload
+
+
 _ASSET_PROJECT_PURCHASE_ORIGIN_SUPPORTED: Optional[bool] = None
 
 
@@ -1928,8 +1955,9 @@ def build_sync_context() -> dict:
             assignment_by_asset_id[asset_id] = {
                 **assignment,
                 "responsible_person": get_person_display_name(person) if person else None,
-                "department": person.get("department") or location.get("department"),
+                "department": assignment.get("assignment_department") or person.get("department") or location.get("department"),
                 "city": location.get("city") or location.get("name"),
+                "location_name": get_location_display_name(location) if location else None,
             }
 
     projects_by_asset_id: dict[int, list[dict]] = {}
@@ -2218,6 +2246,7 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     location = resolve_excel_location(record, person, sync_context["location_lookup"])
     if not location:
         return 0
+    assignment_department = normalize_sync_string(record.get("department_name") or person.get("department"))
 
     existing = sync_context.get("assignment_by_asset_id", {}).get(asset_id) or {}
     if (
@@ -2238,15 +2267,18 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     close_current_assignments(asset_id, assignment_date, actor)
     supabase.table("asset_assignments").insert(
         add_assignment_actor_fields(
-            {
-                "asset_id": asset_id,
-                "person_id": person.get("person_id"),
-                "location_id": location.get("location_id"),
-                "assignment_date": assignment_date,
-                "return_date": None,
-                "status": record.get("current_status"),
-                "notes": " | ".join(notes_parts) if notes_parts else None,
-            },
+            add_assignment_department_field(
+                {
+                    "asset_id": asset_id,
+                    "person_id": person.get("person_id"),
+                    "location_id": location.get("location_id"),
+                    "assignment_date": assignment_date,
+                    "return_date": None,
+                    "status": record.get("current_status"),
+                    "notes": " | ".join(notes_parts) if notes_parts else None,
+                },
+                assignment_department,
+            ),
             actor,
         )
     ).execute()
@@ -3096,6 +3128,7 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
         "assignment_id": assignment.get("assignment_id"),
         "person_id": assignment.get("person_id"),
         "location_id": assignment.get("location_id"),
+        "assignment_department": assignment.get("assignment_department"),
         "assignment_date": assignment.get("assignment_date"),
         "return_date": assignment.get("return_date"),
         "status": assignment.get("status"),
@@ -3113,11 +3146,12 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
             else None
         ),
         "department": (
-            (person.get("department") if person else None)
+            assignment.get("assignment_department")
+            or (person.get("department") if person else None)
             or (location.get("department") if location else None)
         ),
         "city": location.get("city") if location else None,
-        "location_name": location.get("name") if location else None,
+        "location_name": get_location_display_name(location) if location else None,
     }
 
 
@@ -3153,6 +3187,7 @@ def enrich_assignment(assignment: dict) -> dict:
         "assignment_id": assignment.get("assignment_id"),
         "person_id": assignment.get("person_id"),
         "location_id": assignment.get("location_id"),
+        "assignment_department": assignment.get("assignment_department"),
         "assignment_date": assignment.get("assignment_date"),
         "return_date": assignment.get("return_date"),
         "status": assignment.get("status"),
@@ -3170,11 +3205,12 @@ def enrich_assignment(assignment: dict) -> dict:
             else None
         ),
         "department": (
-            (person.get("department") if person else None)
+            assignment.get("assignment_department")
+            or (person.get("department") if person else None)
             or (location.get("department") if location else None)
         ),
         "city": location.get("city") if location else None,
-        "location_name": location.get("name") if location else None,
+        "location_name": get_location_display_name(location) if location else None,
     }
 
 
@@ -3715,14 +3751,11 @@ def find_warehouse_person(people: Optional[list[dict]] = None) -> Optional[dict]
 
 
 def get_location_display_name(location: dict) -> str:
-    parts = [
-        location.get("city"),
-        location.get("department"),
-        location.get("office"),
-        location.get("building"),
-        location.get("room"),
-    ]
-    return " / ".join(str(part) for part in parts if part) or f"Location #{location.get('location_id')}"
+    office = location.get("name") or location.get("office") or location.get("building") or location.get("room")
+    city = location.get("city")
+    if office and city and str(office).strip().casefold() != str(city).strip().casefold():
+        return f"{city} / {office}"
+    return str(office or city or "").strip() or f"Location #{location.get('location_id')}"
 
 
 def get_default_offboarding_location_id(asset: dict, locations: list[dict]) -> Optional[int]:
@@ -3854,16 +3887,19 @@ def apply_person_offboarding(person: dict, form) -> dict:
                 notes = f"{notes}: {offboarding_note}"
             supabase.table("asset_assignments").insert(
                 add_assignment_actor_fields(
-                    {
-                        "asset_id": asset_id,
-                        "person_id": target_person_id,
-                        "location_id": target_location_id,
-                        "assignment_date": offboarding_date,
-                        "return_date": None,
-                        "status": status,
-                        "notes": notes,
-                        "handover_condition": current_assignment.get("handover_condition"),
-                    },
+                    add_assignment_department_field(
+                        {
+                            "asset_id": asset_id,
+                            "person_id": target_person_id,
+                            "location_id": target_location_id,
+                            "assignment_date": offboarding_date,
+                            "return_date": None,
+                            "status": status,
+                            "notes": notes,
+                            "handover_condition": current_assignment.get("handover_condition"),
+                        },
+                        current_assignment.get("assignment_department") or current_assignment.get("department"),
+                    ),
                     "Offboarding",
                 )
             ).execute()
@@ -4171,6 +4207,42 @@ def list_locations() -> list[dict]:
     return response.data or []
 
 
+def list_assignment_location_options(selected_location_id: Optional[int] = None) -> list[dict]:
+    options = []
+    seen: set[tuple[str, str]] = set()
+    for location in list_locations():
+        location_id = location.get("location_id")
+        city = str(location.get("city") or "").strip()
+        office = str(location.get("name") or location.get("office") or location.get("building") or location.get("room") or "").strip()
+        key = (city.casefold(), office.casefold())
+        if key in seen:
+            if selected_location_id and str(location_id or "") == str(selected_location_id):
+                for index, existing in enumerate(options):
+                    existing_city = str(existing.get("city") or "").strip()
+                    existing_office = str(existing.get("name") or existing.get("office") or existing.get("building") or existing.get("room") or "").strip()
+                    if (existing_city.casefold(), existing_office.casefold()) == key:
+                        options[index] = {**location, "display_name": get_location_display_name(location)}
+                        break
+            continue
+        seen.add(key)
+        options.append({**location, "display_name": get_location_display_name(location)})
+    options.sort(key=lambda item: (str(item.get("city") or ""), str(item.get("display_name") or "")))
+    return options
+
+
+def list_assignment_department_options() -> list[str]:
+    values = set()
+    for person in list_people():
+        department = str(person.get("department") or "").strip()
+        if department:
+            values.add(department)
+    for location in list_locations():
+        department = str(location.get("department") or "").strip()
+        if department:
+            values.add(department)
+    return sorted(values, key=lambda value: value.casefold())
+
+
 RESPONSIBILITY_SCOPE_TYPES = {
     "department": "Department",
     "city": "City",
@@ -4300,12 +4372,19 @@ def close_current_assignments(asset_id: int, return_date: Optional[str], actor: 
 
 def get_assignment_form_context(asset: dict) -> dict:
     current_assignment = asset.get("current_assignment") or {}
+    department_options = list_assignment_department_options()
+    current_department = current_assignment.get("assignment_department") or current_assignment.get("department") or ""
+    if current_department and current_department not in department_options:
+        department_options.append(current_department)
+        department_options.sort(key=lambda value: value.casefold())
     return {
         "people": list_people(),
-        "locations": list_locations(),
+        "locations": list_assignment_location_options(current_assignment.get("location_id")),
+        "department_options": department_options,
         "assignment_form": {
             "person_id": current_assignment.get("person_id") or "",
             "location_id": current_assignment.get("location_id") or "",
+            "assignment_department": current_department,
             "assignment_date": current_assignment.get("assignment_date") or "",
             "status": current_assignment.get("status") or asset.get("current_status") or "",
             "notes": current_assignment.get("notes") or "",
@@ -7560,6 +7639,7 @@ def admin_asset_assignment_update(
     request: Request,
     asset_id: int,
     person_id: str = Form(""),
+    assignment_department: str = Form(""),
     location_id: str = Form(""),
     assignment_date: str = Form(""),
     status: str = Form(""),
@@ -7577,6 +7657,7 @@ def admin_asset_assignment_update(
         raise HTTPException(status_code=404, detail="Asset not found")
 
     person_id = person_id.strip()
+    assignment_department = assignment_department.strip()
     location_id = location_id.strip()
     assignment_date = assignment_date.strip()
     status = status.strip()
@@ -7632,7 +7713,8 @@ def admin_asset_assignment_update(
             set_flash(request, "success", "Asset is already unassigned.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
-    new_assignment = {
+    new_assignment = add_assignment_department_field(
+        {
         "asset_id": asset_id,
         "person_id": parsed_person_id,
         "location_id": parsed_location_id,
@@ -7643,7 +7725,9 @@ def admin_asset_assignment_update(
         "handover_condition": handover_condition or None,
         "assignment_scope": assignment_scope,
         "custody_note": custody_note or None,
-    }
+        },
+        assignment_department,
+    )
 
     if (
         current_assignment

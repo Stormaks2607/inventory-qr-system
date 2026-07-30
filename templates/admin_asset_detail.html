@@ -595,14 +595,14 @@
     <article class="panel">
         <h3>Update Assignment</h3>
         <p class="muted">Choose a location to create or replace the active assignment. Responsible person is optional for shared assets. Leave both empty to close the current assignment.</p>
-        <form method="post" action="/admin/assets/{{ asset.asset_id }}/assignment" class="form-grid">
+        <form method="post" action="/admin/assets/{{ asset.asset_id }}/assignment" class="form-grid" data-assignment-form>
             <div class="field">
                 <label for="person_id">Responsible person</label>
-                <select id="person_id" name="person_id">
+                <select id="person_id" name="person_id" data-person-select>
                     <option value="">Unassigned</option>
                     {% for person in people %}
                     {% set person_name = person.name_eng or person.name or person.full_name or ('Person #' ~ person.person_id) %}
-                    <option value="{{ person.person_id }}" {% if assignment_form.person_id|string == person.person_id|string %}selected{% endif %}>
+                    <option value="{{ person.person_id }}" data-department="{{ person.department or '' }}" {% if assignment_form.person_id|string == person.person_id|string %}selected{% endif %}>
                         {{ person_name }}{% if person.department %} - {{ person.department }}{% endif %}
                     </option>
                     {% endfor %}
@@ -610,12 +610,22 @@
             </div>
 
             <div class="field">
-                <label for="location_id">Location</label>
+                <label for="assignment_department">Department</label>
+                <select id="assignment_department" name="assignment_department" data-department-select>
+                    <option value="">No department</option>
+                    {% for department in department_options %}
+                    <option value="{{ department }}" {% if assignment_form.assignment_department == department %}selected{% endif %}>{{ department }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="location_id">Office / location</label>
                 <select id="location_id" name="location_id">
                     <option value="">No location</option>
                     {% for location in locations %}
                     <option value="{{ location.location_id }}" {% if assignment_form.location_id|string == location.location_id|string %}selected{% endif %}>
-                        {{ location.city or 'Unknown city' }} / {{ location.department or 'Unknown department' }}{% if location.name %} - {{ location.name }}{% endif %}
+                        {{ location.display_name or location.city or location.name or ('Location #' ~ location.location_id) }}
                     </option>
                     {% endfor %}
                 </select>
@@ -706,4 +716,33 @@
         </tbody>
     </table>
 </section>
+{% if can_write %}
+<script>
+    (() => {
+        const form = document.querySelector("[data-assignment-form]");
+        if (!form) {
+            return;
+        }
+
+        const personSelect = form.querySelector("[data-person-select]");
+        const departmentSelect = form.querySelector("[data-department-select]");
+        let departmentTouched = Boolean(departmentSelect?.value);
+
+        departmentSelect?.addEventListener("change", () => {
+            departmentTouched = true;
+        });
+
+        personSelect?.addEventListener("change", () => {
+            if (!departmentSelect || departmentTouched) {
+                return;
+            }
+            const selectedOption = personSelect.selectedOptions?.[0];
+            const department = selectedOption?.dataset?.department || "";
+            if (department) {
+                departmentSelect.value = department;
+            }
+        });
+    })();
+</script>
+{% endif %}
 {% endblock %}
