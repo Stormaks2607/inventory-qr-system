@@ -199,7 +199,10 @@
         </div>
 
         <div class="field full">
-            <label for="remarks">Remarks</label>
+            <div class="label-row">
+                <label for="remarks">Remarks</label>
+                <button class="btn secondary" type="button" data-fill-remarks-from-payments>Fill from payments</button>
+            </div>
             <textarea id="remarks" name="remarks" rows="3">{{ asset_form.remarks }}</textarea>
         </div>
 
@@ -245,10 +248,7 @@
         </div>
 
         <div class="field full">
-            <div class="label-row">
-                <label for="payment_notes">Payment notes</label>
-                <button class="btn secondary" type="button" data-fill-payment-notes>Fill from payments</button>
-            </div>
+            <label for="payment_notes">Payment notes</label>
             <textarea id="payment_notes" name="payment_notes" rows="2">{{ asset_form.payment_notes }}</textarea>
         </div>
 
@@ -275,8 +275,8 @@
         const assetCurrencySelect = form.querySelector("#currency");
         const paymentsList = form.querySelector("[data-payments-list]");
         const addPaymentButton = form.querySelector("[data-add-payment]");
-        const fillPaymentNotesButton = form.querySelector("[data-fill-payment-notes]");
-        const paymentNotesInput = form.querySelector("#payment_notes");
+        const fillRemarksFromPaymentsButton = form.querySelector("[data-fill-remarks-from-payments]");
+        const remarksInput = form.querySelector("#remarks");
         const statusSelect = form.querySelector("[data-asset-status-select]");
         const statusCustomInput = form.querySelector("[data-asset-status-custom]");
         const statusRow = form.querySelector("[data-asset-status-row]");
@@ -347,13 +347,13 @@
             updateRemovePaymentButtons();
         }
 
-        function fillPaymentNotesFromRows() {
+        function fillRemarksFromPaymentRows() {
             const lines = getPaymentRows()
                 .map(getPaymentRowValues)
                 .filter((payment) => payment.amount && payment.date)
                 .map((payment) => `${payment.amount} ${payment.currency || "EUR"} - ${formatDisplayDate(payment.date)}`);
-            if (paymentNotesInput) {
-                paymentNotesInput.value = lines.join("\n");
+            if (remarksInput) {
+                remarksInput.value = lines.join("\n");
             }
         }
 
@@ -451,7 +451,7 @@
         statusSelect?.addEventListener("change", syncCustomStatusField);
         syncCustomStatusField();
         addPaymentButton?.addEventListener("click", addPaymentRow);
-        fillPaymentNotesButton?.addEventListener("click", fillPaymentNotesFromRows);
+        fillRemarksFromPaymentsButton?.addEventListener("click", fillRemarksFromPaymentRows);
         paymentsList?.addEventListener("click", (event) => {
             const removeButton = event.target.closest("[data-remove-payment]");
             if (!removeButton) {
