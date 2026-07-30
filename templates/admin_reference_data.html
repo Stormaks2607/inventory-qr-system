@@ -176,6 +176,11 @@
     {% if can_write %}
     <form method="post" action="{% if edit_location %}/admin/reference-data/locations/{{ edit_location.location_id }}{% else %}/admin/reference-data/locations{% endif %}" class="form-grid">
         <div class="field">
+            <label for="location_country">Country</label>
+            <input id="location_country" name="country" type="text" value="{{ location_form.country }}" required>
+        </div>
+
+        <div class="field">
             <label for="location_city">City</label>
             <input id="location_city" name="city" type="text" value="{{ location_form.city }}" required>
         </div>
@@ -198,6 +203,7 @@
         <table>
             <thead>
                 <tr>
+                    <th>Country</th>
                     <th>City</th>
                     <th>Office / location</th>
                     {% if can_write %}
@@ -208,6 +214,7 @@
             <tbody>
                 {% for location in locations %}
                 <tr>
+                    <td>{{ location.country or "-" }}</td>
                     <td><strong>{{ location.city or "-" }}</strong></td>
                     <td>{{ location.name or location.office or location.display_name or "-" }}</td>
                     {% if can_write %}
@@ -216,7 +223,7 @@
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="{% if can_write %}3{% else %}2{% endif %}" class="muted">No office locations have been added yet.</td>
+                    <td colspan="{% if can_write %}4{% else %}3{% endif %}" class="muted">No office locations have been added yet.</td>
                 </tr>
                 {% endfor %}
             </tbody>

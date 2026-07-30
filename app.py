@@ -3371,6 +3371,7 @@ def get_donor_form_values(donor: Optional[dict] = None) -> dict:
 def get_location_form_values(location: Optional[dict] = None) -> dict:
     location = location or {}
     return {
+        "country": location.get("country") or "Ukraine",
         "city": location.get("city") or "",
         "name": location.get("name") or location.get("office") or "",
     }
@@ -7436,6 +7437,7 @@ def admin_reference_data(
 @app.post("/admin/reference-data/locations")
 def admin_reference_data_location_create(
     request: Request,
+    country: str = Form(""),
     city: str = Form(""),
     name: str = Form(""),
 ):
@@ -7446,8 +7448,12 @@ def admin_reference_data_location_create(
     if redirect:
         return redirect
 
+    country = country.strip() or "Ukraine"
     city = city.strip()
     name = name.strip()
+    if not country:
+        set_flash(request, "error", "Country is required.")
+        return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
     if not city:
         set_flash(request, "error", "City is required.")
         return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
@@ -7457,6 +7463,7 @@ def admin_reference_data_location_create(
 
     payload = {
         "location_id": get_next_numeric_id("locations", "location_id"),
+        "country": country,
         "city": city,
         "name": name,
         "department": None,
@@ -7468,7 +7475,7 @@ def admin_reference_data_location_create(
         set_flash(request, "error", describe_reference_data_error(error, "Location", "name"))
         return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
 
-    set_flash(request, "success", f"Location {city} / {name} was added.")
+    set_flash(request, "success", f"Location {country} / {city} / {name} was added.")
     return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
 
 
@@ -7476,6 +7483,7 @@ def admin_reference_data_location_create(
 def admin_reference_data_location_update(
     request: Request,
     location_id: int,
+    country: str = Form(""),
     city: str = Form(""),
     name: str = Form(""),
 ):
@@ -7490,8 +7498,12 @@ def admin_reference_data_location_update(
     if not location:
         raise HTTPException(status_code=404, detail="Location not found")
 
+    country = country.strip() or "Ukraine"
     city = city.strip()
     name = name.strip()
+    if not country:
+        set_flash(request, "error", "Country is required.")
+        return RedirectResponse(url=f"/admin/reference-data?edit_location_id={location_id}#locations", status_code=303)
     if not city:
         set_flash(request, "error", "City is required.")
         return RedirectResponse(url=f"/admin/reference-data?edit_location_id={location_id}#locations", status_code=303)
@@ -7500,6 +7512,7 @@ def admin_reference_data_location_update(
         return RedirectResponse(url=f"/admin/reference-data?edit_location_id={location_id}#locations", status_code=303)
 
     payload = {
+        "country": country,
         "city": city,
         "name": name,
         "department": None,
@@ -7511,7 +7524,7 @@ def admin_reference_data_location_update(
         set_flash(request, "error", describe_reference_data_error(error, "Location", "name"))
         return RedirectResponse(url=f"/admin/reference-data?edit_location_id={location_id}#locations", status_code=303)
 
-    set_flash(request, "success", f"Location {city} / {name} was updated.")
+    set_flash(request, "success", f"Location {country} / {city} / {name} was updated.")
     return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
 
 
