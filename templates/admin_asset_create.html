@@ -36,7 +36,20 @@
         margin-bottom: 12px;
     }
 
+    .asset-funding-row {
+        display: grid;
+        grid-template-columns: 2fr 1.5fr 1fr 2fr auto;
+        gap: 10px;
+        align-items: end;
+        margin-bottom: 12px;
+    }
+
     .asset-payment-row .btn {
+        min-height: 40px;
+        white-space: nowrap;
+    }
+
+    .asset-funding-row .btn {
         min-height: 40px;
         white-space: nowrap;
     }
@@ -52,7 +65,8 @@
     @media (max-width: 900px) {
         .asset-create-top-row,
         .asset-status-row,
-        .asset-payment-row {
+        .asset-payment-row,
+        .asset-funding-row {
             grid-template-columns: 1fr;
         }
 
@@ -142,6 +156,21 @@
                 <input id="clone_count" name="clone_count" type="number" min="1" max="100" value="{{ asset_form.clone_count or '1' }}">
                 <div class="muted asset-helper" data-series-helper>Creates one asset by default.</div>
             </div>
+        </div>
+
+        <div class="field full">
+            <label>
+                <input
+                    name="single_quantity_bundle"
+                    type="checkbox"
+                    data-single-quantity-bundle
+                    {% if asset_form.single_quantity_bundle %}checked{% endif %}
+                >
+                Keep as one asset record when Quantity is greater than 1
+            </label>
+            <p class="muted" style="margin-top: 4px;">
+                Use this only for grouped consumable or bundled items that should share one inventory number.
+            </p>
         </div>
 
         <div class="field full">
@@ -258,6 +287,51 @@
             <textarea id="payment_notes" name="payment_notes" rows="2">{{ asset_form.payment_notes }}</textarea>
         </div>
 
+        <div class="field full">
+            <h3 style="margin: 0;">Purchase Project Funding</h3>
+            <p class="muted" style="margin: 4px 0 0;">Rows saved here are marked as both purchase origin and current project for the new asset.</p>
+        </div>
+
+        <div class="field full" data-funding-list>
+            {% for row in asset_form.funding_rows %}
+            <div class="asset-funding-row" data-funding-row>
+                <div class="field">
+                    <label>Project</label>
+                    <select name="funding_project_id">
+                        <option value="">Select project</option>
+                        {% for project in projects %}
+                        <option value="{{ project.project_id }}" {% if row.project_id|string == project.project_id|string %}selected{% endif %}>
+                            {{ project.project_number }}{% if project.project_name or project.name %} - {{ project.project_name or project.name }}{% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="field">
+                    <label>Donor</label>
+                    <select name="funding_donor_id">
+                        <option value="">No donor</option>
+                        {% for donor in donors %}
+                        <option value="{{ donor.donor_id }}" {% if row.donor_id|string == donor.donor_id|string %}selected{% endif %}>{{ donor.donor_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="field">
+                    <label>Allocation %</label>
+                    <input name="funding_allocation_percent" type="text" value="{{ row.allocation_percent }}" placeholder="Auto">
+                </div>
+                <div class="field">
+                    <label>Funding note</label>
+                    <input name="funding_note" type="text" value="{{ row.funding_note }}" placeholder="Optional note">
+                </div>
+                <button class="btn secondary" type="button" data-remove-funding>Remove</button>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="toolbar field full" style="margin-top: -8px;">
+            <button class="btn secondary" type="button" data-add-funding>Add project row</button>
+        </div>
+
         <div class="toolbar" style="margin-bottom: 0;">
             <button class="btn" type="submit">Create asset</button>
             <a class="btn secondary" href="/admin/assets">Cancel</a>
@@ -277,12 +351,15 @@
         const assetTagHelper = form.querySelector("[data-asset-tag-helper]");
         const cloneCountInput = form.querySelector("#clone_count");
         const seriesHelper = form.querySelector("[data-series-helper]");
+        const singleQuantityBundleInput = form.querySelector("[data-single-quantity-bundle]");
         const confirmField = form.querySelector("[data-confirm-nonstandard]");
         const confirmPaymentMismatchField = form.querySelector("[data-confirm-payment-mismatch]");
         const purchasePriceInput = form.querySelector("#purchase_price");
         const assetCurrencySelect = form.querySelector("#currency");
         const paymentsList = form.querySelector("[data-payments-list]");
         const addPaymentButton = form.querySelector("[data-add-payment]");
+        const fundingList = form.querySelector("[data-funding-list]");
+        const addFundingButton = form.querySelector("[data-add-funding]");
         const fillRemarksFromPaymentsButton = form.querySelector("[data-fill-remarks-from-payments]");
         const remarksInput = form.querySelector("#remarks");
         const statusSelect = form.querySelector("[data-asset-status-select]");
@@ -310,6 +387,9 @@
         }
 
         function getCloneCount() {
+            if (singleQuantityBundleInput?.checked) {
+                return 1;
+            }
             const parsed = Number(cloneCountInput?.value || "1");
             if (!Number.isFinite(parsed)) {
                 return 1;
@@ -341,6 +421,10 @@
             return Array.from(paymentsList?.querySelectorAll("[data-payment-row]") || []);
         }
 
+        function getFundingRows() {
+            return Array.from(fundingList?.querySelectorAll("[data-funding-row]") || []);
+        }
+
         function getPaymentRowValues(row) {
             const date = row.querySelector('[name="payment_date"]')?.value || "";
             const amount = row.querySelector('[name="payment_amount"]')?.value || "";
@@ -353,6 +437,16 @@
             const rows = getPaymentRows();
             rows.forEach((row) => {
                 const removeButton = row.querySelector("[data-remove-payment]");
+                if (removeButton) {
+                    removeButton.hidden = rows.length <= 1;
+                }
+            });
+        }
+
+        function updateRemoveFundingButtons() {
+            const rows = getFundingRows();
+            rows.forEach((row) => {
+                const removeButton = row.querySelector("[data-remove-funding]");
                 if (removeButton) {
                     removeButton.hidden = rows.length <= 1;
                 }
@@ -373,6 +467,22 @@
             });
             paymentsList.appendChild(newRow);
             updateRemovePaymentButtons();
+        }
+
+        function addFundingRow() {
+            const firstRow = fundingList?.querySelector("[data-funding-row]");
+            if (!fundingList || !firstRow) {
+                return;
+            }
+            const newRow = firstRow.cloneNode(true);
+            newRow.querySelectorAll("input").forEach((input) => {
+                input.value = "";
+            });
+            newRow.querySelectorAll("select").forEach((select) => {
+                select.value = "";
+            });
+            fundingList.appendChild(newRow);
+            updateRemoveFundingButtons();
         }
 
         function fillRemarksFromPaymentRows() {
@@ -433,6 +543,10 @@
             if (!seriesHelper) {
                 return;
             }
+            if (singleQuantityBundleInput?.checked) {
+                seriesHelper.textContent = "Series disabled: one asset record will be created.";
+                return;
+            }
             const count = getCloneCount();
             const startTag = normalizeAssetTag(assetTagInput?.value);
             if (!startTag || count <= 1) {
@@ -455,6 +569,17 @@
                 assetTagInput.value = suggestedNext;
             }
             updateAssetTagHelper();
+        }
+
+        function syncSingleQuantityBundle() {
+            const checked = Boolean(singleQuantityBundleInput?.checked);
+            if (cloneCountInput) {
+                cloneCountInput.disabled = checked;
+                if (checked) {
+                    cloneCountInput.value = "1";
+                }
+            }
+            updateSeriesHelper();
         }
 
         function isNonstandardAssetTag(value) {
@@ -494,11 +619,14 @@
         syncAssetTagForUsageType();
         assetTagInput?.addEventListener("input", updateSeriesHelper);
         cloneCountInput?.addEventListener("input", updateSeriesHelper);
+        singleQuantityBundleInput?.addEventListener("change", syncSingleQuantityBundle);
+        syncSingleQuantityBundle();
         updateSeriesHelper();
 
         statusSelect?.addEventListener("change", syncCustomStatusField);
         syncCustomStatusField();
         addPaymentButton?.addEventListener("click", addPaymentRow);
+        addFundingButton?.addEventListener("click", addFundingRow);
         fillRemarksFromPaymentsButton?.addEventListener("click", fillRemarksFromPaymentRows);
         paymentsList?.addEventListener("click", (event) => {
             const removeButton = event.target.closest("[data-remove-payment]");
@@ -509,6 +637,15 @@
             updateRemovePaymentButtons();
         });
         updateRemovePaymentButtons();
+        fundingList?.addEventListener("click", (event) => {
+            const removeButton = event.target.closest("[data-remove-funding]");
+            if (!removeButton) {
+                return;
+            }
+            removeButton.closest("[data-funding-row]")?.remove();
+            updateRemoveFundingButtons();
+        });
+        updateRemoveFundingButtons();
 
         form.addEventListener("submit", (event) => {
             confirmField.value = "";

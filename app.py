@@ -4759,6 +4759,7 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
         "current_status_custom": current_status if current_status and current_status not in standard_status_values else "",
         "remarks": asset.get("remarks") or "",
         "clone_count": asset.get("clone_count") or "1",
+        "single_quantity_bundle": asset.get("single_quantity_bundle") or False,
         "payment_date": "",
         "payment_amount": "",
         "payment_currency": asset.get("currency") or "",
@@ -4772,6 +4773,14 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
                 "payment_currency": asset.get("currency") or "",
                 "payment_eur_amount": "",
                 "payment_status": "paid",
+            }
+        ],
+        "funding_rows": [
+            {
+                "project_id": "",
+                "donor_id": "",
+                "allocation_percent": "",
+                "funding_note": "",
             }
         ],
     }
@@ -4927,6 +4936,96 @@ def build_payment_notes_by_row(payment_forms: list[dict], payment_notes: str) ->
     return notes
 
 
+def build_create_funding_forms(
+    project_ids: list[str],
+    donor_ids: list[str],
+    allocation_percents: list[str],
+    funding_notes: list[str],
+) -> list[dict]:
+    def ensure_list(value) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [str(value)]
+
+    project_ids = ensure_list(project_ids)
+    donor_ids = ensure_list(donor_ids)
+    allocation_percents = ensure_list(allocation_percents)
+    funding_notes = ensure_list(funding_notes)
+    row_count = max(1, len(project_ids), len(donor_ids), len(allocation_percents), len(funding_notes))
+
+    rows = []
+    for index in range(row_count):
+        rows.append(
+            {
+                "project_id": (project_ids[index] if index < len(project_ids) else "").strip(),
+                "donor_id": (donor_ids[index] if index < len(donor_ids) else "").strip(),
+                "allocation_percent": (allocation_percents[index] if index < len(allocation_percents) else "").strip(),
+                "funding_note": (funding_notes[index] if index < len(funding_notes) else "").strip(),
+            }
+        )
+    return rows
+
+
+def get_filled_funding_forms(funding_forms: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in funding_forms
+        if any([row.get("project_id"), row.get("donor_id"), row.get("allocation_percent"), row.get("funding_note")])
+    ]
+
+
+def resolve_create_funding_payloads(asset_id: int, funding_forms: list[dict]) -> list[dict]:
+    filled_rows = get_filled_funding_forms(funding_forms)
+    if not filled_rows:
+        return []
+
+    if any(not row.get("project_id") for row in filled_rows):
+        raise ValueError("Project is required for every purchase funding row.")
+
+    parsed_percents = []
+    any_explicit_percent = False
+    for row in filled_rows:
+        parsed_percent = safe_parse_percentage(row.get("allocation_percent") or "")
+        parsed_percents.append(parsed_percent)
+        if parsed_percent is not None:
+            any_explicit_percent = True
+
+    if any_explicit_percent and any(percent is None for percent in parsed_percents):
+        raise ValueError("Allocation percent is required for every row when one row has a percent.")
+
+    if not any_explicit_percent:
+        row_count = len(filled_rows)
+        even_percent = round(100 / row_count, 2)
+        parsed_percents = [even_percent for _ in filled_rows]
+        parsed_percents[-1] = round(100 - sum(parsed_percents[:-1]), 2)
+
+    total_percent = sum(float(percent or 0) for percent in parsed_percents)
+    if total_percent > 100.001:
+        raise ValueError("Total purchase project allocation cannot be greater than 100%.")
+
+    supports_purchase_origin = asset_project_purchase_origin_supported()
+    payloads = []
+    for index, row in enumerate(filled_rows):
+        payload = {
+            "asset_id": asset_id,
+            "project_id": int(row.get("project_id")),
+            "donor_id": int(row.get("donor_id")) if row.get("donor_id") else None,
+            "allocation_percent": parsed_percents[index],
+            "allocation_amount": None,
+            "currency": None,
+            "funding_note": row.get("funding_note") or None,
+            "is_primary": index == 0,
+            "is_current": True,
+            "is_purchase_origin": True,
+        }
+        if not supports_purchase_origin:
+            payload.pop("is_purchase_origin", None)
+        payloads.append(payload)
+    return payloads
+
+
 def describe_asset_payment_error(error: Exception) -> str:
     if isinstance(error, ValueError):
         return str(error)
@@ -5035,6 +5134,8 @@ def get_asset_create_options() -> dict:
         "classification_options": classifications,
         "sub_classification_options": sub_classifications,
         "currency_options": currencies,
+        "projects": list_projects(),
+        "donors": list_donors(),
     }
 
 
@@ -6796,6 +6897,7 @@ def admin_asset_create(
     asset_sub_classification: str = Form(""),
     quantity: str = Form(""),
     clone_count: str = Form("1"),
+    single_quantity_bundle: Optional[str] = Form(None),
     purchase_price: str = Form(""),
     currency: str = Form(""),
     serial_number: str = Form(""),
@@ -6808,6 +6910,10 @@ def admin_asset_create(
     payment_eur_amount: list[str] = Form([]),
     payment_status: list[str] = Form([]),
     payment_notes: str = Form(""),
+    funding_project_id: list[str] = Form([]),
+    funding_donor_id: list[str] = Form([]),
+    funding_allocation_percent: list[str] = Form([]),
+    funding_note: list[str] = Form([]),
     confirm_nonstandard_asset_tag: str = Form(""),
     confirm_payment_total_mismatch: str = Form(""),
 ):
@@ -6824,6 +6930,13 @@ def admin_asset_create(
         payment_eur_amount,
         payment_status,
     )
+    funding_forms = build_create_funding_forms(
+        funding_project_id,
+        funding_donor_id,
+        funding_allocation_percent,
+        funding_note,
+    )
+    is_single_quantity_bundle = single_quantity_bundle == "on"
     asset_form = {
         "asset_tag_number": normalize_asset_tag(asset_tag_number),
         "usage_type": normalize_asset_usage_type(usage_type, asset_tag_number),
@@ -6833,7 +6946,8 @@ def admin_asset_create(
         "asset_classification": asset_classification.strip(),
         "asset_sub_classification": asset_sub_classification.strip(),
         "quantity": quantity.strip(),
-        "clone_count": clone_count.strip() or "1",
+        "clone_count": "1" if is_single_quantity_bundle else (clone_count.strip() or "1"),
+        "single_quantity_bundle": is_single_quantity_bundle,
         "purchase_price": purchase_price.strip(),
         "currency": currency.strip(),
         "serial_number": serial_number.strip(),
@@ -6848,6 +6962,7 @@ def admin_asset_create(
         "payment_status": payment_forms[0].get("payment_status") if payment_forms else "paid",
         "payment_notes": payment_notes.strip(),
         "payments": payment_forms,
+        "funding_rows": funding_forms,
     }
     asset_tag_standard = asset_tag_standards.get(asset_form["usage_type"]) or asset_tag_standards.get("standard") or {}
 
@@ -7024,6 +7139,27 @@ def admin_asset_create(
             status_code=400,
         )
 
+    if len(asset_tags_to_create) > 1 and (insert_data_base.get("quantity") or 1) > 1:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {
+                    "level": "error",
+                    "message": "For asset series, Quantity must be 1. Use the single-asset quantity option to keep one asset with Quantity greater than 1.",
+                },
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
     filled_payment_forms = get_filled_payment_forms(asset_form["payments"])
     payment_note_lines = build_payment_notes_by_row(filled_payment_forms, asset_form["payment_notes"])
 
@@ -7058,6 +7194,27 @@ def admin_asset_create(
                 },
                 status_code=400,
             )
+
+    try:
+        funding_payload_templates = resolve_create_funding_payloads(0, asset_form["funding_rows"])
+    except Exception as error:
+        message = str(error) if isinstance(error, ValueError) else describe_asset_project_error(error)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {"level": "error", "message": message},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
 
     purchase_price_eur = insert_data_base.get("purchase_price") if (asset_form["currency"] or "").upper() == "EUR" else None
     if purchase_price_eur is not None and filled_payment_forms and confirm_payment_total_mismatch != "yes":
@@ -7177,6 +7334,32 @@ def admin_asset_create(
                 )
         except Exception as error:
             set_flash(request, "error", f"Asset was created, but payment was not saved: {describe_asset_payment_error(error)}")
+            return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
+
+    if funding_payload_templates:
+        try:
+            funding_payloads = []
+            for created_asset in created_assets_in_order:
+                for template in funding_payload_templates:
+                    funding_payloads.append({**template, "asset_id": created_asset.get("asset_id")})
+            supabase.table("asset_projects").insert(funding_payloads).execute()
+            for created_asset in created_assets_in_order:
+                created_tag = created_asset.get("asset_tag_number")
+                created_funding = [
+                    {**template, "asset_id": created_asset.get("asset_id")}
+                    for template in funding_payload_templates
+                ]
+                funding_summary = " / ".join(describe_project_funding_payload(payload) for payload in created_funding)
+                audit_log_event(
+                    entity_type="Project",
+                    entity_id=created_asset.get("asset_id"),
+                    entity_label=created_tag,
+                    action="created",
+                    summary=f"Added project funding for {created_tag}: {funding_summary}",
+                    request=request,
+                )
+        except Exception as error:
+            set_flash(request, "error", f"Asset was created, but project funding was not saved: {describe_asset_project_error(error)}")
             return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
 
     for created_asset in created_assets_in_order:
