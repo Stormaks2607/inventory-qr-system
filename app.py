@@ -2828,10 +2828,12 @@ def get_export_donor_name(asset_projects: list[dict], mode: str) -> Optional[str
         selected_projects = get_purchased_project_rows(asset_projects)
     else:
         selected_projects = get_current_project_rows(asset_projects)
-    for row in selected_projects:
-        if row.get("donor_name"):
-            return row.get("donor_name")
-    return None
+    donor_names = [normalize_sync_string(row.get("donor_name")) for row in selected_projects]
+    if not any(donor_names):
+        return None
+    if len(selected_projects) == 1:
+        return donor_names[0]
+    return " / ".join(donor_name or "-" for donor_name in donor_names)
 
 
 def get_export_transfer_date(asset_projects: list[dict]) -> Optional[str]:
