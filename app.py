@@ -4758,6 +4758,7 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
         "current_status_select": current_status if current_status in standard_status_values else ("__custom__" if current_status else ""),
         "current_status_custom": current_status if current_status and current_status not in standard_status_values else "",
         "remarks": asset.get("remarks") or "",
+        "clone_count": asset.get("clone_count") or "1",
         "payment_date": "",
         "payment_amount": "",
         "payment_currency": asset.get("currency") or "",
@@ -5050,6 +5051,24 @@ def asset_tag_exists(asset_tag_number: str) -> bool:
         return False
 
     return bool(response.data)
+
+
+def generate_sequential_asset_tags(start_tag: str, count: int) -> list[str]:
+    normalized_start = normalize_asset_tag(start_tag)
+    if count < 1:
+        raise ValueError("Number of identical assets must be at least 1.")
+    if count > 100:
+        raise ValueError("Number of identical assets cannot be greater than 100.")
+    match = re.match(r"^(.*?)(\d+)$", normalized_start)
+    if not match:
+        if count == 1:
+            return [normalized_start]
+        raise ValueError("Sequential asset creation requires an inventory number ending with digits.")
+
+    prefix, number_text = match.groups()
+    start_number = int(number_text)
+    width = len(number_text)
+    return [f"{prefix}{str(start_number + offset).zfill(width)}" for offset in range(count)]
 
 
 def describe_asset_create_error(error: Exception) -> str:
@@ -6776,6 +6795,7 @@ def admin_asset_create(
     asset_classification: str = Form(""),
     asset_sub_classification: str = Form(""),
     quantity: str = Form(""),
+    clone_count: str = Form("1"),
     purchase_price: str = Form(""),
     currency: str = Form(""),
     serial_number: str = Form(""),
@@ -6813,6 +6833,7 @@ def admin_asset_create(
         "asset_classification": asset_classification.strip(),
         "asset_sub_classification": asset_sub_classification.strip(),
         "quantity": quantity.strip(),
+        "clone_count": clone_count.strip() or "1",
         "purchase_price": purchase_price.strip(),
         "currency": currency.strip(),
         "serial_number": serial_number.strip(),
@@ -6886,7 +6907,10 @@ def admin_asset_create(
             status_code=400,
         )
 
-    if asset_tag_exists(asset_form["asset_tag_number"]):
+    try:
+        clone_count_value = parse_int_field(asset_form["clone_count"]) or 1
+        asset_tags_to_create = generate_sequential_asset_tags(asset_form["asset_tag_number"], clone_count_value)
+    except ValueError as error:
         return templates.TemplateResponse(
             request=request,
             name="admin_asset_create.html",
@@ -6896,7 +6920,70 @@ def admin_asset_create(
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
-                "flash": {"level": "error", "message": f"Asset tag/Inventory No. '{asset_form['asset_tag_number']}' already exists."},
+                "flash": {"level": "error", "message": str(error)},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    for generated_tag in asset_tags_to_create:
+        generated_tag_error = validate_asset_tag_format(generated_tag)
+        if generated_tag_error:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin_asset_create.html",
+                context={
+                    "asset_form": asset_form,
+                    **get_asset_create_options(),
+                    "asset_tag_standard": asset_tag_standard,
+                    "asset_tag_standards": asset_tag_standards,
+                    "asset_tag_warning": asset_tag_warning,
+                    "flash": {"level": "error", "message": f"{generated_tag}: {generated_tag_error}"},
+                    "active_page": "assets",
+                    "page_title": "New Asset",
+                    "admin_username": request.session.get("admin_username"),
+                },
+                status_code=400,
+            )
+
+    existing_asset_tags = [generated_tag for generated_tag in asset_tags_to_create if asset_tag_exists(generated_tag)]
+    if existing_asset_tags:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {
+                    "level": "error",
+                    "message": f"Asset tag/Inventory No. already exists: {', '.join(existing_asset_tags)}.",
+                },
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
+    if len(asset_tags_to_create) > 1 and asset_form["serial_number"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {
+                    "level": "error",
+                    "message": "Leave Serial number empty when creating multiple identical assets. Add unique serial numbers later.",
+                },
                 "active_page": "assets",
                 "page_title": "New Asset",
                 "admin_username": request.session.get("admin_username"),
@@ -6905,9 +6992,7 @@ def admin_asset_create(
         )
 
     try:
-        insert_data = {
-            "asset_tag_number": asset_form["asset_tag_number"],
-            "inventory_code": asset_form["asset_tag_number"],
+        insert_data_base = {
             "usage_type": asset_form["usage_type"],
             "item_description": asset_form["item_description"] or None,
             "brand_make": asset_form["brand_make"] or None,
@@ -6954,7 +7039,7 @@ def admin_asset_create(
                 currency=payment.get("payment_currency") or asset_form["currency"],
                 payment_status=payment.get("payment_status") or "paid",
                 notes="",
-                fallback_amount=insert_data.get("purchase_price") if len(filled_payment_forms) == 1 else None,
+                fallback_amount=insert_data_base.get("purchase_price") if len(filled_payment_forms) == 1 else None,
             )
         except Exception as error:
             return templates.TemplateResponse(
@@ -6974,7 +7059,7 @@ def admin_asset_create(
                 status_code=400,
             )
 
-    purchase_price_eur = insert_data.get("purchase_price") if (asset_form["currency"] or "").upper() == "EUR" else None
+    purchase_price_eur = insert_data_base.get("purchase_price") if (asset_form["currency"] or "").upper() == "EUR" else None
     if purchase_price_eur is not None and filled_payment_forms and confirm_payment_total_mismatch != "yes":
         payment_total_eur = 0.0
         for payment in filled_payment_forms:
@@ -7010,9 +7095,17 @@ def admin_asset_create(
             )
 
     try:
+        insert_payloads = [
+            {
+                **insert_data_base,
+                "asset_tag_number": generated_tag,
+                "inventory_code": generated_tag,
+            }
+            for generated_tag in asset_tags_to_create
+        ]
         response = (
             supabase.table("assets")
-            .insert(insert_data)
+            .insert(insert_payloads)
             .execute()
         )
     except Exception as exc:
@@ -7033,55 +7126,81 @@ def admin_asset_create(
             status_code=400,
         )
 
-    created_asset = (response.data or [{}])[0]
-    created_asset_id = created_asset.get("asset_id")
-    if not created_asset_id:
-        created_asset = get_asset_by_tag(asset_form["asset_tag_number"]) or {}
-        created_asset_id = created_asset.get("asset_id")
+    created_assets = response.data or []
+    created_by_tag = {
+        normalize_asset_tag(row.get("asset_tag_number") or ""): row
+        for row in created_assets
+        if row.get("asset_tag_number")
+    }
+    for generated_tag in asset_tags_to_create:
+        if generated_tag not in created_by_tag:
+            created_asset = get_asset_by_tag(generated_tag) or {}
+            if created_asset.get("asset_id"):
+                created_by_tag[generated_tag] = created_asset
 
-    if not created_asset_id:
+    created_assets_in_order = [created_by_tag.get(generated_tag) for generated_tag in asset_tags_to_create]
+    created_assets_in_order = [asset for asset in created_assets_in_order if asset and asset.get("asset_id")]
+    first_created_asset = created_assets_in_order[0] if created_assets_in_order else {}
+    first_created_asset_id = first_created_asset.get("asset_id")
+
+    if not first_created_asset_id:
         set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
         return RedirectResponse(url="/admin/assets", status_code=303)
 
     if filled_payment_forms:
         try:
             payment_payloads = []
-            for index, payment in enumerate(filled_payment_forms, start=1):
-                payment_payloads.append(
-                    build_asset_payment_payload(
-                        asset_id=created_asset_id,
-                        payment_number=index,
-                        payment_date=payment.get("payment_date") or "",
-                        payment_amount=payment.get("payment_amount") or "",
-                        currency=payment.get("payment_currency") or asset_form["currency"],
-                        payment_status=payment.get("payment_status") or "paid",
-                        notes=payment_note_lines[index - 1] if index - 1 < len(payment_note_lines) else "",
-                        fallback_amount=parse_float_field(asset_form["purchase_price"]) if len(filled_payment_forms) == 1 else None,
+            for created_asset in created_assets_in_order:
+                for index, payment in enumerate(filled_payment_forms, start=1):
+                    payment_payloads.append(
+                        build_asset_payment_payload(
+                            asset_id=created_asset.get("asset_id"),
+                            payment_number=index,
+                            payment_date=payment.get("payment_date") or "",
+                            payment_amount=payment.get("payment_amount") or "",
+                            currency=payment.get("payment_currency") or asset_form["currency"],
+                            payment_status=payment.get("payment_status") or "paid",
+                            notes=payment_note_lines[index - 1] if index - 1 < len(payment_note_lines) else "",
+                            fallback_amount=parse_float_field(asset_form["purchase_price"]) if len(filled_payment_forms) == 1 else None,
+                        )
                     )
-                )
             supabase.table("asset_payments").insert(payment_payloads).execute()
-            audit_log_event(
-                entity_type="Payment",
-                entity_id=created_asset_id,
-                entity_label=asset_form["asset_tag_number"],
-                action="created",
-                summary=f"Added {len(payment_payloads)} payment(s) for {asset_form['asset_tag_number']}",
-                request=request,
-            )
+            for created_asset in created_assets_in_order:
+                created_tag = created_asset.get("asset_tag_number")
+                audit_log_event(
+                    entity_type="Payment",
+                    entity_id=created_asset.get("asset_id"),
+                    entity_label=created_tag,
+                    action="created",
+                    summary=f"Added {len(filled_payment_forms)} payment(s) for {created_tag}",
+                    request=request,
+                )
         except Exception as error:
             set_flash(request, "error", f"Asset was created, but payment was not saved: {describe_asset_payment_error(error)}")
-            return RedirectResponse(url=f"/admin/assets/{created_asset_id}", status_code=303)
+            return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
 
-    audit_log_event(
-        entity_type="Asset",
-        entity_id=created_asset_id,
-        entity_label=asset_form["asset_tag_number"],
-        action="created",
-        summary=f"Created asset: {asset_form['asset_tag_number']}",
-        request=request,
-    )
+    for created_asset in created_assets_in_order:
+        created_tag = created_asset.get("asset_tag_number")
+        audit_log_event(
+            entity_type="Asset",
+            entity_id=created_asset.get("asset_id"),
+            entity_label=created_tag,
+            action="created",
+            summary=f"Created asset: {created_tag}",
+            request=request,
+        )
+
+    created_count = len(created_assets_in_order)
+    if created_count > 1:
+        set_flash(
+            request,
+            "success",
+            f"{created_count} assets were created: {asset_tags_to_create[0]} - {asset_tags_to_create[-1]}.",
+        )
+        return RedirectResponse(url="/admin/assets", status_code=303)
+
     set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
-    return RedirectResponse(url=f"/admin/assets/{created_asset_id}", status_code=303)
+    return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
 
 
 @app.get("/admin/people", response_class=HTMLResponse)

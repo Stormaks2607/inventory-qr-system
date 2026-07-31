@@ -136,6 +136,12 @@
                 </div>
                 <div class="muted asset-helper">&nbsp;</div>
             </div>
+
+            <div class="field">
+                <label for="clone_count">Number of identical assets</label>
+                <input id="clone_count" name="clone_count" type="number" min="1" max="100" value="{{ asset_form.clone_count or '1' }}">
+                <div class="muted asset-helper" data-series-helper>Creates one asset by default.</div>
+            </div>
         </div>
 
         <div class="field full">
@@ -269,6 +275,8 @@
         const assetTagInput = form.querySelector("#asset_tag_number");
         const usageTypeSelect = form.querySelector("#usage_type");
         const assetTagHelper = form.querySelector("[data-asset-tag-helper]");
+        const cloneCountInput = form.querySelector("#clone_count");
+        const seriesHelper = form.querySelector("[data-series-helper]");
         const confirmField = form.querySelector("[data-confirm-nonstandard]");
         const confirmPaymentMismatchField = form.querySelector("[data-confirm-payment-mismatch]");
         const purchasePriceInput = form.querySelector("#purchase_price");
@@ -287,6 +295,26 @@
 
         function normalizeAssetTag(value) {
             return (value || "").trim().toUpperCase().replace(/\s+/g, " ");
+        }
+
+        function getSequentialAssetTag(startTag, offset) {
+            const normalized = normalizeAssetTag(startTag);
+            const match = normalized.match(/^(.*?)(\d+)$/);
+            if (!match) {
+                return offset === 0 ? normalized : "";
+            }
+            const prefix = match[1];
+            const digits = match[2];
+            const nextNumber = Number(digits) + offset;
+            return `${prefix}${String(nextNumber).padStart(digits.length, "0")}`;
+        }
+
+        function getCloneCount() {
+            const parsed = Number(cloneCountInput?.value || "1");
+            if (!Number.isFinite(parsed)) {
+                return 1;
+            }
+            return Math.min(100, Math.max(1, Math.floor(parsed)));
         }
 
         function parseDecimal(value) {
@@ -398,6 +426,23 @@
             if (assetTagHelper) {
                 assetTagHelper.textContent = suggestedNext ? `Suggested next number: ${suggestedNext}` : "";
             }
+            updateSeriesHelper();
+        }
+
+        function updateSeriesHelper() {
+            if (!seriesHelper) {
+                return;
+            }
+            const count = getCloneCount();
+            const startTag = normalizeAssetTag(assetTagInput?.value);
+            if (!startTag || count <= 1) {
+                seriesHelper.textContent = "Creates one asset by default.";
+                return;
+            }
+            const endTag = getSequentialAssetTag(startTag, count - 1);
+            seriesHelper.textContent = endTag
+                ? `Series range: ${startTag} - ${endTag}`
+                : "Sequential series requires a number at the end of the inventory code.";
         }
 
         function syncAssetTagForUsageType() {
@@ -447,6 +492,9 @@
 
         usageTypeSelect?.addEventListener("change", syncAssetTagForUsageType);
         syncAssetTagForUsageType();
+        assetTagInput?.addEventListener("input", updateSeriesHelper);
+        cloneCountInput?.addEventListener("input", updateSeriesHelper);
+        updateSeriesHelper();
 
         statusSelect?.addEventListener("change", syncCustomStatusField);
         syncCustomStatusField();
