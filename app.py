@@ -60,12 +60,16 @@ SYNC_EXPORT_PATH = os.path.join(SYNC_STORAGE_DIR, "supabase_inventory_export.xls
 SYNC_STATE_PATH = os.path.join(SYNC_STORAGE_DIR, "sync_state.json")
 SYNC_STORAGE_BUCKET = clean_env_value("SYNC_STORAGE_BUCKET") or "private-inventory-docs"
 SYNC_WORKBOOK_STORAGE_PATH = "sync/official_inventory.xlsx"
+REGISTRATION_TRANSFER_EXPORT_FROM = clean_env_value("REGISTRATION_TRANSFER_EXPORT_FROM") or "2026-07-31"
 EXCEL_SYNC_SHEET_NAME = "Standard Asset List Format"
 EXCEL_LOW_COST_SHEET_NAME = "Low-cost-items"
 EXCEL_TRANSFER_LOG_SHEET_NAME = "Transfer log"
 EXCEL_SYNC_HEADER_ROW = 7
 EXCEL_TRANSFER_LOG_HEADER_ROW = 0
 PROJECT_NUMBER_PATTERN = r"\b[A-Z]{2,5}-\d{1,5}\b"
+REGISTRATION_TRANSFER_HOLDER = "Supplier"
+REGISTRATION_TRANSFER_CONDITION = "New"
+REGISTRATION_TRANSFER_REASON = "Registration of the new asset"
 EXCEL_SYNC_COLUMN_MAP = {
     "Asset Tag No. / Inventory Code\n(new standardised system)": "asset_tag_number",
     "Previous inventory code\n(if applicable)": "inventory_code_old",
@@ -1549,15 +1553,27 @@ def normalize_transfer_holder(value) -> Optional[str]:
     normalized = normalize_sync_string(value)
     if not normalized:
         return None
+    if normalized.casefold() == REGISTRATION_TRANSFER_HOLDER.casefold():
+        return REGISTRATION_TRANSFER_HOLDER
     if normalized.casefold() == "warehouse":
         return "Warehouse"
     return normalized
 
 
+def is_registration_transfer_record(record: dict) -> bool:
+    return (
+        normalize_sync_match_key(record.get("from_holder_name")) == REGISTRATION_TRANSFER_HOLDER.casefold()
+        and normalize_sync_match_key(record.get("transfer_reason")) == REGISTRATION_TRANSFER_REASON.casefold()
+    )
+
+
 def make_transfer_key(record: dict) -> str:
+    asset_tag = normalize_asset_tag(record.get("asset_tag_number") or "")
+    if asset_tag and is_registration_transfer_record(record):
+        return f"registration:{asset_tag}"
     return "|".join(
         [
-            normalize_asset_tag(record.get("asset_tag_number") or ""),
+            asset_tag,
             str(record.get("transfer_date") or ""),
             str(record.get("source_log_no") or ""),
             normalize_sync_match_key(record.get("from_holder_name")) or "",
@@ -1605,6 +1621,13 @@ def normalize_excel_transfer_record(row: dict, source_row_number: int) -> Option
         return None
     record["transfer_key"] = make_transfer_key(record)
     return record
+
+
+def format_excel_transfer_date(value) -> Optional[str]:
+    parsed = parse_excel_sync_date(value)
+    if not parsed:
+        return clean_excel_value(value)
+    return datetime.strptime(parsed, "%Y-%m-%d").strftime("%d.%m.%Y")
 
 
 def load_excel_transfer_log_rows(file_path: str) -> list[dict]:
@@ -2866,13 +2889,137 @@ def build_database_excel_records(usage_type: Optional[str] = None) -> list[dict]
     return records
 
 
+def parse_app_datetime(value) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            parsed_date = parse_excel_sync_date(value)
+            if not parsed_date:
+                return None
+            parsed = datetime.strptime(parsed_date, "%Y-%m-%d")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("Europe/Kiev"))
+    return parsed.astimezone(ZoneInfo("Europe/Kiev"))
+
+
+def should_export_asset_registration_transfer(asset: dict) -> bool:
+    cutoff = parse_app_datetime(REGISTRATION_TRANSFER_EXPORT_FROM)
+    created_at = parse_app_datetime(asset.get("created_at"))
+    if not cutoff or not created_at:
+        return False
+    return created_at >= cutoff
+
+
+def get_registration_transfer_date(asset: dict, assignment: dict, payments: list[dict]) -> Optional[str]:
+    assignment_date = parse_excel_sync_date(assignment.get("assignment_date"))
+    if assignment_date:
+        return assignment_date
+    payment_dates = [
+        parsed
+        for parsed in (parse_excel_sync_date(payment.get("payment_date")) for payment in payments)
+        if parsed
+    ]
+    if payment_dates:
+        return max(payment_dates)
+    created_at = parse_app_datetime(asset.get("created_at"))
+    return created_at.strftime("%Y-%m-%d") if created_at else None
+
+
+def build_asset_registration_transfer_records(
+    assets_by_id: dict,
+    assignment_by_asset_id: dict,
+    projects_by_asset_id: dict,
+    payments_by_asset_id: dict,
+    existing_transfer_keys: set[str],
+) -> list[dict]:
+    records = []
+    for asset in assets_by_id.values():
+        asset_tag = normalize_asset_tag(asset.get("asset_tag_number") or "")
+        if not asset_tag or not should_export_asset_registration_transfer(asset):
+            continue
+        registration_key = f"registration:{asset_tag}"
+        if registration_key in existing_transfer_keys:
+            continue
+
+        asset_id = asset.get("asset_id")
+        assignment = assignment_by_asset_id.get(asset_id) or {}
+        asset_projects = projects_by_asset_id.get(asset_id, [])
+        current_project = get_export_project_numbers(asset_projects, "transferred")
+        project_raw = current_project or get_export_project_numbers(asset_projects, "purchased") or None
+        transfer_date = get_registration_transfer_date(
+            asset,
+            assignment,
+            payments_by_asset_id.get(asset_id, []),
+        )
+        if not transfer_date:
+            continue
+
+        record = {
+            "source_log_no": None,
+            "transfer_date": transfer_date,
+            "source_asset_type": get_asset_usage_type_label(asset.get("usage_type")),
+            "asset_tag_number": asset.get("asset_tag_number"),
+            "asset_tag_snapshot": asset.get("asset_tag_number"),
+            "description_snapshot": asset.get("item_description"),
+            "serial_snapshot": asset.get("serial_chassis_number") or asset.get("serial_number"),
+            "from_holder_name": REGISTRATION_TRANSFER_HOLDER,
+            "from_project_raw": project_raw,
+            "to_project_raw": project_raw,
+            "to_holder_name": assignment.get("responsible_person"),
+            "asset_status": assignment.get("status") or asset.get("current_status"),
+            "asset_condition_description": REGISTRATION_TRANSFER_CONDITION,
+            "transfer_reason": REGISTRATION_TRANSFER_REASON,
+        }
+        record["transfer_key"] = make_transfer_key(record)
+        records.append(record)
+    return records
+
+
 def build_database_transfer_log_records() -> list[dict]:
     transfers = list_asset_transfer_records()
-    if not transfers:
-        return []
-
     assets_by_id = {row.get("asset_id"): row for row in list_asset_records()}
-    people_by_id = {row.get("person_id"): row for row in list_people()}
+    people = list_people()
+    projects = list_projects()
+    donors = list_donors()
+    assignments = list_current_assignment_records()
+    asset_projects = list_asset_project_records()
+    asset_payments = list_asset_payment_records()
+
+    people_by_id = {row.get("person_id"): row for row in people}
+    projects_by_id = {row.get("project_id"): row for row in projects}
+    donors_by_id = {row.get("donor_id"): row for row in donors}
+    assignment_by_asset_id = {}
+    for assignment in assignments:
+        asset_id = assignment.get("asset_id")
+        if asset_id not in assignment_by_asset_id:
+            person = people_by_id.get(assignment.get("person_id")) or {}
+            assignment_by_asset_id[asset_id] = {
+                **assignment,
+                "responsible_person": get_person_display_name(person) if person else None,
+            }
+
+    projects_by_asset_id: dict[int, list[dict]] = {}
+    for asset_project in asset_projects:
+        project = projects_by_id.get(asset_project.get("project_id")) or {}
+        donor = donors_by_id.get(asset_project.get("donor_id")) or {}
+        projects_by_asset_id.setdefault(asset_project.get("asset_id"), []).append(
+            {
+                **asset_project,
+                "project_number": project.get("project_number"),
+                "project_name": project.get("project_name") or project.get("name"),
+                "donor_name": donor.get("donor_name"),
+            }
+        )
+
+    payments_by_asset_id: dict[int, list[dict]] = {}
+    for payment in asset_payments:
+        payments_by_asset_id.setdefault(payment.get("asset_id"), []).append(payment)
+
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
     projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
     records = []
@@ -2905,6 +3052,17 @@ def build_database_transfer_log_records() -> list[dict]:
         }
         record["transfer_key"] = make_transfer_key(record)
         records.append(record)
+
+    existing_transfer_keys = {record.get("transfer_key") for record in records if record.get("transfer_key")}
+    records.extend(
+        build_asset_registration_transfer_records(
+            assets_by_id,
+            assignment_by_asset_id,
+            projects_by_asset_id,
+            payments_by_asset_id,
+            existing_transfer_keys,
+        )
+    )
     return records
 
 
@@ -3060,7 +3218,12 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
 
         for field_name, column_number in columns.items():
             if field_name in record:
-                sheet.cell(row=row_number, column=column_number).value = record.get(field_name)
+                cell = sheet.cell(row=row_number, column=column_number)
+                value = record.get(field_name)
+                if field_name == "transfer_date":
+                    value = format_excel_transfer_date(value)
+                    cell.number_format = "DD.MM.YYYY"
+                cell.value = value
                 written_cells += 1
 
     expand_excel_data_ranges(sheet, header_row_number, last_data_row)
