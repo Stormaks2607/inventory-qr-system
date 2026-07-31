@@ -168,7 +168,7 @@
             </div>
 
             <div class="field">
-                <label for="clone_count">Number of identical assets</label>
+                <label for="clone_count">Asset records to create</label>
                 <input id="clone_count" name="clone_count" type="number" min="1" max="100" value="{{ asset_form.clone_count or '1' }}">
                 <div class="muted asset-helper" data-series-helper>Creates one asset by default.</div>
             </div>
@@ -182,10 +182,10 @@
                     data-single-quantity-bundle
                     {% if asset_form.single_quantity_bundle %}checked{% endif %}
                 >
-                Keep as one asset record when Quantity is greater than 1
+                Disable series and keep one asset record
             </label>
             <p class="muted" style="margin-top: 4px;">
-                Use this only for grouped consumable or bundled items that should share one inventory number.
+                Use the Quantity field below when several units should share one inventory number.
             </p>
         </div>
 
@@ -225,7 +225,7 @@
         </div>
 
         <div class="field">
-            <label for="quantity">Quantity</label>
+            <label for="quantity">Quantity in asset record</label>
             <input id="quantity" name="quantity" type="text" value="{{ asset_form.quantity }}">
         </div>
 
@@ -382,6 +382,7 @@
         const statusCustomInput = form.querySelector("[data-asset-status-custom]");
         const statusRow = form.querySelector("[data-asset-status-row]");
         const assetTagStandards = {{ asset_tag_standards|tojson }};
+        let lastSeriesCount = cloneCountInput?.value || "1";
         const suggestedTags = Object.values(assetTagStandards || {})
             .map((standard) => normalizeAssetTag(standard?.suggested_next))
             .filter(Boolean);
@@ -592,7 +593,10 @@
             if (cloneCountInput) {
                 cloneCountInput.disabled = checked;
                 if (checked) {
+                    lastSeriesCount = cloneCountInput.value || lastSeriesCount || "1";
                     cloneCountInput.value = "1";
+                } else {
+                    cloneCountInput.value = lastSeriesCount || "1";
                 }
             }
             updateSeriesHelper();
@@ -634,7 +638,12 @@
         usageTypeSelect?.addEventListener("change", syncAssetTagForUsageType);
         syncAssetTagForUsageType();
         assetTagInput?.addEventListener("input", updateSeriesHelper);
-        cloneCountInput?.addEventListener("input", updateSeriesHelper);
+        cloneCountInput?.addEventListener("input", () => {
+            if (!singleQuantityBundleInput?.checked) {
+                lastSeriesCount = cloneCountInput.value || "1";
+            }
+            updateSeriesHelper();
+        });
         singleQuantityBundleInput?.addEventListener("change", syncSingleQuantityBundle);
         syncSingleQuantityBundle();
         updateSeriesHelper();

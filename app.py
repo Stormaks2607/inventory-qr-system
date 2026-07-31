@@ -5157,9 +5157,9 @@ def asset_tag_exists(asset_tag_number: str) -> bool:
 def generate_sequential_asset_tags(start_tag: str, count: int) -> list[str]:
     normalized_start = normalize_asset_tag(start_tag)
     if count < 1:
-        raise ValueError("Number of identical assets must be at least 1.")
+        raise ValueError("Number of asset records to create must be at least 1.")
     if count > 100:
-        raise ValueError("Number of identical assets cannot be greater than 100.")
+        raise ValueError("Number of asset records to create cannot be greater than 100.")
     match = re.match(r"^(.*?)(\d+)$", normalized_start)
     if not match:
         if count == 1:
