@@ -62,6 +62,19 @@
         margin-bottom: 6px;
     }
 
+    .checkbox-line {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 700;
+        line-height: 1.35;
+    }
+
+    .checkbox-line input {
+        flex: 0 0 auto;
+        margin: 0;
+    }
+
     @media (max-width: 900px) {
         .asset-create-top-row,
         .asset-status-row,
@@ -159,7 +172,7 @@
         </div>
 
         <div class="field full">
-            <label>
+            <label class="checkbox-line">
                 <input
                     name="single_quantity_bundle"
                     type="checkbox"
