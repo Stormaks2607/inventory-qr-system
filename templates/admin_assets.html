@@ -23,6 +23,9 @@
         {% if can_write %}
         <a class="btn" href="/admin/assets/new">Add asset</a>
         {% endif %}
+        {% if request.session.get('admin_role', 'admin') == 'admin' %}
+        <a class="btn danger" href="/admin/assets/delete-range">Delete asset range</a>
+        {% endif %}
     </div>
 
     <p class="muted">Showing {{ total_found }} assets from the live inventory dataset. Use quick search for broad matching, or open filters inside the column headers for narrower matching.</p>

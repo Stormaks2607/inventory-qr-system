@@ -544,6 +544,22 @@
             return Math.abs(getPaymentEurTotal() - purchasePrice) > 0.01;
         }
 
+        function getSeriesRangeText() {
+            if (singleQuantityBundleInput?.checked) {
+                return "";
+            }
+            const count = getCloneCount();
+            if (count <= 1) {
+                return "";
+            }
+            const startTag = normalizeAssetTag(assetTagInput?.value);
+            const endTag = getSequentialAssetTag(startTag, count - 1);
+            if (!startTag || !endTag) {
+                return "";
+            }
+            return `${count} asset records: ${startTag} - ${endTag}`;
+        }
+
         function getSelectedAssetTagStandard() {
             return assetTagStandards?.[usageTypeSelect?.value || "standard"] || assetTagStandards?.standard || {};
         }
@@ -672,13 +688,40 @@
         });
         updateRemoveFundingButtons();
 
+        form.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") {
+                return;
+            }
+            const target = event.target;
+            if (target instanceof HTMLTextAreaElement) {
+                return;
+            }
+            if (target instanceof HTMLButtonElement && target.type === "submit") {
+                return;
+            }
+            event.preventDefault();
+        });
+
         form.addEventListener("submit", (event) => {
+            const submitButton = event.submitter || form.querySelector('button[type="submit"]');
             confirmField.value = "";
             if (confirmPaymentMismatchField) {
                 confirmPaymentMismatchField.value = "";
             }
+            const seriesRange = getSeriesRangeText();
+            if (seriesRange) {
+                const confirmedSeries = window.confirm(`You are about to create ${seriesRange}.\n\nContinue?`);
+                if (!confirmedSeries) {
+                    event.preventDefault();
+                    return;
+                }
+            }
             if (!isNonstandardAssetTag(assetTagInput?.value)) {
                 if (!shouldWarnAboutPaymentTotalMismatch()) {
+                    if (submitButton) {
+                        submitButton.disabled = true;
+                        submitButton.textContent = "Creating...";
+                    }
                     return;
                 }
             } else {
@@ -706,6 +749,10 @@
                 if (confirmPaymentMismatchField) {
                     confirmPaymentMismatchField.value = "yes";
                 }
+            }
+            if (submitButton) {
+                submitButton.disabled = true;
+                submitButton.textContent = "Creating...";
             }
         });
     })();

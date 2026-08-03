@@ -172,6 +172,7 @@
                     <th>Period</th>
                     <th>Amount</th>
                     <th>Currency</th>
+                    <th>EUR equivalent</th>
                     <th>Status</th>
                     <th>Notes</th>
                     {% if can_write %}
@@ -187,6 +188,7 @@
                     <td>{{ payment.purchase_period or "-" }}</td>
                     <td>{{ payment.payment_amount if payment.payment_amount is not none else "-" }}</td>
                     <td>{{ payment.currency or "-" }}</td>
+                    <td>{{ payment.eur_equivalent_amount if payment.eur_equivalent_amount is defined and payment.eur_equivalent_amount is not none else "-" }}</td>
                     <td>{{ payment.payment_status or "-" }}</td>
                     <td>{{ payment.notes or "-" }}</td>
                     {% if can_write %}
@@ -212,6 +214,11 @@
                                 <div class="field">
                                     <label>Currency</label>
                                     <input name="currency" type="text" value="{{ payment.currency or '' }}">
+                                </div>
+
+                                <div class="field">
+                                    <label>EUR equivalent</label>
+                                    <input name="eur_equivalent_amount" type="text" value="{{ payment.eur_equivalent_amount if payment.eur_equivalent_amount is defined and payment.eur_equivalent_amount is not none else '' }}">
                                 </div>
 
                                 <div class="field">
@@ -261,6 +268,11 @@
             <div class="field">
                 <label for="new_payment_currency">Currency</label>
                 <input id="new_payment_currency" name="currency" type="text" value="{{ asset.currency or 'EUR' }}">
+            </div>
+
+            <div class="field">
+                <label for="new_payment_eur_equivalent">EUR equivalent</label>
+                <input id="new_payment_eur_equivalent" name="eur_equivalent_amount" type="text" placeholder="Optional EUR amount">
             </div>
 
             <div class="field">

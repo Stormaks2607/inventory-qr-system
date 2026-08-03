@@ -1,0 +1,96 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Delete Asset Range</h2>
+    <p>Remove asset records created by mistake. Preview the affected records and related data before confirming deletion.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="panel">
+    <div class="toolbar">
+        <a class="btn secondary" href="/admin/assets">Back to assets</a>
+    </div>
+
+    <form method="post" action="/admin/assets/delete-range" class="form-grid">
+        <div class="field">
+            <label for="start_tag">Start inventory number</label>
+            <input id="start_tag" name="start_tag" type="text" value="{{ start_tag }}" placeholder="HELP-UKR-LC-0361" required>
+        </div>
+
+        <div class="field">
+            <label for="end_tag">End inventory number</label>
+            <input id="end_tag" name="end_tag" type="text" value="{{ end_tag }}" placeholder="HELP-UKR-LC-0374" required>
+        </div>
+
+        <div class="toolbar" style="margin-bottom: 0;">
+            <button class="btn" type="submit">Preview range</button>
+        </div>
+    </form>
+</section>
+
+{% if delete_preview %}
+<section class="panel" style="margin-top: 18px;">
+    <div class="toolbar" style="justify-content: space-between;">
+        <h3 style="margin: 0;">Deletion Preview</h3>
+        <span class="muted">{{ delete_preview.assets|length }} asset(s) matched</span>
+    </div>
+
+    {% if delete_preview.missing_tags %}
+    <div class="flash error">
+        Missing inventory numbers in this range: {{ delete_preview.missing_tags|join(", ") }}
+    </div>
+    {% endif %}
+
+    <div class="stats" style="margin-bottom: 16px;">
+        <div class="stat"><span class="stat-label">Assets</span><strong>{{ delete_preview.counts.assets }}</strong></div>
+        <div class="stat"><span class="stat-label">Payments</span><strong>{{ delete_preview.counts.payments }}</strong></div>
+        <div class="stat"><span class="stat-label">Projects</span><strong>{{ delete_preview.counts.projects }}</strong></div>
+        <div class="stat"><span class="stat-label">Assignments</span><strong>{{ delete_preview.counts.assignments }}</strong></div>
+        <div class="stat"><span class="stat-label">Transfers</span><strong>{{ delete_preview.counts.transfers }}</strong></div>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Asset Tag</th>
+                    <th>Type</th>
+                    <th>Description</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for asset in delete_preview.assets %}
+                <tr>
+                    <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                    <td>{{ asset.usage_type or "-" }}</td>
+                    <td>{{ asset.item_description or "-" }}</td>
+                    <td>{{ asset.current_status or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if delete_preview.assets %}
+    <form method="post" action="/admin/assets/delete-range/confirm" class="form-grid" style="margin-top: 18px;">
+        <input type="hidden" name="start_tag" value="{{ start_tag }}">
+        <input type="hidden" name="end_tag" value="{{ end_tag }}">
+        <div class="field">
+            <label for="confirm_text">Type DELETE to confirm</label>
+            <input id="confirm_text" name="confirm_text" type="text" autocomplete="off" required>
+        </div>
+        <div class="toolbar" style="margin-bottom: 0; align-items: end;">
+            <button class="btn danger" type="submit">Delete matched assets</button>
+        </div>
+    </form>
+    {% endif %}
+</section>
+{% endif %}
+{% endblock %}

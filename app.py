@@ -1849,6 +1849,29 @@ def asset_project_purchase_origin_supported() -> bool:
     return True
 
 
+_ASSET_PAYMENT_EUR_EQUIVALENT_SUPPORTED: Optional[bool] = None
+
+
+def asset_payment_eur_equivalent_supported() -> bool:
+    global _ASSET_PAYMENT_EUR_EQUIVALENT_SUPPORTED
+    if _ASSET_PAYMENT_EUR_EQUIVALENT_SUPPORTED is not None:
+        return _ASSET_PAYMENT_EUR_EQUIVALENT_SUPPORTED
+
+    try:
+        supabase.table("asset_payments").select("eur_equivalent_amount").limit(1).execute()
+    except Exception as error:
+        if isinstance(error, APIError):
+            message = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
+            if "eur_equivalent_amount" in message and "column" in message:
+                _ASSET_PAYMENT_EUR_EQUIVALENT_SUPPORTED = False
+                return False
+        _ASSET_PAYMENT_EUR_EQUIVALENT_SUPPORTED = False
+        return False
+
+    _ASSET_PAYMENT_EUR_EQUIVALENT_SUPPORTED = True
+    return True
+
+
 def build_person_lookup(people: list[dict]) -> dict[str, dict]:
     lookup = {}
     for person in people:
@@ -4823,9 +4846,11 @@ def build_asset_payment_payload(
     payment_status: str,
     notes: str,
     fallback_amount: Optional[float] = None,
+    eur_equivalent_amount: str = "",
 ) -> dict:
     parsed_date = parse_payment_date_field(payment_date)
     parsed_amount = parse_float_field(payment_amount)
+    parsed_eur_equivalent = parse_float_field(eur_equivalent_amount)
     if parsed_amount is None:
         parsed_amount = fallback_amount
     if not parsed_date:
@@ -4833,7 +4858,7 @@ def build_asset_payment_payload(
     if parsed_amount is None:
         raise ValueError("Payment amount is required.")
 
-    return {
+    payload = {
         "asset_id": asset_id,
         "payment_number": payment_number if payment_number is not None else get_next_payment_number(asset_id),
         "payment_date": parsed_date,
@@ -4842,6 +4867,9 @@ def build_asset_payment_payload(
         "payment_status": payment_status.strip() or "paid",
         "notes": notes.strip() or None,
     }
+    if asset_payment_eur_equivalent_supported():
+        payload["eur_equivalent_amount"] = parsed_eur_equivalent
+    return payload
 
 
 def format_payment_note_date(payment_date: str) -> str:
@@ -5170,6 +5198,98 @@ def generate_sequential_asset_tags(start_tag: str, count: int) -> list[str]:
     start_number = int(number_text)
     width = len(number_text)
     return [f"{prefix}{str(start_number + offset).zfill(width)}" for offset in range(count)]
+
+
+def generate_asset_tag_range(start_tag: str, end_tag: str) -> list[str]:
+    normalized_start = normalize_asset_tag(start_tag)
+    normalized_end = normalize_asset_tag(end_tag)
+    start_match = re.match(r"^(.*?)(\d+)$", normalized_start)
+    end_match = re.match(r"^(.*?)(\d+)$", normalized_end)
+    if not start_match or not end_match:
+        raise ValueError("Start and end inventory numbers must both end with digits.")
+    start_prefix, start_number_text = start_match.groups()
+    end_prefix, end_number_text = end_match.groups()
+    if start_prefix != end_prefix or len(start_number_text) != len(end_number_text):
+        raise ValueError("Start and end inventory numbers must use the same prefix and numeric width.")
+    start_number = int(start_number_text)
+    end_number = int(end_number_text)
+    if end_number < start_number:
+        raise ValueError("End inventory number must be greater than or equal to start inventory number.")
+    count = end_number - start_number + 1
+    return generate_sequential_asset_tags(normalized_start, count)
+
+
+def get_assets_by_tags(asset_tags: list[str]) -> list[dict]:
+    normalized_tags = [normalize_asset_tag(tag) for tag in asset_tags if normalize_asset_tag(tag)]
+    if not normalized_tags:
+        return []
+    response = (
+        supabase.table("assets")
+        .select("*")
+        .in_("asset_tag_number", normalized_tags)
+        .execute()
+    )
+    rows = response.data or []
+    order = {tag: index for index, tag in enumerate(normalized_tags)}
+    rows.sort(key=lambda row: order.get(normalize_asset_tag(row.get("asset_tag_number") or ""), len(order)))
+    return rows
+
+
+def fetch_rows_by_asset_ids(table_name: str, asset_ids: list[int], select_columns: str = "*") -> list[dict]:
+    if not asset_ids:
+        return []
+    response = (
+        supabase.table(table_name)
+        .select(select_columns)
+        .in_("asset_id", asset_ids)
+        .execute()
+    )
+    return response.data or []
+
+
+def get_asset_delete_preview(asset_tags: list[str]) -> dict:
+    assets = get_assets_by_tags(asset_tags)
+    asset_ids = [asset.get("asset_id") for asset in assets if asset.get("asset_id")]
+    transfers = fetch_rows_by_asset_ids("asset_transfers", asset_ids, "transfer_id,asset_id")
+    transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
+    transfer_project_count = 0
+    if transfer_ids:
+        transfer_project_response = (
+            supabase.table("asset_transfer_projects")
+            .select("transfer_project_id")
+            .in_("transfer_id", transfer_ids)
+            .execute()
+        )
+        transfer_project_count = len(transfer_project_response.data or [])
+
+    return {
+        "asset_tags": asset_tags,
+        "assets": assets,
+        "missing_tags": [tag for tag in asset_tags if tag not in {normalize_asset_tag(asset.get("asset_tag_number") or "") for asset in assets}],
+        "counts": {
+            "assets": len(assets),
+            "payments": len(fetch_rows_by_asset_ids("asset_payments", asset_ids, "payment_id")),
+            "projects": len(fetch_rows_by_asset_ids("asset_projects", asset_ids, "asset_project_id")),
+            "assignments": len(fetch_rows_by_asset_ids("asset_assignments", asset_ids, "assignment_id")),
+            "transfers": len(transfers),
+            "transfer_projects": transfer_project_count,
+        },
+    }
+
+
+def delete_assets_cascade(asset_ids: list[int]) -> dict:
+    asset_ids = [int(asset_id) for asset_id in asset_ids if asset_id]
+    if not asset_ids:
+        return {"deleted_assets": 0}
+
+    transfers = fetch_rows_by_asset_ids("asset_transfers", asset_ids, "transfer_id,asset_id")
+    transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
+    if transfer_ids:
+        supabase.table("asset_transfer_projects").delete().in_("transfer_id", transfer_ids).execute()
+    for table_name in ["asset_transfers", "asset_assignments", "asset_payments", "asset_projects"]:
+        supabase.table(table_name).delete().in_("asset_id", asset_ids).execute()
+    supabase.table("assets").delete().in_("asset_id", asset_ids).execute()
+    return {"deleted_assets": len(asset_ids)}
 
 
 def describe_asset_create_error(error: Exception) -> str:
@@ -7176,6 +7296,7 @@ def admin_asset_create(
                 payment_status=payment.get("payment_status") or "paid",
                 notes="",
                 fallback_amount=insert_data_base.get("purchase_price") if len(filled_payment_forms) == 1 else None,
+                eur_equivalent_amount=payment.get("payment_eur_amount") or "",
             )
         except Exception as error:
             return templates.TemplateResponse(
@@ -7319,6 +7440,7 @@ def admin_asset_create(
                             payment_status=payment.get("payment_status") or "paid",
                             notes=payment_note_lines[index - 1] if index - 1 < len(payment_note_lines) else "",
                             fallback_amount=parse_float_field(asset_form["purchase_price"]) if len(filled_payment_forms) == 1 else None,
+                            eur_equivalent_amount=payment.get("payment_eur_amount") or "",
                         )
                     )
             supabase.table("asset_payments").insert(payment_payloads).execute()
@@ -7333,8 +7455,18 @@ def admin_asset_create(
                     request=request,
                 )
         except Exception as error:
-            set_flash(request, "error", f"Asset was created, but payment was not saved: {describe_asset_payment_error(error)}")
-            return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
+            created_ids = [asset.get("asset_id") for asset in created_assets_in_order if asset.get("asset_id")]
+            try:
+                delete_assets_cascade(created_ids)
+                set_flash(
+                    request,
+                    "error",
+                    f"Payment was not saved, so the newly created asset record(s) were rolled back: {describe_asset_payment_error(error)}",
+                )
+                return RedirectResponse(url="/admin/assets/new", status_code=303)
+            except Exception:
+                set_flash(request, "error", f"Asset was created, but payment was not saved and rollback failed: {describe_asset_payment_error(error)}")
+                return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
 
     if funding_payload_templates:
         try:
@@ -7359,8 +7491,18 @@ def admin_asset_create(
                     request=request,
                 )
         except Exception as error:
-            set_flash(request, "error", f"Asset was created, but project funding was not saved: {describe_asset_project_error(error)}")
-            return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
+            created_ids = [asset.get("asset_id") for asset in created_assets_in_order if asset.get("asset_id")]
+            try:
+                delete_assets_cascade(created_ids)
+                set_flash(
+                    request,
+                    "error",
+                    f"Project funding was not saved, so the newly created asset record(s) were rolled back: {describe_asset_project_error(error)}",
+                )
+                return RedirectResponse(url="/admin/assets/new", status_code=303)
+            except Exception:
+                set_flash(request, "error", f"Asset was created, but project funding was not saved and rollback failed: {describe_asset_project_error(error)}")
+                return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
 
     for created_asset in created_assets_in_order:
         created_tag = created_asset.get("asset_tag_number")
@@ -7384,6 +7526,118 @@ def admin_asset_create(
 
     set_flash(request, "success", f"Asset {asset_form['asset_tag_number']} was created.")
     return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
+
+
+@app.get("/admin/assets/delete-range", response_class=HTMLResponse)
+def admin_asset_delete_range(request: Request, start_tag: str = "", end_tag: str = ""):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can delete asset records.", "/admin/assets")
+    if redirect:
+        return redirect
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_asset_delete_range.html",
+        context={
+            "start_tag": normalize_asset_tag(start_tag),
+            "end_tag": normalize_asset_tag(end_tag),
+            "delete_preview": None,
+            "flash": pop_flash(request),
+            "active_page": "assets",
+            "page_title": "Delete Asset Range",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.post("/admin/assets/delete-range", response_class=HTMLResponse)
+def admin_asset_delete_range_preview(
+    request: Request,
+    start_tag: str = Form(""),
+    end_tag: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can delete asset records.", "/admin/assets")
+    if redirect:
+        return redirect
+
+    normalized_start = normalize_asset_tag(start_tag)
+    normalized_end = normalize_asset_tag(end_tag)
+    delete_preview = None
+    flash = None
+    try:
+        asset_tags = generate_asset_tag_range(normalized_start, normalized_end)
+        delete_preview = get_asset_delete_preview(asset_tags)
+    except ValueError as error:
+        flash = {"level": "error", "message": str(error)}
+    except Exception as error:
+        flash = {"level": "error", "message": f"Could not build delete preview: {error}"}
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_asset_delete_range.html",
+        context={
+            "start_tag": normalized_start,
+            "end_tag": normalized_end,
+            "delete_preview": delete_preview,
+            "flash": flash or pop_flash(request),
+            "active_page": "assets",
+            "page_title": "Delete Asset Range",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.post("/admin/assets/delete-range/confirm")
+def admin_asset_delete_range_confirm(
+    request: Request,
+    start_tag: str = Form(""),
+    end_tag: str = Form(""),
+    confirm_text: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    redirect = require_admin_role(request, "Only admin can delete asset records.", "/admin/assets")
+    if redirect:
+        return redirect
+
+    normalized_start = normalize_asset_tag(start_tag)
+    normalized_end = normalize_asset_tag(end_tag)
+    if confirm_text.strip() != "DELETE":
+        set_flash(request, "error", "Type DELETE to confirm asset deletion.")
+        return RedirectResponse(
+            url=f"/admin/assets/delete-range?{urlencode({'start_tag': normalized_start, 'end_tag': normalized_end})}",
+            status_code=303,
+        )
+
+    try:
+        asset_tags = generate_asset_tag_range(normalized_start, normalized_end)
+        assets_to_delete = get_assets_by_tags(asset_tags)
+        asset_ids = [asset.get("asset_id") for asset in assets_to_delete if asset.get("asset_id")]
+        delete_assets_cascade(asset_ids)
+        for asset in assets_to_delete:
+            audit_log_event(
+                entity_type="Asset",
+                entity_id=asset.get("asset_id"),
+                entity_label=asset.get("asset_tag_number"),
+                action="deleted",
+                summary=f"Deleted asset record from range cleanup: {asset.get('asset_tag_number')}",
+                request=request,
+            )
+        set_flash(request, "success", f"Deleted {len(asset_ids)} asset record(s): {normalized_start} - {normalized_end}.")
+    except Exception as error:
+        set_flash(request, "error", f"Asset range could not be deleted: {error}")
+        return RedirectResponse(
+            url=f"/admin/assets/delete-range?{urlencode({'start_tag': normalized_start, 'end_tag': normalized_end})}",
+            status_code=303,
+        )
+
+    return RedirectResponse(url="/admin/assets", status_code=303)
 
 
 @app.get("/admin/people", response_class=HTMLResponse)
@@ -8524,6 +8778,7 @@ def admin_asset_payment_create(
     payment_date: str = Form(""),
     payment_amount: str = Form(""),
     currency: str = Form(""),
+    eur_equivalent_amount: str = Form(""),
     payment_status: str = Form("paid"),
     notes: str = Form(""),
 ):
@@ -8544,6 +8799,7 @@ def admin_asset_payment_create(
             currency=currency or asset.get("currency") or "EUR",
             payment_status=payment_status,
             notes=notes,
+            eur_equivalent_amount=eur_equivalent_amount,
         )
         supabase.table("asset_payments").insert(payload).execute()
         audit_log_event(
@@ -8571,6 +8827,7 @@ def admin_asset_payment_update(
     payment_date: str = Form(""),
     payment_amount: str = Form(""),
     currency: str = Form(""),
+    eur_equivalent_amount: str = Form(""),
     payment_status: str = Form("paid"),
     notes: str = Form(""),
 ):
@@ -8601,6 +8858,7 @@ def admin_asset_payment_update(
             currency=currency or asset.get("currency") or "EUR",
             payment_status=payment_status,
             notes=notes,
+            eur_equivalent_amount=eur_equivalent_amount,
         )
         payload.pop("asset_id", None)
         supabase.table("asset_payments").update(payload).eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
@@ -8610,7 +8868,7 @@ def admin_asset_payment_update(
             entity_label=asset.get("asset_tag_number"),
             old_record=old_payment,
             new_record=payload,
-            fields=["payment_number", "payment_date", "payment_amount", "currency", "payment_status", "notes"],
+            fields=["payment_number", "payment_date", "payment_amount", "currency", "eur_equivalent_amount", "payment_status", "notes"],
             request=request,
         )
     except Exception as error:
