@@ -24,7 +24,7 @@
         <a class="btn" href="/admin/assets/new">Add asset</a>
         {% endif %}
         {% if request.session.get('admin_role', 'admin') == 'admin' %}
-        <a class="btn danger" href="/admin/assets/delete-range">Delete asset range</a>
+        <a class="btn soft-danger" href="/admin/assets/delete-range">Delete asset range</a>
         {% endif %}
     </div>
 
