@@ -1,0 +1,194 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h2>Bulk Assignment</h2>
+    <p>Apply one assignment change to a range of asset records. Preview the matched assets and uncheck any records that should be skipped.</p>
+</section>
+
+{% if flash %}
+<div class="flash {% if flash.level == 'error' %}error{% endif %}">
+    {{ flash.message }}
+</div>
+{% endif %}
+
+<section class="panel">
+    <div class="toolbar">
+        <a class="btn secondary" href="/admin/assets">Back to assets</a>
+    </div>
+
+    <form method="post" action="/admin/assets/bulk-assignment" class="form-grid">
+        <div class="field">
+            <label for="start_tag">Start inventory number</label>
+            <input id="start_tag" name="start_tag" type="text" value="{{ form.start_tag }}" placeholder="HELP-UKR-LC-0361" required>
+        </div>
+
+        <div class="field">
+            <label for="end_tag">End inventory number</label>
+            <input id="end_tag" name="end_tag" type="text" value="{{ form.end_tag }}" placeholder="HELP-UKR-LC-0374" required>
+        </div>
+
+        <div class="field">
+            <label for="person_id">Responsible person</label>
+            <select id="person_id" name="person_id">
+                <option value="">Unassigned / Warehouse</option>
+                {% for person in people %}
+                {% set person_name = person.name_eng or person.name or person.full_name or ('Person #' ~ person.person_id) %}
+                <option value="{{ person.person_id }}" {% if form.person_id|string == person.person_id|string %}selected{% endif %}>
+                    {{ person_name }}{% if person.department %} - {{ person.department }}{% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="assignment_department">Department</label>
+            <select id="assignment_department" name="assignment_department">
+                <option value="">No department</option>
+                {% for department in department_options %}
+                <option value="{{ department }}" {% if form.assignment_department == department %}selected{% endif %}>{{ department }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="assignment_city">City</label>
+            <select id="assignment_city" name="assignment_city" data-city-select>
+                <option value="">No city</option>
+                {% for city in city_options %}
+                <option value="{{ city }}" {% if form.assignment_city == city %}selected{% endif %}>{{ city }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="location_id">Office / location</label>
+            <select id="location_id" name="location_id" data-location-select>
+                <option value="" data-city="">No office / location</option>
+                {% for location in locations %}
+                <option value="{{ location.location_id }}" data-city="{{ location.city or '' }}" {% if form.location_id|string == location.location_id|string %}selected{% endif %}>
+                    {{ location.name or location.office or location.display_name or ('Location #' ~ location.location_id) }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="assignment_date">Assignment date</label>
+            <input id="assignment_date" name="assignment_date" type="date" value="{{ form.assignment_date }}" required>
+        </div>
+
+        <div class="field">
+            <label for="status">Assignment status</label>
+            <input id="status" name="status" type="text" value="{{ form.status }}">
+        </div>
+
+        <div class="field">
+            <label for="assignment_scope">Assignment type</label>
+            <select id="assignment_scope" name="assignment_scope">
+                <option value="personal" {% if form.assignment_scope == 'personal' %}selected{% endif %}>Personal asset</option>
+                <option value="department_shared" {% if form.assignment_scope == 'department_shared' %}selected{% endif %}>Department/shared responsibility</option>
+                <option value="warehouse" {% if form.assignment_scope == 'warehouse' %}selected{% endif %}>Warehouse custody</option>
+            </select>
+        </div>
+
+        <div class="field full">
+            <label for="handover_condition">Asset condition on handover</label>
+            <textarea id="handover_condition" name="handover_condition" rows="2">{{ form.handover_condition }}</textarea>
+        </div>
+
+        <div class="field full">
+            <label for="custody_note">Custody note</label>
+            <textarea id="custody_note" name="custody_note" rows="2">{{ form.custody_note }}</textarea>
+        </div>
+
+        <div class="field full">
+            <label for="notes">Assignment notes</label>
+            <textarea id="notes" name="notes" rows="2">{{ form.notes }}</textarea>
+        </div>
+
+        <div class="toolbar" style="margin-bottom: 0;">
+            <button class="btn" type="submit">Preview matched assets</button>
+        </div>
+    </form>
+</section>
+
+{% if bulk_preview %}
+<section class="panel" style="margin-top: 18px;">
+    <div class="toolbar" style="justify-content: space-between;">
+        <h3 style="margin: 0;">Matched Assets</h3>
+        <span class="muted">{{ bulk_preview.assets|length }} asset(s) found</span>
+    </div>
+
+    {% if bulk_preview.missing_tags %}
+    <div class="flash error">
+        Missing inventory numbers in this range: {{ bulk_preview.missing_tags|join(", ") }}
+    </div>
+    {% endif %}
+
+    <form method="post" action="/admin/assets/bulk-assignment/apply">
+        {% for field_name, value in form.items() %}
+        <input type="hidden" name="{{ field_name }}" value="{{ value }}">
+        {% endfor %}
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Apply</th>
+                        <th>Asset Tag</th>
+                        <th>Description</th>
+                        <th>Current responsible</th>
+                        <th>Department</th>
+                        <th>City</th>
+                        <th>Office</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for asset in bulk_preview.assets %}
+                    <tr>
+                        <td><input name="asset_id" type="checkbox" value="{{ asset.asset_id }}" checked></td>
+                        <td><strong>{{ asset.asset_tag_number }}</strong></td>
+                        <td>{{ asset.item_description or "-" }}</td>
+                        <td>{{ asset.current_assignment.responsible_person if asset.current_assignment else "-" }}</td>
+                        <td>{{ asset.current_assignment.department if asset.current_assignment else "-" }}</td>
+                        <td>{{ asset.current_assignment.city if asset.current_assignment else "-" }}</td>
+                        <td>{{ asset.current_assignment.location_name if asset.current_assignment else "-" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if bulk_preview.assets %}
+        <div class="toolbar" style="margin-top: 16px;">
+            <button class="btn" type="submit">Apply assignment to selected assets</button>
+        </div>
+        {% endif %}
+    </form>
+</section>
+{% endif %}
+
+<script>
+    (() => {
+        const citySelect = document.querySelector("[data-city-select]");
+        const locationSelect = document.querySelector("[data-location-select]");
+        function syncLocationOptions() {
+            if (!citySelect || !locationSelect) {
+                return;
+            }
+            const selectedCity = (citySelect.value || "").toLowerCase();
+            Array.from(locationSelect.options).forEach((option) => {
+                const optionCity = (option.dataset.city || "").toLowerCase();
+                option.hidden = Boolean(selectedCity) && Boolean(optionCity) && optionCity !== selectedCity;
+            });
+            const selectedOption = locationSelect.selectedOptions[0];
+            if (selectedOption?.hidden) {
+                locationSelect.value = "";
+            }
+        }
+        citySelect?.addEventListener("change", syncLocationOptions);
+        syncLocationOptions();
+    })();
+</script>
+{% endblock %}

@@ -348,6 +348,103 @@
             <button class="btn secondary" type="button" data-add-funding>Add project row</button>
         </div>
 
+        <div class="field full">
+            <label class="checkbox-line">
+                <input
+                    name="initial_assignment_enabled"
+                    type="checkbox"
+                    data-initial-assignment-toggle
+                    {% if asset_form.initial_assignment.enabled %}checked{% endif %}
+                >
+                Set initial assignment after creation
+            </label>
+            <p class="muted" style="margin-top: 4px;">Apply the same starting location or holder to every created asset record.</p>
+        </div>
+
+        <div class="field full" data-initial-assignment-panel {% if not asset_form.initial_assignment.enabled %}hidden{% endif %}>
+            <h3 style="margin: 0 0 12px;">Initial Assignment</h3>
+            <div class="asset-create-top-row">
+                <div class="field">
+                    <label for="initial_person_id">Responsible person</label>
+                    <select id="initial_person_id" name="initial_person_id">
+                        <option value="">Unassigned / Warehouse</option>
+                        {% for person in people %}
+                        {% set person_name = person.name_eng or person.name or person.full_name or ('Person #' ~ person.person_id) %}
+                        <option value="{{ person.person_id }}" {% if asset_form.initial_assignment.person_id|string == person.person_id|string %}selected{% endif %}>
+                            {{ person_name }}{% if person.department %} - {{ person.department }}{% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="initial_assignment_department">Department</label>
+                    <select id="initial_assignment_department" name="initial_assignment_department">
+                        <option value="">No department</option>
+                        {% for department in department_options %}
+                        <option value="{{ department }}" {% if asset_form.initial_assignment.assignment_department == department %}selected{% endif %}>{{ department }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="initial_assignment_city">City</label>
+                    <select id="initial_assignment_city" name="initial_assignment_city" data-initial-city-select>
+                        <option value="">No city</option>
+                        {% for city in city_options %}
+                        <option value="{{ city }}" {% if asset_form.initial_assignment.city == city %}selected{% endif %}>{{ city }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="initial_location_id">Office / location</label>
+                    <select id="initial_location_id" name="initial_location_id" data-initial-location-select>
+                        <option value="" data-city="">No office / location</option>
+                        {% for location in locations %}
+                        <option value="{{ location.location_id }}" data-city="{{ location.city or '' }}" {% if asset_form.initial_assignment.location_id|string == location.location_id|string %}selected{% endif %}>
+                            {{ location.name or location.office or location.display_name or ('Location #' ~ location.location_id) }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="initial_assignment_date">Assignment date</label>
+                    <input id="initial_assignment_date" name="initial_assignment_date" type="date" value="{{ asset_form.initial_assignment.assignment_date }}">
+                </div>
+
+                <div class="field">
+                    <label for="initial_assignment_status">Assignment status</label>
+                    <input id="initial_assignment_status" name="initial_assignment_status" type="text" value="{{ asset_form.initial_assignment.status or asset_form.current_status }}">
+                </div>
+
+                <div class="field">
+                    <label for="initial_assignment_scope">Assignment type</label>
+                    <select id="initial_assignment_scope" name="initial_assignment_scope">
+                        <option value="personal" {% if asset_form.initial_assignment.assignment_scope == 'personal' %}selected{% endif %}>Personal asset</option>
+                        <option value="department_shared" {% if asset_form.initial_assignment.assignment_scope == 'department_shared' %}selected{% endif %}>Department/shared responsibility</option>
+                        <option value="warehouse" {% if asset_form.initial_assignment.assignment_scope == 'warehouse' %}selected{% endif %}>Warehouse custody</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="field full" style="margin-top: 12px;">
+                <label for="initial_handover_condition">Asset condition on handover</label>
+                <textarea id="initial_handover_condition" name="initial_handover_condition" rows="2">{{ asset_form.initial_assignment.handover_condition }}</textarea>
+            </div>
+
+            <div class="field full">
+                <label for="initial_custody_note">Custody note</label>
+                <textarea id="initial_custody_note" name="initial_custody_note" rows="2">{{ asset_form.initial_assignment.custody_note }}</textarea>
+            </div>
+
+            <div class="field full">
+                <label for="initial_assignment_notes">Assignment notes</label>
+                <textarea id="initial_assignment_notes" name="initial_assignment_notes" rows="2">{{ asset_form.initial_assignment.notes }}</textarea>
+            </div>
+        </div>
+
         <div class="toolbar" style="margin-bottom: 0;">
             <button class="btn" type="submit">Create asset</button>
             <a class="btn secondary" href="/admin/assets">Cancel</a>
@@ -381,6 +478,10 @@
         const statusSelect = form.querySelector("[data-asset-status-select]");
         const statusCustomInput = form.querySelector("[data-asset-status-custom]");
         const statusRow = form.querySelector("[data-asset-status-row]");
+        const initialAssignmentToggle = form.querySelector("[data-initial-assignment-toggle]");
+        const initialAssignmentPanel = form.querySelector("[data-initial-assignment-panel]");
+        const initialCitySelect = form.querySelector("[data-initial-city-select]");
+        const initialLocationSelect = form.querySelector("[data-initial-location-select]");
         const assetTagStandards = {{ asset_tag_standards|tojson }};
         let lastSeriesCount = cloneCountInput?.value || "1";
         const suggestedTags = Object.values(assetTagStandards || {})
@@ -618,6 +719,28 @@
             updateSeriesHelper();
         }
 
+        function syncInitialAssignmentPanel() {
+            if (!initialAssignmentPanel) {
+                return;
+            }
+            initialAssignmentPanel.hidden = !initialAssignmentToggle?.checked;
+        }
+
+        function syncInitialLocationOptions() {
+            if (!initialCitySelect || !initialLocationSelect) {
+                return;
+            }
+            const selectedCity = (initialCitySelect.value || "").toLowerCase();
+            Array.from(initialLocationSelect.options).forEach((option) => {
+                const optionCity = (option.dataset.city || "").toLowerCase();
+                option.hidden = Boolean(selectedCity) && Boolean(optionCity) && optionCity !== selectedCity;
+            });
+            const selectedOption = initialLocationSelect.selectedOptions[0];
+            if (selectedOption?.hidden) {
+                initialLocationSelect.value = "";
+            }
+        }
+
         function isNonstandardAssetTag(value) {
             const normalized = normalizeAssetTag(value);
             const selectedStandard = getSelectedAssetTagStandard();
@@ -663,6 +786,10 @@
         singleQuantityBundleInput?.addEventListener("change", syncSingleQuantityBundle);
         syncSingleQuantityBundle();
         updateSeriesHelper();
+        initialAssignmentToggle?.addEventListener("change", syncInitialAssignmentPanel);
+        syncInitialAssignmentPanel();
+        initialCitySelect?.addEventListener("change", syncInitialLocationOptions);
+        syncInitialLocationOptions();
 
         statusSelect?.addEventListener("change", syncCustomStatusField);
         syncCustomStatusField();

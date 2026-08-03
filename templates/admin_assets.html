@@ -22,6 +22,7 @@
         </form>
         {% if can_write %}
         <a class="btn" href="/admin/assets/new">Add asset</a>
+        <a class="btn secondary" href="/admin/assets/bulk-assignment">Bulk assignment</a>
         {% endif %}
         {% if request.session.get('admin_role', 'admin') == 'admin' %}
         <a class="btn soft-danger" href="/admin/assets/delete-range">Delete asset range</a>

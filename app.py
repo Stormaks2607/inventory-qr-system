@@ -4757,6 +4757,136 @@ def describe_assignment_update_error(error: Exception) -> str:
     return f"Assignment could not be saved: {message}"
 
 
+def normalize_assignment_scope(value: str) -> str:
+    normalized = (value or "").strip()
+    return normalized if normalized in {"personal", "department_shared", "warehouse"} else "personal"
+
+
+def apply_asset_assignment_change(
+    *,
+    asset: dict,
+    parsed_person_id: Optional[int],
+    parsed_location_id: Optional[int],
+    assignment_department: str,
+    assignment_date: str,
+    status: str,
+    notes: str,
+    handover_condition: str,
+    assignment_scope: str,
+    custody_note: str,
+    request: Request,
+    transfer_reason: str = "Assignment changed in web app",
+) -> dict:
+    asset_id = asset.get("asset_id")
+    if not asset_id:
+        raise ValueError("Asset ID is required.")
+    if not assignment_date:
+        raise ValueError("Assignment date is required.")
+    if parsed_person_id and not parsed_location_id:
+        raise ValueError("Location is required when a responsible person is selected.")
+
+    actor = get_admin_actor(request)
+    current_assignment = asset.get("current_assignment") or get_current_assignment(asset_id)
+    old_responsible = (current_assignment or {}).get("responsible_person") or "-"
+
+    if not parsed_person_id and not parsed_location_id:
+        if current_assignment:
+            close_current_assignments(asset_id, assignment_date, actor)
+            if status:
+                supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+            transfer_id = create_asset_transfer_from_assignment_change(
+                asset=asset,
+                from_assignment=current_assignment,
+                to_person_id=None,
+                transfer_date=assignment_date,
+                transfer_reason="Assignment closed in web app",
+                status=status or current_assignment.get("status") or asset.get("current_status"),
+                condition=handover_condition or current_assignment.get("handover_condition"),
+            )
+            audit_log_event(
+                entity_type="Transfer",
+                entity_id=transfer_id or asset_id,
+                entity_label=asset.get("asset_tag_number"),
+                action="transferred",
+                old_value=old_responsible,
+                new_value="Warehouse",
+                summary=f"Assignment closed for {asset.get('asset_tag_number')}: {old_responsible} -> Warehouse",
+                request=request,
+                event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
+            )
+            return {"changed": True, "message": "Assignment closed."}
+        if status:
+            supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+        return {"changed": False, "message": "Asset is already unassigned."}
+
+    new_assignment = add_assignment_department_field(
+        {
+            "asset_id": asset_id,
+            "person_id": parsed_person_id,
+            "location_id": parsed_location_id,
+            "assignment_date": assignment_date,
+            "return_date": None,
+            "status": status or None,
+            "notes": notes or None,
+            "handover_condition": handover_condition or None,
+            "assignment_scope": normalize_assignment_scope(assignment_scope),
+            "custody_note": custody_note or None,
+        },
+        assignment_department,
+    )
+    assignment_changes = build_assignment_field_changes(current_assignment or {}, new_assignment)
+    if not assignment_changes and current_assignment:
+        return {"changed": False, "message": "Assignment already matches."}
+
+    if (
+        current_assignment
+        and current_assignment.get("person_id") == parsed_person_id
+        and current_assignment.get("location_id") == parsed_location_id
+    ):
+        close_current_assignments(asset_id, assignment_date, actor)
+        supabase.table("asset_assignments").insert(add_assignment_actor_fields(new_assignment, actor)).execute()
+        if status:
+            supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+        log_assignment_field_changes(asset, assignment_changes, request)
+        return {"changed": True, "message": "Assignment updated."}
+
+    close_current_assignments(asset_id, assignment_date, actor)
+    supabase.table("asset_assignments").insert(add_assignment_actor_fields(new_assignment, actor)).execute()
+    if status:
+        supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+
+    target_person = get_person_by_id(parsed_person_id) if parsed_person_id else None
+    new_responsible = get_person_display_name(target_person) if target_person else "Warehouse"
+    transfer_id = create_asset_transfer_from_assignment_change(
+        asset=asset,
+        from_assignment=current_assignment,
+        to_person_id=parsed_person_id,
+        transfer_date=assignment_date,
+        transfer_reason=transfer_reason,
+        status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
+        condition=handover_condition or (current_assignment or {}).get("handover_condition"),
+    )
+    audit_log_event(
+        entity_type="Transfer",
+        entity_id=transfer_id or asset_id,
+        entity_label=asset.get("asset_tag_number"),
+        action="transferred",
+        field_name="responsible_person",
+        old_value=old_responsible,
+        new_value=new_responsible,
+        summary=f"{asset.get('asset_tag_number')} reassigned: {old_responsible} -> {new_responsible}",
+        request=request,
+        event_key=f"asset_transfer:{transfer_id}" if transfer_id else None,
+    )
+    transfer_logged_fields = {"person_id"}
+    log_assignment_field_changes(
+        asset,
+        [change for change in assignment_changes if change["field_name"] not in transfer_logged_fields],
+        request,
+    )
+    return {"changed": True, "message": "Assignment updated."}
+
+
 def get_asset_serial_value(asset: dict) -> str:
     return asset.get("serial_chassis_number") or asset.get("serial_number") or ""
 
@@ -4806,6 +4936,19 @@ def get_asset_form_values(asset: Optional[dict] = None) -> dict:
                 "funding_note": "",
             }
         ],
+        "initial_assignment": {
+            "enabled": False,
+            "person_id": "",
+            "assignment_department": "",
+            "city": "",
+            "location_id": "",
+            "assignment_date": datetime.now(ZoneInfo("Europe/Kiev")).strftime("%Y-%m-%d"),
+            "status": current_status or "",
+            "assignment_scope": "warehouse",
+            "handover_condition": "",
+            "custody_note": "",
+            "notes": "",
+        },
     }
 
 
@@ -5164,6 +5307,10 @@ def get_asset_create_options() -> dict:
         "currency_options": currencies,
         "projects": list_projects(),
         "donors": list_donors(),
+        "people": list_people(),
+        "locations": list_assignment_location_options(),
+        "department_options": list_assignment_department_options(),
+        "city_options": list_assignment_city_options(),
     }
 
 
@@ -7034,6 +7181,17 @@ def admin_asset_create(
     funding_donor_id: list[str] = Form([]),
     funding_allocation_percent: list[str] = Form([]),
     funding_note: list[str] = Form([]),
+    initial_assignment_enabled: Optional[str] = Form(None),
+    initial_person_id: str = Form(""),
+    initial_assignment_department: str = Form(""),
+    initial_assignment_city: str = Form(""),
+    initial_location_id: str = Form(""),
+    initial_assignment_date: str = Form(""),
+    initial_assignment_status: str = Form(""),
+    initial_assignment_scope: str = Form("warehouse"),
+    initial_handover_condition: str = Form(""),
+    initial_custody_note: str = Form(""),
+    initial_assignment_notes: str = Form(""),
     confirm_nonstandard_asset_tag: str = Form(""),
     confirm_payment_total_mismatch: str = Form(""),
 ):
@@ -7057,6 +7215,7 @@ def admin_asset_create(
         funding_note,
     )
     is_single_quantity_bundle = single_quantity_bundle == "on"
+    use_initial_assignment = initial_assignment_enabled == "on"
     asset_form = {
         "asset_tag_number": normalize_asset_tag(asset_tag_number),
         "usage_type": normalize_asset_usage_type(usage_type, asset_tag_number),
@@ -7083,6 +7242,19 @@ def admin_asset_create(
         "payment_notes": payment_notes.strip(),
         "payments": payment_forms,
         "funding_rows": funding_forms,
+        "initial_assignment": {
+            "enabled": use_initial_assignment,
+            "person_id": initial_person_id.strip(),
+            "assignment_department": initial_assignment_department.strip(),
+            "city": initial_assignment_city.strip(),
+            "location_id": initial_location_id.strip(),
+            "assignment_date": initial_assignment_date.strip(),
+            "status": initial_assignment_status.strip(),
+            "assignment_scope": normalize_assignment_scope(initial_assignment_scope),
+            "handover_condition": initial_handover_condition.strip(),
+            "custody_note": initial_custody_note.strip(),
+            "notes": initial_assignment_notes.strip(),
+        },
     }
     asset_tag_standard = asset_tag_standards.get(asset_form["usage_type"]) or asset_tag_standards.get("standard") or {}
 
@@ -7337,6 +7509,79 @@ def admin_asset_create(
             status_code=400,
         )
 
+    initial_assignment_form = asset_form["initial_assignment"]
+    try:
+        initial_person_id_value = int(initial_assignment_form["person_id"]) if initial_assignment_form["person_id"] else None
+        initial_location_id_value = int(initial_assignment_form["location_id"]) if initial_assignment_form["location_id"] else None
+    except ValueError:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {"level": "error", "message": "Initial assignment person and location must be valid reference records."},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+    if use_initial_assignment and not initial_assignment_form["assignment_date"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {"level": "error", "message": "Initial assignment date is required."},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+    if use_initial_assignment and not initial_person_id_value and not initial_location_id_value:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {"level": "error", "message": "Choose an initial responsible person or office / location."},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+    if use_initial_assignment and initial_person_id_value and not initial_location_id_value:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_asset_create.html",
+            context={
+                "asset_form": asset_form,
+                **get_asset_create_options(),
+                "asset_tag_standard": asset_tag_standard,
+                "asset_tag_standards": asset_tag_standards,
+                "asset_tag_warning": asset_tag_warning,
+                "flash": {"level": "error", "message": "Initial assignment location is required when a responsible person is selected."},
+                "active_page": "assets",
+                "page_title": "New Asset",
+                "admin_username": request.session.get("admin_username"),
+            },
+            status_code=400,
+        )
+
     purchase_price_eur = insert_data_base.get("purchase_price") if (asset_form["currency"] or "").upper() == "EUR" else None
     if purchase_price_eur is not None and filled_payment_forms and confirm_payment_total_mismatch != "yes":
         payment_total_eur = 0.0
@@ -7504,6 +7749,42 @@ def admin_asset_create(
                 set_flash(request, "error", f"Asset was created, but project funding was not saved and rollback failed: {describe_asset_project_error(error)}")
                 return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
 
+    if use_initial_assignment:
+        try:
+            for created_asset in created_assets_in_order:
+                asset_for_assignment = {
+                    **created_asset,
+                    "current_assignment": None,
+                    "current_status": created_asset.get("current_status") or asset_form["current_status"],
+                }
+                apply_asset_assignment_change(
+                    asset=asset_for_assignment,
+                    parsed_person_id=initial_person_id_value,
+                    parsed_location_id=initial_location_id_value,
+                    assignment_department=initial_assignment_form["assignment_department"],
+                    assignment_date=initial_assignment_form["assignment_date"],
+                    status=initial_assignment_form["status"] or asset_form["current_status"],
+                    notes=initial_assignment_form["notes"],
+                    handover_condition=initial_assignment_form["handover_condition"],
+                    assignment_scope=initial_assignment_form["assignment_scope"],
+                    custody_note=initial_assignment_form["custody_note"],
+                    request=request,
+                    transfer_reason="Initial assignment set during asset creation",
+                )
+        except Exception as error:
+            created_ids = [asset.get("asset_id") for asset in created_assets_in_order if asset.get("asset_id")]
+            try:
+                delete_assets_cascade(created_ids)
+                set_flash(
+                    request,
+                    "error",
+                    f"Initial assignment was not saved, so the newly created asset record(s) were rolled back: {describe_assignment_update_error(error)}",
+                )
+                return RedirectResponse(url="/admin/assets/new", status_code=303)
+            except Exception:
+                set_flash(request, "error", f"Asset was created, but initial assignment was not saved and rollback failed: {describe_assignment_update_error(error)}")
+                return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
+
     for created_asset in created_assets_in_order:
         created_tag = created_asset.get("asset_tag_number")
         audit_log_event(
@@ -7637,6 +7918,175 @@ def admin_asset_delete_range_confirm(
             status_code=303,
         )
 
+    return RedirectResponse(url="/admin/assets", status_code=303)
+
+
+def get_bulk_assignment_form_values(data: Optional[dict] = None) -> dict:
+    data = data or {}
+    return {
+        "start_tag": normalize_asset_tag(data.get("start_tag") or ""),
+        "end_tag": normalize_asset_tag(data.get("end_tag") or ""),
+        "person_id": str(data.get("person_id") or "").strip(),
+        "assignment_department": str(data.get("assignment_department") or "").strip(),
+        "assignment_city": str(data.get("assignment_city") or "").strip(),
+        "location_id": str(data.get("location_id") or "").strip(),
+        "assignment_date": str(data.get("assignment_date") or datetime.now(ZoneInfo("Europe/Kiev")).strftime("%Y-%m-%d")).strip(),
+        "status": str(data.get("status") or "functional").strip(),
+        "assignment_scope": normalize_assignment_scope(str(data.get("assignment_scope") or "warehouse")),
+        "handover_condition": str(data.get("handover_condition") or "").strip(),
+        "custody_note": str(data.get("custody_note") or "").strip(),
+        "notes": str(data.get("notes") or "").strip(),
+    }
+
+
+def get_bulk_assignment_template_context(request: Request, form: dict, bulk_preview: Optional[dict] = None, flash: Optional[dict] = None) -> dict:
+    return {
+        "form": form,
+        "bulk_preview": bulk_preview,
+        **get_asset_create_options(),
+        "flash": flash or pop_flash(request),
+        "active_page": "assets",
+        "page_title": "Bulk Assignment",
+        "admin_username": request.session.get("admin_username"),
+    }
+
+
+def get_bulk_assignment_preview(start_tag: str, end_tag: str) -> dict:
+    asset_tags = generate_asset_tag_range(start_tag, end_tag)
+    assets = [get_asset_by_id(asset.get("asset_id")) for asset in get_assets_by_tags(asset_tags)]
+    assets = [asset for asset in assets if asset]
+    found_tags = {normalize_asset_tag(asset.get("asset_tag_number") or "") for asset in assets}
+    return {
+        "asset_tags": asset_tags,
+        "assets": assets,
+        "missing_tags": [tag for tag in asset_tags if tag not in found_tags],
+    }
+
+
+@app.get("/admin/assets/bulk-assignment", response_class=HTMLResponse)
+def admin_asset_bulk_assignment(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    if not admin_role_can_write(request):
+        set_flash(request, "error", "Viewer role has read-only access.")
+        return RedirectResponse(url="/admin/assets", status_code=303)
+
+    form = get_bulk_assignment_form_values()
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_asset_bulk_assignment.html",
+        context=get_bulk_assignment_template_context(request, form),
+    )
+
+
+@app.post("/admin/assets/bulk-assignment", response_class=HTMLResponse)
+def admin_asset_bulk_assignment_preview(
+    request: Request,
+    start_tag: str = Form(""),
+    end_tag: str = Form(""),
+    person_id: str = Form(""),
+    assignment_department: str = Form(""),
+    assignment_city: str = Form(""),
+    location_id: str = Form(""),
+    assignment_date: str = Form(""),
+    status: str = Form(""),
+    assignment_scope: str = Form("warehouse"),
+    handover_condition: str = Form(""),
+    custody_note: str = Form(""),
+    notes: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    if not admin_role_can_write(request):
+        set_flash(request, "error", "Viewer role has read-only access.")
+        return RedirectResponse(url="/admin/assets", status_code=303)
+
+    form = get_bulk_assignment_form_values(locals())
+    bulk_preview = None
+    flash = None
+    try:
+        bulk_preview = get_bulk_assignment_preview(form["start_tag"], form["end_tag"])
+    except ValueError as error:
+        flash = {"level": "error", "message": str(error)}
+    except Exception as error:
+        flash = {"level": "error", "message": f"Could not build assignment preview: {error}"}
+
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_asset_bulk_assignment.html",
+        context=get_bulk_assignment_template_context(request, form, bulk_preview, flash),
+    )
+
+
+@app.post("/admin/assets/bulk-assignment/apply")
+def admin_asset_bulk_assignment_apply(
+    request: Request,
+    start_tag: str = Form(""),
+    end_tag: str = Form(""),
+    person_id: str = Form(""),
+    assignment_department: str = Form(""),
+    assignment_city: str = Form(""),
+    location_id: str = Form(""),
+    assignment_date: str = Form(""),
+    status: str = Form(""),
+    assignment_scope: str = Form("warehouse"),
+    handover_condition: str = Form(""),
+    custody_note: str = Form(""),
+    notes: str = Form(""),
+    asset_id: list[int] = Form([]),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    if not admin_role_can_write(request):
+        set_flash(request, "error", "Viewer role has read-only access.")
+        return RedirectResponse(url="/admin/assets", status_code=303)
+
+    form = get_bulk_assignment_form_values(locals())
+    if not asset_id:
+        set_flash(request, "error", "Select at least one asset to update.")
+        return RedirectResponse(url="/admin/assets/bulk-assignment", status_code=303)
+
+    try:
+        parsed_person_id = int(form["person_id"]) if form["person_id"] else None
+        parsed_location_id = int(form["location_id"]) if form["location_id"] else None
+    except ValueError:
+        set_flash(request, "error", "Responsible person and location must be valid reference records.")
+        return RedirectResponse(url="/admin/assets/bulk-assignment", status_code=303)
+
+    updated = 0
+    skipped = 0
+    try:
+        for selected_asset_id in asset_id:
+            asset = get_asset_by_id(int(selected_asset_id))
+            if not asset:
+                skipped += 1
+                continue
+            result = apply_asset_assignment_change(
+                asset=asset,
+                parsed_person_id=parsed_person_id,
+                parsed_location_id=parsed_location_id,
+                assignment_department=form["assignment_department"],
+                assignment_date=form["assignment_date"],
+                status=form["status"],
+                notes=form["notes"],
+                handover_condition=form["handover_condition"],
+                assignment_scope=form["assignment_scope"],
+                custody_note=form["custody_note"],
+                request=request,
+                transfer_reason="Bulk assignment changed in web app",
+            )
+            if result.get("changed"):
+                updated += 1
+            else:
+                skipped += 1
+    except Exception as error:
+        set_flash(request, "error", describe_assignment_update_error(error))
+        return RedirectResponse(url="/admin/assets/bulk-assignment", status_code=303)
+
+    set_flash(request, "success", f"Bulk assignment completed: {updated} updated, {skipped} skipped.")
     return RedirectResponse(url="/admin/assets", status_code=303)
 
 
