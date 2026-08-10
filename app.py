@@ -7215,7 +7215,19 @@ def admin_asset_create(
         funding_note,
     )
     is_single_quantity_bundle = single_quantity_bundle == "on"
-    use_initial_assignment = initial_assignment_enabled == "on"
+    initial_assignment_has_values = any(
+        value.strip()
+        for value in [
+            initial_person_id,
+            initial_assignment_department,
+            initial_assignment_city,
+            initial_location_id,
+            initial_handover_condition,
+            initial_custody_note,
+            initial_assignment_notes,
+        ]
+    )
+    use_initial_assignment = initial_assignment_enabled == "on" or initial_assignment_has_values
     asset_form = {
         "asset_tag_number": normalize_asset_tag(asset_tag_number),
         "usage_type": normalize_asset_usage_type(usage_type, asset_tag_number),
