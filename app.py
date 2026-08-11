@@ -2963,7 +2963,14 @@ def build_asset_registration_transfer_records(
     existing_transfer_keys: set[str],
 ) -> list[dict]:
     records = []
-    for asset in assets_by_id.values():
+    for asset in sorted(
+        assets_by_id.values(),
+        key=lambda row: (
+            parse_app_datetime(row.get("created_at")) or datetime.min.replace(tzinfo=ZoneInfo("Europe/Kiev")),
+            int(row.get("asset_id") or 0),
+            normalize_asset_tag(row.get("asset_tag_number") or ""),
+        ),
+    ):
         asset_tag = normalize_asset_tag(asset.get("asset_tag_number") or "")
         if not asset_tag or not should_export_asset_registration_transfer(asset):
             continue
