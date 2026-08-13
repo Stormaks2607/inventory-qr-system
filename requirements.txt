@@ -10,3 +10,4 @@ openpyxl
 python-multipart
 itsdangerous
 reportlab
+pytest
