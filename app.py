@@ -22,7 +22,9 @@ from postgrest.exceptions import APIError
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, URLSafeSerializer
-from supabase import Client, create_client
+from supabase import Client
+
+from data_access.client import get_supabase_client
 
 
 load_dotenv()
@@ -106,10 +108,7 @@ ASSET_STATUS_OPTIONS = [
 app = FastAPI(title="Asset API", version="1.0.0")
 app.add_middleware(SessionMiddleware, secret_key=ADMIN_SESSION_SECRET)
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set.")
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = get_supabase_client(SUPABASE_URL, SUPABASE_KEY)
 templates = Jinja2Templates(directory="templates")
 
 ASSET_STATUS_SELECT_OPTIONS = [
