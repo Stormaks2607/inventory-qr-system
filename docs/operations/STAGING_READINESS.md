@@ -150,6 +150,17 @@ Required Product Owner actions:
 
 Do not execute a restore automatically.
 
+## Required Preflight Before Migration
+
+Before any draft migration runs in staging:
+
+1. Run the schema preflight in `docs/operations/TENANT_MIGRATION_PREFLIGHT.md`.
+2. Run the data anomaly preflight in the same document.
+3. Record row counts for transaction/lock planning.
+4. Stop if orphan child rows, duplicate confirmed business identifiers, or unexpected schema differences exist.
+
+Relational child rows must not receive Tenant #1 as a silent fallback. They must derive tenant ownership from authoritative parent rows, or the migration must stop for explicit data correction.
+
 ## Restore Drill Checklist
 
 When authorized, restore `PILOT_PRODUCTION` backup into staging and verify:

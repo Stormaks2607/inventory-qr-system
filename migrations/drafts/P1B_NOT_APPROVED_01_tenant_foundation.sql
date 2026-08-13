@@ -1,6 +1,10 @@
 -- P1B DRAFT ONLY - NOT APPROVED FOR PRODUCTION
 -- Do not apply to PILOT_PRODUCTION.
 -- Intended first for staging review/rehearsal after backup and Product Owner authorization.
+-- Rerun behavior: PARTIALLY IDEMPOTENT.
+--   - create/add-column/index steps are guarded.
+--   - backfill updates are repeatable for rows that still have NULL tenant_id.
+--   - this draft must still be preceded by schema and data-anomaly preflight.
 
 begin;
 
@@ -74,64 +78,40 @@ set tenant_id = '00000000-0000-4000-8000-000000000001'::uuid
 where tenant_id is null;
 
 update public.asset_assignments aa
-set tenant_id = coalesce(a.tenant_id, '00000000-0000-4000-8000-000000000001'::uuid)
+set tenant_id = a.tenant_id
 from public.assets a
 where aa.asset_id = a.asset_id
   and aa.tenant_id is null;
 
-update public.asset_assignments
-set tenant_id = '00000000-0000-4000-8000-000000000001'::uuid
-where tenant_id is null;
-
 update public.asset_transfers t
-set tenant_id = coalesce(a.tenant_id, '00000000-0000-4000-8000-000000000001'::uuid)
+set tenant_id = a.tenant_id
 from public.assets a
 where t.asset_id = a.asset_id
   and t.tenant_id is null;
 
-update public.asset_transfers
-set tenant_id = '00000000-0000-4000-8000-000000000001'::uuid
-where tenant_id is null;
-
 update public.asset_transfer_projects atp
-set tenant_id = coalesce(t.tenant_id, '00000000-0000-4000-8000-000000000001'::uuid)
+set tenant_id = t.tenant_id
 from public.asset_transfers t
 where atp.transfer_id = t.transfer_id
   and atp.tenant_id is null;
 
-update public.asset_transfer_projects
-set tenant_id = '00000000-0000-4000-8000-000000000001'::uuid
-where tenant_id is null;
-
 update public.asset_projects ap
-set tenant_id = coalesce(a.tenant_id, '00000000-0000-4000-8000-000000000001'::uuid)
+set tenant_id = a.tenant_id
 from public.assets a
 where ap.asset_id = a.asset_id
   and ap.tenant_id is null;
 
-update public.asset_projects
-set tenant_id = '00000000-0000-4000-8000-000000000001'::uuid
-where tenant_id is null;
-
 update public.asset_payments pay
-set tenant_id = coalesce(a.tenant_id, '00000000-0000-4000-8000-000000000001'::uuid)
+set tenant_id = a.tenant_id
 from public.assets a
 where pay.asset_id = a.asset_id
   and pay.tenant_id is null;
 
-update public.asset_payments
-set tenant_id = '00000000-0000-4000-8000-000000000001'::uuid
-where tenant_id is null;
-
 update public.person_responsibility_scopes prs
-set tenant_id = coalesce(p.tenant_id, '00000000-0000-4000-8000-000000000001'::uuid)
+set tenant_id = p.tenant_id
 from public.persons p
 where prs.person_id = p.person_id
   and prs.tenant_id is null;
-
-update public.person_responsibility_scopes
-set tenant_id = '00000000-0000-4000-8000-000000000001'::uuid
-where tenant_id is null;
 
 create index if not exists idx_assets_tenant_asset_id on public.assets (tenant_id, asset_id);
 create index if not exists idx_assets_tenant_asset_tag on public.assets (tenant_id, asset_tag_number);
@@ -149,7 +129,11 @@ create index if not exists idx_donors_tenant_donor_id on public.donors (tenant_i
 create index if not exists idx_audit_log_tenant_created on public.audit_log (tenant_id, created_at desc);
 create index if not exists idx_organization_branding_tenant on public.organization_branding (tenant_id);
 
--- Validation-friendly checks. Expected result after this draft in staging: every missing_tenant = 0.
+-- Validation-friendly checks.
+-- Root/master rows are expected to have missing_tenant = 0 after this draft.
+-- Relational child rows must also be 0 before enforcement. If any child row remains
+-- NULL, that indicates an orphan/anomalous relationship that requires explicit data
+-- correction. Do not silently assign Tenant #1 to those rows.
 select 'assets' table_name, count(*) missing_tenant from public.assets where tenant_id is null
 union all select 'asset_assignments', count(*) from public.asset_assignments where tenant_id is null
 union all select 'asset_transfers', count(*) from public.asset_transfers where tenant_id is null

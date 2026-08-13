@@ -141,6 +141,8 @@ union all select 'organization_branding', count(*) from public.organization_bran
 
 Expected: all `0`.
 
+If any relational child table has missing tenant rows after foundation backfill, do not run constraint enforcement. Investigate orphan/anomalous parent relationships and make an explicit business/data correction decision.
+
 ### Zero Unexpected Tenant IDs
 
 ```sql

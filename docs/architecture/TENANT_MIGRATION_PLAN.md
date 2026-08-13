@@ -39,6 +39,7 @@ Trade-offs:
 - Stable UUID is deterministic and idempotent across staging and production rehearsal.
 - It avoids accidental creation of different owner IDs on repeated migration attempts.
 - It must be treated as a technical bootstrap identifier only, not a secret.
+- Keeping this fixed UUID is technically safe because tenant isolation must not rely on UUID secrecy. Authorization must come from trusted TenantContext, repository filters, and database constraints.
 
 Alternative controlled lookup/insert by `tenant_key` is possible, but stable UUID is simpler for validation and restore rehearsal.
 
@@ -72,7 +73,16 @@ Rollback: safe if no application depends on the columns.
 
 ### Step D: Backfill Current Tenant
 
-Backfill every existing tenant-owned row to the stable tenant UUID.
+Backfill root/master tenant-owned tables directly to the stable tenant UUID where appropriate for the current single-organization pilot.
+
+Relational child tables must derive `tenant_id` from authoritative parents:
+
+- assignments, transfers, asset projects, and payments derive from `assets`;
+- transfer project rows derive from `asset_transfers`;
+- responsibility scopes derive from `persons`;
+- nullable person/location/project/donor references must be validated before FK enforcement.
+
+Do not silently assign Tenant #1 to unresolved child rows. Remaining null `tenant_id` in child tables after parent-derived backfill is a blocking data-integrity condition and requires an explicit data correction decision.
 
 Deployability: separate data migration after backup and staging rehearsal.
 
@@ -80,17 +90,28 @@ Rollback: forward-fix preferred; restore required only if unexpected broad data 
 
 ### Step E: Validate Every Row
 
-Run pre/post validation queries. Do not proceed if any expected tenant-owned row has null or unexpected `tenant_id`.
+Run schema preflight, anomaly preflight, and post-backfill validation queries. Do not proceed if any expected tenant-owned row has null or unexpected `tenant_id`, and do not proceed if any orphan child relationship remains.
 
 ### Step F: Add Indexes
 
-Add tenant lookup indexes and tenant-scoped business indexes.
+Add tenant lookup indexes and only confirmed tenant-scoped business indexes.
 
 Deployability: separate migration, preferably concurrently where supported.
 
 ### Step G: Add Tenant-Scoped Uniqueness
 
-Introduce tenant-scoped unique constraints such as `(tenant_id, asset_tag_number)`.
+Introduce only confirmed tenant-scoped unique constraints.
+
+Initial confirmed candidates:
+
+- `assets(tenant_id, asset_tag_number)`;
+- `projects(tenant_id, project_number)`.
+
+Future candidates requiring business confirmation:
+
+- `persons(tenant_id, lower(email))`;
+- `donors(tenant_id, donor_name)`;
+- `locations(tenant_id, city, office_name)`.
 
 Compatibility concern: existing global unique constraints may need to remain temporarily until second tenant support is ready.
 
@@ -136,6 +157,43 @@ user_accounts + tenant_memberships -> selected tenant -> TenantContext
 ```
 
 Do not implement multi-tenant login during initial Tenant #1 migration.
+
+## Draft Migration Rerun Behavior
+
+Foundation draft: PARTIALLY IDEMPOTENT.
+
+- guarded create/add-column/index statements;
+- repeatable root/master and parent-derived backfills;
+- still requires preflight and execution log because it changes data in staging.
+
+Constraint/enforcement draft: ONE-SHOT.
+
+- `ALTER TABLE ... ADD CONSTRAINT ...` statements are intentionally not hidden behind broad guards;
+- schema preflight must confirm the constraints do not already exist;
+- rerun is prohibited unless reviewed.
+
+## Transaction And Lock Strategy
+
+The foundation draft currently groups structural additions, backfill updates, indexes, and validation-friendly selects in one transaction. For the current pilot-size dataset this may be acceptable during staging rehearsal if preflight row counts are modest.
+
+For larger future tenants, split execution into:
+
+1. structural additions;
+2. data backfill;
+3. validation;
+4. indexes and constraint enforcement.
+
+Recommended staging sequence:
+
+1. run schema preflight;
+2. run data anomaly preflight;
+3. record row counts and estimate lock risk;
+4. execute foundation draft in staging only;
+5. run post-backfill validation;
+6. execute one-shot enforcement draft only if validation is clean;
+7. run application smoke tests and pytest.
+
+Do not optimize with batching until row counts show the current transaction strategy is unsafe.
 
 ## First Repository Slice
 
@@ -281,6 +339,23 @@ Asset tags must not change.
 Do not implement `/q/{qr_public_id}` in P1B.
 
 Future `asset_public_refs` should coexist by adding new immutable random public references while legacy Tenant #1 routes continue to resolve existing QR labels. New commercial QR can route through `/q/{public_ref}` without exposing asset tags or tenant scope.
+
+## Organization Branding Legacy Key Model
+
+`organization_branding` currently uses `tenant_key` as the primary key/global unique value. Adding `tenant_id` and a future `(tenant_id, tenant_key)` index does not remove that existing global uniqueness.
+
+For Tenant #1 this is acceptable and no destructive PK change is allowed in P1B.
+
+Hard future gate: before multiple tenants need the same branding slug, such as `default`, redesign the branding key model.
+
+Likely future direction:
+
+- `branding_id uuid primary key`;
+- `tenant_id` foreign key;
+- `branding_key` or slug;
+- `unique (tenant_id, branding_key)`.
+
+Do not implement that redesign in P1B.
 
 ## Tenant Isolation Test Plan
 
