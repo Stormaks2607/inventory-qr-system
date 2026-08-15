@@ -14,6 +14,8 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("INVENTORY_TEST_MODE", "1")
 os.environ.pop("SUPABASE_URL", None)
 os.environ.pop("SUPABASE_KEY", None)
+os.environ.pop("PUBLIC_BASE_URL", None)
+os.environ.pop("INTERNAL_API_BASE_URL", None)
 
 
 @pytest.fixture

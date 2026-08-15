@@ -74,8 +74,8 @@ Reason: the current application uses direct `public` schema Supabase calls throu
 | `ADMIN_USERNAME` | local admin username | staging admin username | production admin username | optional with unsafe default | yes-ish | yes |
 | `ADMIN_PASSWORD` | local password | staging password | production password | optional with unsafe default | yes | yes |
 | `ADMIN_SESSION_SECRET` | local strong value or test fallback only | staging strong random value | production strong random value | should be required in production later | yes | yes |
-| `PUBLIC_BASE_URL` | currently hardcoded; future local URL | future staging public URL | future production public URL | should become required | no | yes |
-| `INTERNAL_API_BASE_URL` | future optional local/internal URL | future optional internal URL | future optional internal URL | future optional | no/depends | usually yes |
+| `PUBLIC_BASE_URL` | local/dev public URL when needed; test mode uses `http://testserver` | `https://<staging-render-host>` | `https://inventory-qr-system.onrender.com` explicitly configured in Render | required outside test mode | no | yes |
+| `INTERNAL_API_BASE_URL` | optional local/internal URL | optional; may equal `PUBLIC_BASE_URL` while bot/backend share one service | optional internal URL if bot/backend are split | optional | no/depends | usually yes |
 | `REGISTRATION_TRANSFER_EXPORT_FROM` | optional test/dev cutoff | staging cutoff matching rehearsal data | production cutoff | optional | no | environment-specific |
 | `BRANDING_SETTINGS_PATH` | currently hardcoded local path | should not rely on local disk for staging | should not rely on local disk for production | currently hardcoded | no | yes if externalized |
 | `BRANDING_UPLOAD_DIR` | currently hardcoded local path | should use Storage or persistent staging volume | should use Storage or persistent production volume | currently hardcoded | no | yes if externalized |
@@ -84,17 +84,21 @@ Security notes:
 
 - Do not print or commit actual secret values.
 - `ADMIN_SESSION_SECRET = "replace-this-session-secret"` remains an unsafe fallback and must be hardened in a future security phase.
-- `PUBLIC_BASE_URL` is currently hardcoded to the production Render URL and should become an environment variable before portable staging/production parity.
+- `PUBLIC_BASE_URL` is environment-driven and must not silently fall back to the production Render URL.
 
 ## Telegram Strategy
 
 Default P1B recommendation: disable Telegram in staging unless a staging bot token and staging public URL exist.
 
+For initial staging, leave `BOT_TOKEN` unset unless a dedicated staging bot exists.
+
 If enabled:
 
 - use a separate Telegram bot;
 - point Mini App and report links to staging `PUBLIC_BASE_URL`;
+- use `INTERNAL_API_BASE_URL` only for service-to-service backend calls if bot/backend are split;
 - never reuse the production bot token in staging;
+- never call or modify the production Telegram webhook from staging;
 - validate contact sharing and asset list access only with approved test accounts/data.
 
 ## Excel And Storage Separation
