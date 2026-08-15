@@ -20,11 +20,13 @@ from telegram.ext import (
 )
 
 import app as inventory_app
+from runtime_config import get_internal_api_base_url, get_public_base_url
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_URL = "https://inventory-qr-system.onrender.com"
+API_URL = get_internal_api_base_url()
+PUBLIC_WEB_URL = get_public_base_url()
 
 main_keyboard = ReplyKeyboardMarkup(
     [
@@ -32,7 +34,7 @@ main_keyboard = ReplyKeyboardMarkup(
         [
             KeyboardButton(
                 text="Scan QR",
-                web_app=WebAppInfo(url=f"{API_URL}/miniapp"),
+                web_app=WebAppInfo(url=f"{PUBLIC_WEB_URL}/miniapp"),
             ),
             KeyboardButton("Enter code"),
         ],
@@ -94,7 +96,7 @@ async def send_asset_card(update: Update, asset_tag: str):
         return
 
     message = format_asset(asset)
-    url = f"{API_URL}/view/{asset_tag}"
+    url = f"{PUBLIC_WEB_URL}/view/{asset_tag}"
 
     inline_keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton("🔍 Open asset card", url=url)]]

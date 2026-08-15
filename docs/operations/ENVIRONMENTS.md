@@ -17,6 +17,7 @@ Secrets rules:
 
 Deployment expectations:
 - Local FastAPI/Uvicorn only unless explicitly testing deployment packaging.
+- Set `PUBLIC_BASE_URL` to a local/dev URL when exercising user-visible links outside automated tests.
 
 Migration testing rules:
 - Destructive or experimental migrations are not allowed against pilot production.
@@ -37,7 +38,10 @@ Secrets rules:
 
 Deployment expectations:
 - Provider-portable deployment target where practical.
-- Public URL may differ from production but must be configured as the canonical staging URL.
+- `PUBLIC_BASE_URL` must be configured as the canonical staging URL, for example `https://<staging-render-host>`.
+- `INTERNAL_API_BASE_URL` is optional; it may equal `PUBLIC_BASE_URL` while the bot/backend share one service.
+- `BOT_TOKEN` should remain unset unless a dedicated staging Telegram bot exists.
+- STAGING must not reuse the production Telegram bot token or webhook.
 
 Migration testing rules:
 - Every production schema migration must be rehearsed here first.
@@ -57,7 +61,8 @@ Secrets rules:
 - `ADMIN_SESSION_SECRET` must be strong; the current fallback value is unsafe for production and must be removed in a future hardening phase.
 
 Deployment expectations:
-- User-visible links, QR links, Telegram Mini App links, and callbacks should use a future `PUBLIC_BASE_URL`.
+- User-visible links, QR links, Telegram Mini App links, and callbacks use `PUBLIC_BASE_URL`.
+- `PUBLIC_BASE_URL=https://inventory-qr-system.onrender.com` must be explicitly configured in Render for pilot production.
 - Provider-specific assumptions should be avoided in new code.
 
 Migration testing rules:

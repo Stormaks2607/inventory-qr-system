@@ -25,6 +25,7 @@ from itsdangerous import BadSignature, URLSafeSerializer
 from supabase import Client
 
 from data_access.client import get_supabase_client
+from runtime_config import get_public_base_url
 
 
 load_dotenv()
@@ -47,7 +48,7 @@ def normalize_audit_limit(value, default: int = 5) -> int:
 SUPABASE_URL = clean_env_value("SUPABASE_URL")
 SUPABASE_KEY = clean_env_value("SUPABASE_KEY")
 BOT_TOKEN = clean_env_value("BOT_TOKEN")
-PUBLIC_BASE_URL = "https://inventory-qr-system.onrender.com"
+PUBLIC_BASE_URL = get_public_base_url()
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
 ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "replace-this-session-secret")
