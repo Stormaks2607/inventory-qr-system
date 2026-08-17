@@ -170,10 +170,20 @@ Expected addendum relationships:
 
 - `asset_classifications`: PK `classification_id`, unique `classification_name`.
 - `asset_sub_classifications`: PK `sub_classification_id`, FK `classification_id -> asset_classifications`, unique `(classification_id, sub_classification_name)`.
-- `asset_history`: PK `history_id`, FK `asset_id -> assets`, FK `changed_by -> persons` or the existing person/user parent.
+- `asset_history`: PK `history_id`, FK `asset_id -> assets`, FK `changed_by -> persons`.
 - `inventory_sessions`: PK `session_id`, FK `created_by -> persons`, FK `location_id -> locations`.
 - `inventory_records`: PK `record_id`, FK `session_id -> inventory_sessions`, FK `asset_id -> assets`, FK `scanned_by -> persons`.
 - `notifications`: PK `notification_id`, FK `person_id -> persons`; `entity_id` is polymorphic and must not receive an invented FK.
+
+Confirmed current global unique constraints to record:
+
+- `assets.asset_tag_number`;
+- `assets.inventory_code`;
+- `projects.project_number`;
+- `asset_classifications.classification_name`;
+- `organization_branding.tenant_key`.
+
+These do not block Tenant #1 staging rehearsal. They must be reviewed before Tenant #2. Do not drop or destructively change them in P1B.
 
 ## Indexes
 
@@ -342,6 +352,12 @@ where project_number is not null
 group by project_number
 having count(*) > 1;
 
+select inventory_code, count(*)
+from public.assets
+where inventory_code is not null
+group by inventory_code
+having count(*) > 1;
+
 select classification_name, count(*)
 from public.asset_classifications
 where classification_name is not null
@@ -355,7 +371,13 @@ group by classification_id, sub_classification_name
 having count(*) > 1;
 ```
 
-The current global taxonomy uniqueness is a known legacy limitation. Do not remove it in P1B, but record it as a blocker before Tenant #2 independent taxonomy.
+Current global uniqueness limitations are known legacy constraints. Do not remove them in P1B.
+
+Tenant #2 gates:
+
+- decide whether `inventory_code` remains globally unique across the SaaS platform or becomes tenant-local with `unique (tenant_id, inventory_code)`;
+- remove or rework global `asset_classifications.classification_name` uniqueness before independent tenant taxonomy;
+- preserve `asset_sub_classifications(classification_id, sub_classification_name)` wording correctly: it is tenant-aware by parent row in practice because `classification_id` is globally unique, although tenant-scoped index/FK remains useful for isolation.
 
 ## Status Checks
 
@@ -372,6 +394,15 @@ where current_status = 'disposed';
 
 Expected planning assumption: `disposed_asset_count = 0`.
 
+## Tenant #2 Non-SQL Isolation Gates
+
+These do not block Tenant #1 staging rehearsal, but must be recorded before commercial multi-tenant onboarding:
+
+- Decide whether `assets.inventory_code` remains globally unique or becomes tenant-local with `unique (tenant_id, inventory_code)`.
+- Rework global `asset_classifications.classification_name` uniqueness before independent Tenant #2 taxonomy.
+- Define tenant-scoped Storage ownership. Current path `private-inventory-docs/sync/official_inventory.xlsx` is acceptable for Tenant #1 only. Future path strategy must be tenant-isolated, for example `private-inventory-docs/<tenant_id>/sync/official_inventory.xlsx`.
+- Future asset photos, inventory evidence, disposal evidence, and attachments must not use globally shared unscoped paths.
+
 ## Stop Conditions
 
 Stop staging rehearsal before migration if:
@@ -379,6 +410,7 @@ Stop staging rehearsal before migration if:
 - any required table or column is missing or has an unexpected type;
 - existing constraints differ from the draft assumptions;
 - duplicate asset tags or project numbers exist;
+- duplicate inventory codes exist unexpectedly under the current global rule;
 - taxonomy uniqueness differs from expected legacy constraints;
 - any orphan rows exist in relational child tables;
 - any addendum child table cannot derive tenant from its authoritative parent;

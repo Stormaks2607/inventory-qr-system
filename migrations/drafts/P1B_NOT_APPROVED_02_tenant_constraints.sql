@@ -19,6 +19,14 @@ alter table public.inventory_sessions add constraint inventory_sessions_tenant_s
 
 -- Tenant-scoped business uniqueness.
 -- Confirmed initial candidates only. Preflight duplicate checks must pass before applying.
+-- P1B does not drop existing global unique constraints:
+--   assets.asset_tag_number
+--   assets.inventory_code
+--   projects.project_number
+--   asset_classifications.classification_name
+--   organization_branding.tenant_key
+-- Tenant #2 gate: decide whether inventory_code remains platform-global or becomes
+-- tenant-local with unique (tenant_id, inventory_code).
 create unique index if not exists assets_tenant_asset_tag_uidx
     on public.assets (tenant_id, asset_tag_number)
     where asset_tag_number is not null;
@@ -33,8 +41,12 @@ create unique index if not exists projects_tenant_project_number_uidx
 create unique index if not exists organization_branding_tenant_tenant_key_uidx
     on public.organization_branding (tenant_id, tenant_key);
 
--- Tenant-local taxonomy uniqueness. Existing global unique constraints remain in P1B
--- and must be removed/reworked before onboarding Tenant #2 with independent taxonomy.
+-- Tenant-local taxonomy uniqueness. Existing asset_classifications.classification_name
+-- global uniqueness remains in P1B and must be reworked before Tenant #2
+-- independent taxonomy. asset_sub_classifications(classification_id,
+-- sub_classification_name) is not itself a cross-tenant name blocker because
+-- classification_id is globally unique; this tenant-aware index supports isolation
+-- and composite FK consistency.
 create unique index if not exists asset_classifications_tenant_name_uidx
     on public.asset_classifications (tenant_id, classification_name);
 

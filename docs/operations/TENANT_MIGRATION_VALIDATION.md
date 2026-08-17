@@ -87,6 +87,13 @@ group by project_number
 having count(*) > 1
 order by count(*) desc, project_number;
 
+select inventory_code, count(*)
+from public.assets
+where inventory_code is not null
+group by inventory_code
+having count(*) > 1
+order by count(*) desc, inventory_code;
+
 select classification_name, count(*)
 from public.asset_classifications
 where classification_name is not null
@@ -101,6 +108,16 @@ group by classification_id, sub_classification_name
 having count(*) > 1
 order by count(*) desc, classification_id, sub_classification_name;
 ```
+
+Current global unique constraints preserved in P1B:
+
+- `assets.asset_tag_number`;
+- `assets.inventory_code`;
+- `projects.project_number`;
+- `asset_classifications.classification_name`;
+- `organization_branding.tenant_key`.
+
+P1B validation should confirm they remain compatible with Tenant #1 rehearsal. It must not remove or weaken them.
 
 ### Null And Orphan References
 
@@ -262,6 +279,14 @@ where project_number is not null
 group by tenant_id, project_number
 having count(*) > 1;
 
+-- Future candidate only. P1B preserves existing global inventory_code uniqueness
+-- until Product Owner decides platform-global vs tenant-local behavior.
+select tenant_id, inventory_code, count(*)
+from public.assets
+where inventory_code is not null
+group by tenant_id, inventory_code
+having count(*) > 1;
+
 select tenant_id, classification_name, count(*)
 from public.asset_classifications
 where classification_name is not null
@@ -274,6 +299,10 @@ where sub_classification_name is not null
 group by tenant_id, classification_id, sub_classification_name
 having count(*) > 1;
 ```
+
+Tenant #2 inventory-code gate: before commercial multi-tenant onboarding, decide whether `inventory_code` remains globally unique across the SaaS platform or becomes tenant-local with `unique (tenant_id, inventory_code)`.
+
+Sub-classification wording: current `asset_sub_classifications(classification_id, sub_classification_name)` uniqueness is not itself a cross-tenant name blocker because `classification_id` is globally unique and tenants will have distinct classification rows. Tenant-aware checks still validate isolation and consistency.
 
 ### No Cross-Owner Relationships
 
@@ -357,6 +386,15 @@ where n.tenant_id <> p.tenant_id;
 Expected: all `0`.
 
 `notifications.entity_id` is polymorphic and is intentionally excluded from FK-style validation unless checked by entity-type-specific queries in a later application phase.
+
+## Tenant #2 Commercial Isolation Gates
+
+These are not Tenant #1 rehearsal blockers, but must be closed before onboarding Tenant #2:
+
+- Decide whether `assets.inventory_code` remains platform-global or becomes tenant-local with `unique (tenant_id, inventory_code)`.
+- Rework global `asset_classifications.classification_name` uniqueness before independent tenant taxonomy.
+- Define tenant-scoped Storage ownership. Current workbook object path `private-inventory-docs/sync/official_inventory.xlsx` is Tenant #1 only.
+- Ensure future asset photos, inventory evidence, disposal evidence, and attachments use tenant-isolated bucket/path ownership and never globally shared unscoped paths.
 
 ## Application Smoke Validation
 

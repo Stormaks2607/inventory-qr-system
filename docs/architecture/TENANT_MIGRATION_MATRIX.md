@@ -19,7 +19,7 @@ General rule: add nullable `tenant_id` first, backfill from the authoritative pa
 
 | Table | Classification | Tenant ownership | Backfill source | Tenant FK/index strategy | Uniqueness implications | Special risks |
 | --- | --- | --- | --- | --- | --- | --- |
-| `assets` | `ROOT` | Tenant-owned asset registry | Tenant #1 UUID | FK `tenant_id -> tenants`; indexes `(tenant_id, asset_id)`, `(tenant_id, asset_tag_number)` | `unique (tenant_id, asset_tag_number)` | Legacy QR depends on asset tags; tags must not change. |
+| `assets` | `ROOT` | Tenant-owned asset registry | Tenant #1 UUID | FK `tenant_id -> tenants`; indexes `(tenant_id, asset_id)`, `(tenant_id, asset_tag_number)` | Current global unique: `asset_tag_number`, `inventory_code`; future likely tenant-scoped: `unique (tenant_id, asset_tag_number)` | Legacy QR depends on asset tags; tags must not change. `inventory_code` needs a Tenant #2 product decision before any destructive uniqueness change. |
 | `asset_assignments` | `DERIVED_CHILD` | Tenant-owned assignment history/current holder rows | `assets.tenant_id` via `asset_id` | indexes `(tenant_id, asset_id)`, `(tenant_id, person_id)`, `(tenant_id, location_id)`; composite FKs to assets/persons/locations | none initially | `status` is assignment/technical status, not lifecycle. |
 | `asset_transfers` | `DERIVED_CHILD` | Tenant-owned movement records | `assets.tenant_id` via `asset_id` | unique parent pair `(tenant_id, transfer_id)`; indexes `(tenant_id, transfer_id)`, `(tenant_id, asset_id)`; composite FKs to assets/persons | future optional transfer key uniqueness | Imported Transfer log rows may preserve names without person IDs. |
 | `asset_transfer_projects` | `DERIVED_CHILD` | Tenant-owned transfer project allocation rows | `asset_transfers.tenant_id` via `transfer_id` | indexes `(tenant_id, transfer_id)`, `(tenant_id, project_id)`; composite FKs to transfer/projects | none initially | `project_number_raw` may exist without resolved `project_id`. |
@@ -28,12 +28,12 @@ General rule: add nullable `tenant_id` first, backfill from the authoritative pa
 | `persons` | `ROOT` | Tenant-owned employee/account-like rows | Tenant #1 UUID | unique parent pair `(tenant_id, person_id)`; index `(tenant_id, person_id)` | future candidate `(tenant_id, lower(email))` after identity rules | Legacy table mixes employee and account concerns. |
 | `person_responsibility_scopes` | `DERIVED_CHILD` | Tenant-owned department/location manager scopes | `persons.tenant_id` via `person_id` | indexes `(tenant_id, person_id)`, `(tenant_id, location_id)`; composite FKs to persons/locations | none initially | Used by department manager scoping. |
 | `locations` | `ROOT` | Tenant-owned office/location reference data | Tenant #1 UUID | unique parent pair `(tenant_id, location_id)`; index `(tenant_id, location_id)` | future candidate `(tenant_id, city, office_name)` after cleanup | City/office naming is still evolving. |
-| `projects` | `REFERENCE` | Tenant-owned project reference data | Tenant #1 UUID | unique parent pair `(tenant_id, project_id)`; indexes `(tenant_id, project_id)`, `(tenant_id, project_number)` | `unique (tenant_id, project_number)` | Project numbers currently globally unique in practice. |
+| `projects` | `REFERENCE` | Tenant-owned project reference data | Tenant #1 UUID | unique parent pair `(tenant_id, project_id)`; indexes `(tenant_id, project_id)`, `(tenant_id, project_number)` | Current global unique: `project_number`; future tenant-scoped: `unique (tenant_id, project_number)` | Project numbers currently globally unique in practice. |
 | `donors` | `REFERENCE` | Tenant-owned donor reference data | Tenant #1 UUID | unique parent pair `(tenant_id, donor_id)`; index `(tenant_id, donor_id)` | future candidate `(tenant_id, donor_name)` | Donor names may be codes, aliases, or abbreviations. |
 | `audit_log` | `POLYMORPHIC_REFERENCE` | Tenant-owned audit events | Tenant #1 UUID | indexes `(tenant_id, created_at desc)`, `(tenant_id, entity_type, entity_id)` | optional `(tenant_id, event_key)` where available | `entity_id` is polymorphic; composite FK is impractical. |
-| `organization_branding` | `ROOT` with legacy key limitation | Tenant-owned branding settings | Tenant #1 UUID | index `(tenant_id)`; FK `tenant_id -> tenants` | future `unique (tenant_id, branding_key)` after redesign | Current PK/global unique key is `tenant_key`; do not destructively change in P1B. |
-| `asset_classifications` | `REFERENCE` | Tenant-local taxonomy | Tenant #1 UUID | unique parent pair `(tenant_id, classification_id)`; indexes `(tenant_id, classification_id)`, `(tenant_id, classification_name)` | future correct `unique (tenant_id, classification_name)`; draft may add while legacy global unique remains | Existing global `unique (classification_name)` blocks Tenant #2 independent taxonomy until reworked. |
-| `asset_sub_classifications` | `DERIVED_CHILD` | Tenant-local taxonomy child rows | `asset_classifications.tenant_id` via `classification_id` | unique parent pair `(tenant_id, sub_classification_id)`; indexes `(tenant_id, classification_id)`, `(tenant_id, sub_classification_name)`; composite FK to classifications | future correct `unique (tenant_id, classification_id, sub_classification_name)` | Existing unique `(classification_id, sub_classification_name)` remains temporarily. |
+| `organization_branding` | `ROOT` with legacy key limitation | Tenant-owned branding settings | Tenant #1 UUID | index `(tenant_id)`; FK `tenant_id -> tenants` | Current global unique/PK: `tenant_key`; future `unique (tenant_id, branding_key)` after redesign | Do not destructively change in P1B. |
+| `asset_classifications` | `REFERENCE` | Tenant-local taxonomy | Tenant #1 UUID | unique parent pair `(tenant_id, classification_id)`; indexes `(tenant_id, classification_id)`, `(tenant_id, classification_name)` | Current global unique: `classification_name`; future tenant-scoped: `unique (tenant_id, classification_name)` | Existing global `unique (classification_name)` blocks Tenant #2 independent taxonomy until reworked. |
+| `asset_sub_classifications` | `DERIVED_CHILD` | Tenant-local taxonomy child rows | `asset_classifications.tenant_id` via `classification_id` | unique parent pair `(tenant_id, sub_classification_id)`; indexes `(tenant_id, classification_id)`, `(tenant_id, sub_classification_name)`; composite FK to classifications | Current unique: `(classification_id, sub_classification_name)`; future tenant-aware: `unique (tenant_id, classification_id, sub_classification_name)` | Current constraint is not a cross-tenant name blocker because `classification_id` is globally unique and tenants will have different classification rows. |
 | `asset_history` | `DERIVED_CHILD` | Tenant-owned legacy asset history rows | `assets.tenant_id` via `asset_id` | index `(tenant_id, asset_id)`; composite FKs to assets and persons for `changed_by` | none initially | Currently zero rows; do not let future rows remain global. |
 | `inventory_sessions` | `ROOT` | Tenant-owned inventory session root rows | Tenant #1 UUID for existing single-organization rows | unique parent pair `(tenant_id, session_id)`; indexes `(tenant_id, session_id)`, `(tenant_id, created_by)`, `(tenant_id, location_id)`; composite FKs to persons/locations | future candidate `(tenant_id, session_name)` or session number if business rule exists | Currently zero rows; direct Tenant #1 backfill is acceptable only for this restored pilot dataset. |
 | `inventory_records` | `DERIVED_CHILD` | Tenant-owned inventory scan/result rows | `inventory_sessions.tenant_id` via `session_id`; validate against `assets.tenant_id` | indexes `(tenant_id, session_id)`, `(tenant_id, asset_id)`, `(tenant_id, scanned_by)`; composite FKs to sessions/assets/persons | none initially | Constraint enforcement must stop if session and asset tenants differ. |
@@ -41,12 +41,24 @@ General rule: add nullable `tenant_id` first, backfill from the authoritative pa
 
 ## Tenant-Scoped Business Identifiers
 
-Confirmed initial constraints:
+Confirmed current global unique constraints preserved in P1B:
+
+- `assets.asset_tag_number`.
+- `assets.inventory_code`.
+- `projects.project_number`.
+- `asset_classifications.classification_name`.
+- `organization_branding.tenant_key`.
+
+These do not block Tenant #1 staging rehearsal. They require explicit product/architecture decisions before Tenant #2.
+
+Future tenant-scoped constraints:
 
 - `assets.asset_tag_number`: `unique (tenant_id, asset_tag_number)`.
 - `projects.project_number`: `unique (tenant_id, project_number)`.
-- `asset_classifications.classification_name`: intended `unique (tenant_id, classification_name)`, but the existing global unique constraint remains in P1B.
-- `asset_sub_classifications.sub_classification_name`: intended `unique (tenant_id, classification_id, sub_classification_name)`, with existing classification-scoped uniqueness remaining temporarily.
+- `asset_classifications.classification_name`: `unique (tenant_id, classification_name)`.
+- `asset_sub_classifications.sub_classification_name`: `unique (tenant_id, classification_id, sub_classification_name)`.
+
+`assets.inventory_code` Tenant #2 gate: decide whether `inventory_code` remains platform-global, or becomes tenant-local with `unique (tenant_id, inventory_code)`. Do not remove the existing global constraint in P1B.
 
 Future candidate constraints requiring business confirmation:
 
@@ -109,4 +121,21 @@ Composite FK is impractical for `audit_log.entity_id` and `notifications.entity_
 
 - `organization_branding` currently uses `tenant_key` as PK/global unique. P1B must not destructively redesign it.
 - `asset_classifications.classification_name` is globally unique today. This must be removed/reworked before Tenant #2 independent taxonomy.
-- `asset_sub_classifications` uniqueness is currently based on global `classification_id`. It is acceptable for Tenant #1 rehearsal but must be tenant-scoped before independent tenant taxonomy is enabled.
+- `asset_sub_classifications(classification_id, sub_classification_name)` is not itself a cross-tenant naming blocker because `classification_id` is globally unique. The tenant-aware index/FK still improves isolation and consistency.
+- `assets.inventory_code` is globally unique today. Decide platform-global versus tenant-local semantics before Tenant #2.
+
+## Storage Tenant #2 Gate
+
+Current Storage object path is globally scoped:
+
+```text
+private-inventory-docs/sync/official_inventory.xlsx
+```
+
+This is acceptable for Tenant #1 only. Before Tenant #2, define tenant-scoped Storage ownership, for example:
+
+```text
+private-inventory-docs/<tenant_id>/sync/official_inventory.xlsx
+```
+
+or another explicitly tenant-isolated bucket/path strategy. Future asset photos, inventory evidence, disposal evidence, and attachments must never use globally shared unscoped paths.

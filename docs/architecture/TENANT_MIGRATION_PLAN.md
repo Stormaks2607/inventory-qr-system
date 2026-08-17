@@ -135,7 +135,17 @@ Future candidates requiring business confirmation:
 - `locations(tenant_id, city, office_name)`.
 - `inventory_sessions(tenant_id, session_name)` or a future inventory session number.
 
-Compatibility concern: existing global unique constraints may need to remain temporarily until second tenant support is ready. In particular, `asset_classifications.classification_name` remains globally unique in P1B and must be removed or reworked before Tenant #2 independent taxonomy.
+Current global unique constraints preserved in P1B:
+
+- `assets.asset_tag_number`;
+- `assets.inventory_code`;
+- `projects.project_number`;
+- `asset_classifications.classification_name`;
+- `organization_branding.tenant_key`.
+
+These do not block Tenant #1 staging rehearsal. They require explicit Tenant #2 decisions before commercial onboarding. In particular, `asset_classifications.classification_name` remains globally unique in P1B and must be removed or reworked before Tenant #2 independent taxonomy.
+
+`inventory_code` Tenant #2 gate: decide whether it remains platform-global, or becomes tenant-local with `unique (tenant_id, inventory_code)`. Do not remove the existing global constraint in P1B.
 
 ### Step H: Add Composite Foreign Keys
 
@@ -444,7 +454,27 @@ P1B foundation must not destructively remove these constraints. The tenant-scope
 - `unique (tenant_id, classification_name)`;
 - `unique (tenant_id, classification_id, sub_classification_name)` or an equivalent tenant-safe taxonomy design.
 
-Before onboarding Tenant #2 with independent taxonomy, remove or rework the legacy global/classification-scoped uniqueness so different tenants can define their own classification names.
+Before onboarding Tenant #2 with independent taxonomy, remove or rework the legacy global `asset_classifications.classification_name` uniqueness so different tenants can define their own classification names.
+
+Correction: `asset_sub_classifications(classification_id, sub_classification_name)` is not itself a cross-tenant name blocker because `classification_id` is a globally unique primary key and different tenants will have different classification rows. The tenant-aware composite index/FK is still useful for isolation and consistency, but the real taxonomy name blocker is `asset_classifications.classification_name`.
+
+## Storage Tenant #2 Gate
+
+Current workbook Storage path is globally scoped:
+
+```text
+private-inventory-docs/sync/official_inventory.xlsx
+```
+
+This is acceptable for Tenant #1 only. Before Tenant #2, define tenant-scoped Storage ownership, for example:
+
+```text
+private-inventory-docs/<tenant_id>/sync/official_inventory.xlsx
+```
+
+or another explicitly tenant-isolated bucket/path strategy.
+
+Future asset photos, inventory evidence, disposal evidence, and attachments must never use globally shared unscoped paths. Do not implement Storage path changes in P1B addendum; record this as a commercial isolation gate.
 
 ## Tenant Isolation Test Plan
 
