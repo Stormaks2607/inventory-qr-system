@@ -2,6 +2,14 @@
 
 Status: PLANNING ONLY. This document does not authorize production execution.
 
+## P1D-A Tenant-Aware Write Boundary
+
+New core write paths resolve the current tenant from trusted server configuration (`DEFAULT_TENANT_ID`) and must not accept client-submitted `tenant_id` values. Tenant #1 is `00000000-0000-4000-8000-000000000001`.
+
+The current implementation keeps asset classification/sub-classification selection as the existing free-text/dropdown UX. A dedicated reference-data UX for tenant-customizable classifications remains a separate follow-up and is intentionally not part of P1D-A.
+
+No active application writes were identified for `asset_history`, `inventory_sessions`, `inventory_records`, or `notifications` in the current codebase. They remain tenant-owned/tenant-derived tables in the migration plan, but P1D-A does not invent new application writes for them.
+
 ## Objectives
 
 - Prepare an additive, reviewable tenant migration design.

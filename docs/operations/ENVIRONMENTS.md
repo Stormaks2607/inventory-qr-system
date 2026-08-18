@@ -9,6 +9,7 @@ Purpose: local development, Codex work, and deterministic automated tests.
 Database/data expectations:
 - Automated tests must not connect to live Supabase.
 - Use `INVENTORY_TEST_MODE=1` for test imports without Supabase credentials.
+- `DEFAULT_TENANT_ID` may be omitted only when `INVENTORY_TEST_MODE=1`; tests then use Tenant #1 (`00000000-0000-4000-8000-000000000001`).
 - Local experiments must use fake data or a disposable non-production database.
 
 Secrets rules:
@@ -38,6 +39,7 @@ Secrets rules:
 
 Deployment expectations:
 - Provider-portable deployment target where practical.
+- `DEFAULT_TENANT_ID` must be configured to the active staging tenant UUID.
 - `PUBLIC_BASE_URL` must be configured as the canonical staging URL, for example `https://<staging-render-host>`.
 - `INTERNAL_API_BASE_URL` is optional; it may equal `PUBLIC_BASE_URL` while the bot/backend share one service.
 - `BOT_TOKEN` should remain unset unless a dedicated staging Telegram bot exists.
@@ -63,6 +65,7 @@ Secrets rules:
 Deployment expectations:
 - User-visible links, QR links, Telegram Mini App links, and callbacks use `PUBLIC_BASE_URL`.
 - `PUBLIC_BASE_URL=https://inventory-qr-system.onrender.com` must be explicitly configured in Render for pilot production.
+- `DEFAULT_TENANT_ID=00000000-0000-4000-8000-000000000001` must be explicitly configured for Tenant #1 once tenant-aware writes are deployed.
 - Provider-specific assumptions should be avoided in new code.
 
 Migration testing rules:
