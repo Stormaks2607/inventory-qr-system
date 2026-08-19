@@ -4,7 +4,7 @@ from data_access import tenant
 
 
 def test_tenant_context_uses_configured_default_tenant(monkeypatch):
-    monkeypatch.setenv("DEFAULT_TENANT_ID", "00000000-0000-4000-8000-000000000123")
+    monkeypatch.setenv("DEFAULT_TENANT_ID", "00000000000040008000000000000123")
     monkeypatch.delenv("INVENTORY_TEST_MODE", raising=False)
 
     context = tenant.resolve_tenant_context()
@@ -23,6 +23,14 @@ def test_tenant_context_uses_tenant_one_in_test_mode(monkeypatch):
 
 def test_tenant_context_fails_closed_without_default_outside_test(monkeypatch):
     monkeypatch.delenv("DEFAULT_TENANT_ID", raising=False)
+    monkeypatch.delenv("INVENTORY_TEST_MODE", raising=False)
+
+    with pytest.raises(tenant.TenantContextError):
+        tenant.resolve_tenant_context()
+
+
+def test_tenant_context_rejects_malformed_default_tenant(monkeypatch):
+    monkeypatch.setenv("DEFAULT_TENANT_ID", "not-a-uuid")
     monkeypatch.delenv("INVENTORY_TEST_MODE", raising=False)
 
     with pytest.raises(tenant.TenantContextError):

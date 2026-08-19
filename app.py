@@ -201,7 +201,9 @@ def tenant_filter(query, request: Optional[Request] = None):
 
 def assert_record_tenant(record: dict, request: Optional[Request] = None, label: str = "Record") -> None:
     record_tenant_id = record.get("tenant_id")
-    if record_tenant_id is not None and str(record_tenant_id) != get_current_tenant_id(request):
+    if record_tenant_id is None:
+        raise TenantContextError(f"{label} is missing tenant_id.")
+    if str(record_tenant_id) != get_current_tenant_id(request):
         raise TenantContextError(f"{label} belongs to a different tenant.")
 
 
@@ -218,6 +220,28 @@ def ensure_parent_tenant(table_name: str, id_column: str, id_value, request: Opt
     )
     if not response.data:
         raise TenantContextError(f"{table_name}.{id_column} does not belong to the current tenant.")
+
+
+def validate_assignment_parent_tenants(
+    parsed_person_id: Optional[int],
+    parsed_location_id: Optional[int],
+    request: Optional[Request] = None,
+) -> None:
+    if parsed_person_id is not None:
+        ensure_parent_tenant("persons", "person_id", parsed_person_id, request=request)
+    if parsed_location_id is not None:
+        ensure_parent_tenant("locations", "location_id", parsed_location_id, request=request)
+
+
+def validate_transfer_person_tenants(
+    from_person_id: Optional[int],
+    to_person_id: Optional[int],
+    request: Optional[Request] = None,
+) -> None:
+    if from_person_id is not None:
+        ensure_parent_tenant("persons", "person_id", from_person_id, request=request)
+    if to_person_id is not None:
+        ensure_parent_tenant("persons", "person_id", to_person_id, request=request)
 
 
 def stringify_audit_value(value) -> Optional[str]:
@@ -2429,6 +2453,7 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     location = resolve_excel_location(record, person, sync_context["location_lookup"])
     if not location:
         return 0
+    validate_assignment_parent_tenants(person.get("person_id"), location.get("location_id"))
     assignment_department = normalize_sync_string(record.get("department_name") or person.get("department"))
 
     existing = sync_context.get("assignment_by_asset_id", {}).get(asset_id) or {}
@@ -2652,6 +2677,7 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
     if not asset_id:
         return 0
     ensure_parent_tenant("assets", "asset_id", asset_id)
+    validate_transfer_person_tenants(record.get("from_person_id"), record.get("to_person_id"))
 
     payload = add_tenant_id({
         "asset_id": asset_id,
@@ -3904,11 +3930,14 @@ def create_asset_transfer_from_assignment_change(
 
     from_assignment = from_assignment or {}
     from_person_id = from_assignment.get("person_id")
+    validate_transfer_person_tenants(from_person_id, to_person_id)
     from_holder_name = from_assignment.get("responsible_person")
     if not from_holder_name and from_assignment.get("location_id"):
         from_holder_name = "Warehouse"
 
     to_person = get_person_by_id(to_person_id) if to_person_id else None
+    if to_person_id is not None and not to_person:
+        raise TenantContextError("persons.person_id does not belong to the current tenant.")
     to_holder_name = get_person_display_name(to_person) if to_person else "Warehouse"
     current_project_rows = get_current_project_rows(get_asset_projects(asset_id))
     current_project_raw = format_project_allocations(get_project_allocations_from_rows(current_project_rows))
@@ -4777,6 +4806,8 @@ def get_assignment_form_context(asset: dict) -> dict:
 
 
 def describe_assignment_update_error(error: Exception) -> str:
+    if isinstance(error, TenantContextError):
+        return str(error)
     if not isinstance(error, APIError):
         return "Assignment could not be saved due to an unexpected database error."
 
@@ -4820,9 +4851,12 @@ def apply_asset_assignment_change(
         raise ValueError("Assignment date is required.")
     if parsed_person_id and not parsed_location_id:
         raise ValueError("Location is required when a responsible person is selected.")
+    validate_assignment_parent_tenants(parsed_person_id, parsed_location_id, request=request)
 
     actor = get_admin_actor(request)
     current_assignment = asset.get("current_assignment") or get_current_assignment(asset_id)
+    if current_assignment:
+        validate_transfer_person_tenants(current_assignment.get("person_id"), parsed_person_id, request=request)
     old_responsible = (current_assignment or {}).get("responsible_person") or "-"
 
     if not parsed_person_id and not parsed_location_id:
@@ -9036,7 +9070,6 @@ def admin_asset_detail(request: Request, asset_id: int):
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     assert_record_tenant(asset, request=request, label="Asset")
-    assert_record_tenant(asset, request=request, label="Asset")
 
     assignment_history = get_assignment_history(asset_id)
 
@@ -9164,8 +9197,19 @@ def admin_asset_assignment_update(
     if parsed_person_id and not parsed_location_id:
         set_flash(request, "error", "Location is required when a responsible person is selected.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+    try:
+        validate_assignment_parent_tenants(parsed_person_id, parsed_location_id, request=request)
+    except Exception as exc:
+        set_flash(request, "error", describe_assignment_update_error(exc))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     current_assignment = asset.get("current_assignment")
+    if current_assignment:
+        try:
+            validate_transfer_person_tenants(current_assignment.get("person_id"), parsed_person_id, request=request)
+        except Exception as exc:
+            set_flash(request, "error", describe_assignment_update_error(exc))
+            return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
     old_responsible = (current_assignment or {}).get("responsible_person") or "-"
 
     if not parsed_person_id and not parsed_location_id:

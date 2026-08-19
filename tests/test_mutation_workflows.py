@@ -147,7 +147,11 @@ def test_asset_edit_route_updates_payload_and_redirects(app_module, monkeypatch)
 
 def test_assignment_update_closes_current_assignment_inserts_new_status_and_updates_asset(app_module, monkeypatch):
     fake_supabase = RecordingSupabase(
-        {("asset_assignments", "select"): [{"assignment_id": 77}]}
+        {
+            ("asset_assignments", "select"): [{"assignment_id": 77}],
+            ("persons", "select"): [{"person_id": 12}],
+            ("locations", "select"): [{"location_id": 4}],
+        }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
     monkeypatch.setattr(app_module, "log_assignment_field_changes", lambda *args, **kwargs: None)
@@ -182,18 +186,27 @@ def test_assignment_update_closes_current_assignment_inserts_new_status_and_upda
     )
 
     assert result == {"changed": True, "message": "Assignment updated."}
-    assert fake_supabase.operations[0] == {
-        "table": "asset_assignments",
-        "action": "select",
-        "payload": None,
-        "filters": [
-            ("eq", "tenant_id", app_module.DEFAULT_TENANT_ID),
-            ("eq", "asset_id", 101),
-            ("is", "return_date", "null"),
-        ],
-    }
-    assert fake_supabase.operations[1]["payload"]["return_date"] == "2026-08-13"
-    inserted_assignment = fake_supabase.operations[2]["payload"]
+    close_select = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_assignments" and operation["action"] == "select"
+    ][0]
+    assert close_select["filters"] == [
+        ("eq", "tenant_id", app_module.DEFAULT_TENANT_ID),
+        ("eq", "asset_id", 101),
+        ("is", "return_date", "null"),
+    ]
+    close_update = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_assignments" and operation["action"] == "update"
+    ][0]
+    assert close_update["payload"]["return_date"] == "2026-08-13"
+    inserted_assignment = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_assignments" and operation["action"] == "insert"
+    ][0]["payload"]
     assert inserted_assignment["tenant_id"] == app_module.DEFAULT_TENANT_ID
     assert inserted_assignment["asset_id"] == 101
     assert inserted_assignment["person_id"] == 12
@@ -201,13 +214,20 @@ def test_assignment_update_closes_current_assignment_inserts_new_status_and_upda
     assert inserted_assignment["assignment_department"] == "PROGRAM"
     assert inserted_assignment["status"] == "Not functional"
     assert inserted_assignment["updated_by"] == "admin"
-    assert fake_supabase.operations[3]["table"] == "assets"
-    assert fake_supabase.operations[3]["payload"] == {"current_status": "Not functional"}
+    asset_update = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "assets" and operation["action"] == "update"
+    ][0]
+    assert asset_update["payload"] == {"current_status": "Not functional"}
 
 
 def test_transfer_creation_records_asset_movement_and_project_history(app_module, monkeypatch):
     fake_supabase = RecordingSupabase(
-        {("asset_transfers", "insert"): [{"transfer_id": 55}]}
+        {
+            ("asset_transfers", "insert"): [{"transfer_id": 55}],
+            ("persons", "select"): [{"person_id": 13, "name_eng": "New Holder"}],
+        }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
     monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id: {"person_id": person_id, "name_eng": "New Holder"})
@@ -248,7 +268,11 @@ def test_transfer_creation_records_asset_movement_and_project_history(app_module
     )
 
     assert transfer_id == 55
-    transfer_payload = fake_supabase.operations[0]["payload"]
+    transfer_payload = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_transfers" and operation["action"] == "insert"
+    ][0]["payload"]
     assert transfer_payload["tenant_id"] == app_module.DEFAULT_TENANT_ID
     assert transfer_payload["asset_id"] == 101
     assert transfer_payload["from_person_id"] == 12
@@ -257,7 +281,11 @@ def test_transfer_creation_records_asset_movement_and_project_history(app_module
     assert transfer_payload["to_holder_name"] == "New Holder"
     assert transfer_payload["asset_status"] == "Not functional"
     assert transfer_payload["from_project_raw"] == "GLO-001"
-    project_payloads = fake_supabase.operations[1]["payload"]
+    project_payloads = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_transfer_projects" and operation["action"] == "insert"
+    ][0]["payload"]
     assert {row["direction"] for row in project_payloads} == {"from", "to"}
     assert all(row["transfer_id"] == 55 for row in project_payloads)
     assert all(row["tenant_id"] == app_module.DEFAULT_TENANT_ID for row in project_payloads)
@@ -375,6 +403,131 @@ def test_project_funding_create_includes_tenant_id(app_module, monkeypatch):
     assert project_insert["payload"]["project_id"] == 6
 
 
+def test_assignment_rejects_cross_tenant_person_before_insert(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase(
+        {
+            ("persons", "select"): [],
+            ("locations", "select"): [{"location_id": 4}],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    result = None
+    try:
+        app_module.apply_asset_assignment_change(
+            asset={
+                "asset_id": 101,
+                "asset_tag_number": "HELP-UKR-0753",
+                "tenant_id": app_module.DEFAULT_TENANT_ID,
+                "current_assignment": None,
+            },
+            parsed_person_id=12,
+            parsed_location_id=4,
+            assignment_department="PROGRAM",
+            assignment_date="2026-08-13",
+            status="functional",
+            notes="",
+            handover_condition="New",
+            assignment_scope="personal",
+            custody_note="",
+            request=make_admin_request(),
+        )
+    except app_module.TenantContextError as error:
+        result = str(error)
+
+    assert result == "persons.person_id does not belong to the current tenant."
+    assert not any(operation["table"] == "asset_assignments" and operation["action"] == "insert" for operation in fake_supabase.operations)
+
+
+def test_assignment_rejects_cross_tenant_location_before_insert(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase(
+        {
+            ("persons", "select"): [{"person_id": 12}],
+            ("locations", "select"): [],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    result = None
+    try:
+        app_module.apply_asset_assignment_change(
+            asset={
+                "asset_id": 101,
+                "asset_tag_number": "HELP-UKR-0753",
+                "tenant_id": app_module.DEFAULT_TENANT_ID,
+                "current_assignment": None,
+            },
+            parsed_person_id=12,
+            parsed_location_id=4,
+            assignment_department="PROGRAM",
+            assignment_date="2026-08-13",
+            status="functional",
+            notes="",
+            handover_condition="New",
+            assignment_scope="personal",
+            custody_note="",
+            request=make_admin_request(),
+        )
+    except app_module.TenantContextError as error:
+        result = str(error)
+
+    assert result == "locations.location_id does not belong to the current tenant."
+    assert not any(operation["table"] == "asset_assignments" and operation["action"] == "insert" for operation in fake_supabase.operations)
+
+
+def test_transfer_rejects_cross_tenant_person_before_insert(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase({("persons", "select"): []})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id: [])
+
+    result = None
+    try:
+        app_module.create_asset_transfer_from_assignment_change(
+            asset={
+                "asset_id": 101,
+                "asset_tag_number": "HELP-UKR-0753",
+                "tenant_id": app_module.DEFAULT_TENANT_ID,
+            },
+            from_assignment={"person_id": 12, "responsible_person": "Old Holder"},
+            to_person_id=13,
+            transfer_date="2026-08-13",
+            transfer_reason="Assignment changed in web app",
+        )
+    except app_module.TenantContextError as error:
+        result = str(error)
+
+    assert result == "persons.person_id does not belong to the current tenant."
+    assert not any(operation["table"] == "asset_transfers" and operation["action"] == "insert" for operation in fake_supabase.operations)
+
+
+def test_sync_transfer_rejects_cross_tenant_person_before_insert(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase(
+        {
+            ("assets", "select"): [{"asset_id": 101}],
+            ("persons", "select"): [],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    result = None
+    try:
+        app_module.apply_sync_transfer(
+            {
+                "asset_id": 101,
+                "asset_tag_number": "HELP-UKR-0753",
+                "from_person_id": 12,
+                "to_person_id": None,
+                "transfer_date": "2026-08-13",
+            },
+            {"transfer_signatures": set()},
+        )
+    except app_module.TenantContextError as error:
+        result = str(error)
+
+    assert result == "persons.person_id does not belong to the current tenant."
+    assert not any(operation["table"] == "asset_transfers" and operation["action"] == "insert" for operation in fake_supabase.operations)
+
+
 def test_tenant_payload_overrides_client_supplied_tenant_id(app_module):
     payload = app_module.add_tenant_id({"asset_id": 101, "tenant_id": "client-supplied"})
 
@@ -406,6 +559,16 @@ def test_assignment_update_rejects_parent_tenant_mismatch(app_module):
         result = str(error)
 
     assert result == "Asset belongs to a different tenant."
+
+
+def test_missing_tenant_id_on_tenant_owned_record_fails_closed(app_module):
+    result = None
+    try:
+        app_module.assert_record_tenant({"asset_id": 101}, label="Asset")
+    except app_module.TenantContextError as error:
+        result = str(error)
+
+    assert result == "Asset is missing tenant_id."
 
 
 def test_audit_insert_and_legacy_fallback_preserve_tenant_id(app_module, monkeypatch):
