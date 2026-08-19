@@ -380,6 +380,10 @@ Must migrate before notifications are exposed:
 
 `asset_history` is currently a zero-row legacy table and active application history is represented by `asset_assignments`, `asset_transfers`, and `audit_log`. It should still receive `tenant_id` in P1B and can be handled through the future AssetRepository/AuditLogRepository boundary unless a separate legacy history UI is restored.
 
+### Assignment Transfer Atomicity
+
+Assignment and transfer creation currently run through separate Supabase requests, so they are not fully transactional. This does not block Tenant #1 composite FK rehearsal, but it remains an application integrity hardening item for future DB RPC or transactional repository work.
+
 ## RLS Position
 
 Do not enable RLS in P1B.

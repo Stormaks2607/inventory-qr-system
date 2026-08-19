@@ -262,6 +262,26 @@ from public.asset_transfers t
 left join public.assets a on a.asset_id = t.asset_id
 where t.asset_id is not null and a.asset_id is null;
 
+select t.transfer_id, t.from_person_id
+from public.asset_transfers t
+left join public.persons p on p.person_id = t.from_person_id
+where t.from_person_id is not null and p.person_id is null;
+
+select t.transfer_id, t.to_person_id
+from public.asset_transfers t
+left join public.persons p on p.person_id = t.to_person_id
+where t.to_person_id is not null and p.person_id is null;
+
+select t.transfer_id, t.from_location_id
+from public.asset_transfers t
+left join public.locations l on l.location_id = t.from_location_id
+where t.from_location_id is not null and l.location_id is null;
+
+select t.transfer_id, t.to_location_id
+from public.asset_transfers t
+left join public.locations l on l.location_id = t.to_location_id
+where t.to_location_id is not null and l.location_id is null;
+
 select atp.transfer_project_id, atp.transfer_id
 from public.asset_transfer_projects atp
 left join public.asset_transfers t on t.transfer_id = atp.transfer_id
@@ -413,6 +433,7 @@ Stop staging rehearsal before migration if:
 - duplicate inventory codes exist unexpectedly under the current global rule;
 - taxonomy uniqueness differs from expected legacy constraints;
 - any orphan rows exist in relational child tables;
+- any transfer from/to person or from/to location rows are orphaned or tenant-mismatched;
 - any addendum child table cannot derive tenant from its authoritative parent;
 - row counts are unexpectedly large for a single transaction;
 - `current_status = 'disposed'` is non-zero and lifecycle handling has not been reviewed;

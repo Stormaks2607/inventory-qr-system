@@ -84,6 +84,16 @@ alter table public.asset_transfers
     foreign key (tenant_id, to_person_id)
     references public.persons (tenant_id, person_id);
 
+alter table public.asset_transfers
+    add constraint asset_transfers_tenant_from_location_fk
+    foreign key (tenant_id, from_location_id)
+    references public.locations (tenant_id, location_id);
+
+alter table public.asset_transfers
+    add constraint asset_transfers_tenant_to_location_fk
+    foreign key (tenant_id, to_location_id)
+    references public.locations (tenant_id, location_id);
+
 alter table public.asset_transfer_projects
     add constraint asset_transfer_projects_tenant_transfer_fk
     foreign key (tenant_id, transfer_id)

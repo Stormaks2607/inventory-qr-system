@@ -327,6 +327,26 @@ from public.asset_transfers t
 join public.assets a on a.asset_id = t.asset_id
 where t.tenant_id <> a.tenant_id;
 
+select count(*) as transfer_from_person_mismatch
+from public.asset_transfers t
+join public.persons p on p.person_id = t.from_person_id
+where t.tenant_id <> p.tenant_id;
+
+select count(*) as transfer_to_person_mismatch
+from public.asset_transfers t
+join public.persons p on p.person_id = t.to_person_id
+where t.tenant_id <> p.tenant_id;
+
+select count(*) as transfer_from_location_mismatch
+from public.asset_transfers t
+join public.locations l on l.location_id = t.from_location_id
+where t.tenant_id <> l.tenant_id;
+
+select count(*) as transfer_to_location_mismatch
+from public.asset_transfers t
+join public.locations l on l.location_id = t.to_location_id
+where t.tenant_id <> l.tenant_id;
+
 select count(*) as project_asset_mismatch
 from public.asset_projects ap
 join public.assets a on a.asset_id = ap.asset_id

@@ -21,7 +21,7 @@ General rule: add nullable `tenant_id` first, backfill from the authoritative pa
 | --- | --- | --- | --- | --- | --- | --- |
 | `assets` | `ROOT` | Tenant-owned asset registry | Tenant #1 UUID | FK `tenant_id -> tenants`; indexes `(tenant_id, asset_id)`, `(tenant_id, asset_tag_number)` | Current global unique: `asset_tag_number`, `inventory_code`; future likely tenant-scoped: `unique (tenant_id, asset_tag_number)` | Legacy QR depends on asset tags; tags must not change. `inventory_code` needs a Tenant #2 product decision before any destructive uniqueness change. |
 | `asset_assignments` | `DERIVED_CHILD` | Tenant-owned assignment history/current holder rows | `assets.tenant_id` via `asset_id` | indexes `(tenant_id, asset_id)`, `(tenant_id, person_id)`, `(tenant_id, location_id)`; composite FKs to assets/persons/locations | none initially | `status` is assignment/technical status, not lifecycle. |
-| `asset_transfers` | `DERIVED_CHILD` | Tenant-owned movement records | `assets.tenant_id` via `asset_id` | unique parent pair `(tenant_id, transfer_id)`; indexes `(tenant_id, transfer_id)`, `(tenant_id, asset_id)`; composite FKs to assets/persons | future optional transfer key uniqueness | Imported Transfer log rows may preserve names without person IDs. |
+| `asset_transfers` | `DERIVED_CHILD` | Tenant-owned movement records | `assets.tenant_id` via `asset_id` | unique parent pair `(tenant_id, transfer_id)`; indexes `(tenant_id, transfer_id)`, `(tenant_id, asset_id)`; composite FKs to assets, from/to persons, and from/to locations | future optional transfer key uniqueness | Imported Transfer log rows may preserve names without person or location IDs. |
 | `asset_transfer_projects` | `DERIVED_CHILD` | Tenant-owned transfer project allocation rows | `asset_transfers.tenant_id` via `transfer_id` | indexes `(tenant_id, transfer_id)`, `(tenant_id, project_id)`; composite FKs to transfer/projects | none initially | `project_number_raw` may exist without resolved `project_id`. |
 | `asset_projects` | `DERIVED_CHILD` | Tenant-owned asset funding/current project rows | `assets.tenant_id` via `asset_id` | indexes `(tenant_id, asset_id)`, `(tenant_id, project_id)`, `(tenant_id, donor_id)`; composite FKs to assets/projects/donors | none initially | Purchase-origin/current flags must be preserved. |
 | `asset_payments` | `DERIVED_CHILD` | Tenant-owned asset payment rows | `assets.tenant_id` via `asset_id` | indexes `(tenant_id, asset_id)`, `(tenant_id, payment_id)`; composite FK to assets | optional future `(tenant_id, asset_id, payment_number)` | Payment notes and EUR equivalent must be preserved. |
@@ -95,6 +95,8 @@ asset_assignments(tenant_id, location_id) -> locations(tenant_id, location_id)
 asset_transfers(tenant_id, asset_id) -> assets(tenant_id, asset_id)
 asset_transfers(tenant_id, from_person_id) -> persons(tenant_id, person_id)
 asset_transfers(tenant_id, to_person_id) -> persons(tenant_id, person_id)
+asset_transfers(tenant_id, from_location_id) -> locations(tenant_id, location_id)
+asset_transfers(tenant_id, to_location_id) -> locations(tenant_id, location_id)
 asset_transfer_projects(tenant_id, transfer_id) -> asset_transfers(tenant_id, transfer_id)
 asset_transfer_projects(tenant_id, project_id) -> projects(tenant_id, project_id)
 asset_projects(tenant_id, asset_id) -> assets(tenant_id, asset_id)
