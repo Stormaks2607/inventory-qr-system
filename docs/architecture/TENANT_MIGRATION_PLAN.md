@@ -10,6 +10,8 @@ The current implementation keeps asset classification/sub-classification selecti
 
 No active application writes were identified for `asset_history`, `inventory_sessions`, `inventory_records`, or `notifications` in the current codebase. They remain tenant-owned/tenant-derived tables in the migration plan, but P1D-A does not invent new application writes for them.
 
+`asset_transfers` currently writes only columns present in the restored production-derived schema. Future transfer snapshots such as `description_snapshot` or `serial_snapshot` require an explicit schema evolution decision and migration before application writes may use them.
+
 ## Objectives
 
 - Prepare an additive, reviewable tenant migration design.

@@ -244,6 +244,19 @@ def validate_transfer_person_tenants(
         ensure_parent_tenant("persons", "person_id", to_person_id, request=request)
 
 
+def validate_assignment_date_not_earlier(current_assignment: Optional[dict], assignment_date: str) -> None:
+    current_date = (current_assignment or {}).get("assignment_date")
+    if not current_date or not assignment_date:
+        return
+    try:
+        current_parsed = datetime.strptime(str(current_date)[:10], "%Y-%m-%d").date()
+        new_parsed = datetime.strptime(str(assignment_date)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return
+    if new_parsed < current_parsed:
+        raise ValueError(f"Assignment date cannot be earlier than the current assignment date ({current_parsed.isoformat()}).")
+
+
 def stringify_audit_value(value) -> Optional[str]:
     if value is None:
         return None
@@ -3922,6 +3935,7 @@ def create_asset_transfer_from_assignment_change(
     transfer_reason: str,
     status: Optional[str] = None,
     condition: Optional[str] = None,
+    to_location_id: Optional[int] = None,
 ) -> Optional[int]:
     asset_id = asset.get("asset_id")
     if not asset_id or not transfer_date:
@@ -3930,6 +3944,7 @@ def create_asset_transfer_from_assignment_change(
 
     from_assignment = from_assignment or {}
     from_person_id = from_assignment.get("person_id")
+    from_location_id = from_assignment.get("location_id")
     validate_transfer_person_tenants(from_person_id, to_person_id)
     from_holder_name = from_assignment.get("responsible_person")
     if not from_holder_name and from_assignment.get("location_id"):
@@ -3946,13 +3961,13 @@ def create_asset_transfer_from_assignment_change(
         "asset_id": asset_id,
         "from_person_id": from_person_id,
         "to_person_id": to_person_id,
+        "from_location_id": from_location_id,
+        "to_location_id": to_location_id,
         "transfer_date": transfer_date,
         "transfer_reason": transfer_reason,
         "notes": transfer_reason,
         "source_asset_type": get_asset_usage_type_label(asset.get("usage_type")),
         "asset_tag_snapshot": asset.get("asset_tag_number"),
-        "description_snapshot": asset.get("item_description"),
-        "serial_snapshot": asset.get("serial_chassis_number") or asset.get("serial_number"),
         "from_holder_name": from_holder_name,
         "to_holder_name": to_holder_name,
         "from_project_raw": current_project_raw,
@@ -3963,8 +3978,8 @@ def create_asset_transfer_from_assignment_change(
 
     try:
         response = supabase.table("asset_transfers").insert(payload).execute()
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RuntimeError(f"Asset transfer could not be created: {exc}") from exc
 
     transfer = (response.data or [{}])[0]
     transfer_id = transfer.get("transfer_id")
@@ -3983,8 +3998,8 @@ def create_asset_transfer_from_assignment_change(
                 )
         try:
             supabase.table("asset_transfer_projects").insert(add_tenant_id_to_many(project_payloads)).execute()
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(f"Asset transfer project history could not be created: {exc}") from exc
 
     return transfer_id
 
@@ -4310,6 +4325,7 @@ def apply_person_offboarding(person: dict, form) -> dict:
                 transfer_reason="Employee offboarding",
                 status=(asset.get("current_assignment") or {}).get("status") or asset.get("current_status"),
                 condition=(asset.get("current_assignment") or {}).get("handover_condition"),
+                to_location_id=target_location_id,
             )
             target_person = target_people.get(target_person_id) if target_person_id else None
             target_label = get_person_display_name(target_person) if target_person else "No responsible person"
@@ -4808,6 +4824,10 @@ def get_assignment_form_context(asset: dict) -> dict:
 def describe_assignment_update_error(error: Exception) -> str:
     if isinstance(error, TenantContextError):
         return str(error)
+    if isinstance(error, ValueError) and str(error):
+        return str(error)
+    if isinstance(error, RuntimeError) and str(error):
+        return str(error)
     if not isinstance(error, APIError):
         return "Assignment could not be saved due to an unexpected database error."
 
@@ -4857,22 +4877,28 @@ def apply_asset_assignment_change(
     current_assignment = asset.get("current_assignment") or get_current_assignment(asset_id)
     if current_assignment:
         validate_transfer_person_tenants(current_assignment.get("person_id"), parsed_person_id, request=request)
+        validate_assignment_date_not_earlier(current_assignment, assignment_date)
     old_responsible = (current_assignment or {}).get("responsible_person") or "-"
 
     if not parsed_person_id and not parsed_location_id:
         if current_assignment:
-            close_current_assignments(asset_id, assignment_date, actor)
-            if status:
-                tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
-            transfer_id = create_asset_transfer_from_assignment_change(
-                asset=asset,
-                from_assignment=current_assignment,
-                to_person_id=None,
-                transfer_date=assignment_date,
-                transfer_reason="Assignment closed in web app",
-                status=status or current_assignment.get("status") or asset.get("current_status"),
-                condition=handover_condition or current_assignment.get("handover_condition"),
-            )
+            try:
+                close_current_assignments(asset_id, assignment_date, actor)
+                if status:
+                    tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
+                transfer_id = create_asset_transfer_from_assignment_change(
+                    asset=asset,
+                    from_assignment=current_assignment,
+                    to_person_id=None,
+                    transfer_date=assignment_date,
+                    transfer_reason="Assignment closed in web app",
+                    status=status or current_assignment.get("status") or asset.get("current_status"),
+                    condition=handover_condition or current_assignment.get("handover_condition"),
+                    to_location_id=None,
+                )
+            except Exception as exc:
+                set_flash(request, "error", describe_assignment_update_error(exc))
+                return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
             audit_log_event(
                 entity_type="Transfer",
                 entity_id=transfer_id or asset_id,
@@ -4935,6 +4961,7 @@ def apply_asset_assignment_change(
         transfer_reason=transfer_reason,
         status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
         condition=handover_condition or (current_assignment or {}).get("handover_condition"),
+        to_location_id=parsed_location_id,
     )
     audit_log_event(
         entity_type="Transfer",
@@ -9207,6 +9234,7 @@ def admin_asset_assignment_update(
     if current_assignment:
         try:
             validate_transfer_person_tenants(current_assignment.get("person_id"), parsed_person_id, request=request)
+            validate_assignment_date_not_earlier(current_assignment, assignment_date)
         except Exception as exc:
             set_flash(request, "error", describe_assignment_update_error(exc))
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -9225,6 +9253,7 @@ def admin_asset_assignment_update(
                 transfer_reason="Assignment closed in web app",
                 status=status or current_assignment.get("status") or asset.get("current_status"),
                 condition=handover_condition or current_assignment.get("handover_condition"),
+                to_location_id=None,
             )
             audit_log_event(
                 entity_type="Transfer",
@@ -9291,18 +9320,22 @@ def admin_asset_assignment_update(
         set_flash(request, "error", describe_assignment_update_error(exc))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
-    set_flash(request, "success", "Assignment was updated.")
     target_person = get_person_by_id(parsed_person_id) if parsed_person_id else None
     new_responsible = get_person_display_name(target_person) if target_person else "Warehouse"
-    transfer_id = create_asset_transfer_from_assignment_change(
-        asset=asset,
-        from_assignment=current_assignment,
-        to_person_id=parsed_person_id,
-        transfer_date=assignment_date,
-        transfer_reason="Assignment changed in web app",
-        status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
-        condition=handover_condition or (current_assignment or {}).get("handover_condition"),
-    )
+    try:
+        transfer_id = create_asset_transfer_from_assignment_change(
+            asset=asset,
+            from_assignment=current_assignment,
+            to_person_id=parsed_person_id,
+            transfer_date=assignment_date,
+            transfer_reason="Assignment changed in web app",
+            status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
+            condition=handover_condition or (current_assignment or {}).get("handover_condition"),
+            to_location_id=parsed_location_id,
+        )
+    except Exception as exc:
+        set_flash(request, "error", describe_assignment_update_error(exc))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
     audit_log_event(
         entity_type="Transfer",
         entity_id=transfer_id or asset_id,
@@ -9321,6 +9354,7 @@ def admin_asset_assignment_update(
         [change for change in assignment_changes if change["field_name"] not in transfer_logged_fields],
         request,
     )
+    set_flash(request, "success", "Assignment was updated.")
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
 

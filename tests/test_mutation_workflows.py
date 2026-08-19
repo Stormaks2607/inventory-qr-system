@@ -77,6 +77,30 @@ class RecordingSupabase:
         return RecordingQuery(self, table_name)
 
 
+class FailingInsertQuery(RecordingQuery):
+    def execute(self):
+        operation = {
+            "table": self.table_name,
+            "action": self.action,
+            "payload": self.payload,
+            "filters": self.filters,
+        }
+        self.database.operations.append(operation)
+        if self.table_name == self.database.fail_table and self.action == "insert":
+            raise RuntimeError(self.database.fail_message)
+        return FakeResponse(self.database.responses.get((self.table_name, self.action), []))
+
+
+class FailingInsertSupabase(RecordingSupabase):
+    def __init__(self, fail_table, fail_message="insert failed", responses=None):
+        super().__init__(responses=responses)
+        self.fail_table = fail_table
+        self.fail_message = fail_message
+
+    def table(self, table_name):
+        return FailingInsertQuery(self, table_name)
+
+
 def make_admin_request():
     return SimpleNamespace(
         session={"admin_authenticated": True, "admin_role": "admin", "admin_username": "admin"},
@@ -256,6 +280,7 @@ def test_transfer_creation_records_asset_movement_and_project_history(app_module
         },
         from_assignment={
             "person_id": 12,
+            "location_id": 4,
             "responsible_person": "Old Holder",
             "status": "functional",
             "handover_condition": "New",
@@ -265,6 +290,7 @@ def test_transfer_creation_records_asset_movement_and_project_history(app_module
         transfer_reason="Assignment changed in web app",
         status="Not functional",
         condition="Used",
+        to_location_id=5,
     )
 
     assert transfer_id == 55
@@ -277,10 +303,14 @@ def test_transfer_creation_records_asset_movement_and_project_history(app_module
     assert transfer_payload["asset_id"] == 101
     assert transfer_payload["from_person_id"] == 12
     assert transfer_payload["to_person_id"] == 13
+    assert transfer_payload["from_location_id"] == 4
+    assert transfer_payload["to_location_id"] == 5
     assert transfer_payload["from_holder_name"] == "Old Holder"
     assert transfer_payload["to_holder_name"] == "New Holder"
     assert transfer_payload["asset_status"] == "Not functional"
     assert transfer_payload["from_project_raw"] == "GLO-001"
+    assert "description_snapshot" not in transfer_payload
+    assert "serial_snapshot" not in transfer_payload
     project_payloads = [
         operation
         for operation in fake_supabase.operations
@@ -289,6 +319,131 @@ def test_transfer_creation_records_asset_movement_and_project_history(app_module
     assert {row["direction"] for row in project_payloads} == {"from", "to"}
     assert all(row["transfer_id"] == 55 for row in project_payloads)
     assert all(row["tenant_id"] == app_module.DEFAULT_TENANT_ID for row in project_payloads)
+
+
+def test_transfer_insert_failure_is_not_silently_swallowed(app_module, monkeypatch):
+    fake_supabase = FailingInsertSupabase(
+        "asset_transfers",
+        fail_message="schema column missing",
+        responses={("persons", "select"): [{"person_id": 13, "name_eng": "New Holder"}]},
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id: {"person_id": person_id, "name_eng": "New Holder"})
+    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id: [])
+
+    result = None
+    try:
+        app_module.create_asset_transfer_from_assignment_change(
+            asset={
+                "asset_id": 101,
+                "asset_tag_number": "HELP-UKR-0753",
+                "tenant_id": app_module.DEFAULT_TENANT_ID,
+            },
+            from_assignment={"person_id": 12, "location_id": 4, "responsible_person": "Old Holder"},
+            to_person_id=13,
+            to_location_id=5,
+            transfer_date="2026-08-13",
+            transfer_reason="Assignment changed in web app",
+        )
+    except RuntimeError as error:
+        result = str(error)
+
+    assert result == "Asset transfer could not be created: schema column missing"
+
+
+def test_assignment_flow_does_not_report_success_when_transfer_creation_fails(app_module, monkeypatch):
+    fake_supabase = FailingInsertSupabase(
+        "asset_transfers",
+        fail_message="schema column missing",
+        responses={
+            ("asset_assignments", "select"): [{"assignment_id": 77}],
+            ("persons", "select"): [{"person_id": 12}],
+            ("locations", "select"): [{"location_id": 4}],
+        },
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "log_assignment_field_changes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "supports_asset_assignment_actor_columns", lambda: True)
+    monkeypatch.setattr(app_module, "supports_asset_assignment_department_column", lambda: True)
+    monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id: {"person_id": person_id, "name_eng": "New Holder"})
+    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id: [])
+
+    result = None
+    try:
+        app_module.apply_asset_assignment_change(
+            asset={
+                "asset_id": 101,
+                "asset_tag_number": "HELP-UKR-0753",
+                "current_status": "functional",
+                "tenant_id": app_module.DEFAULT_TENANT_ID,
+                "current_assignment": {
+                    "assignment_id": 77,
+                    "person_id": 12,
+                    "location_id": 4,
+                    "assignment_date": "2026-06-01",
+                    "status": "functional",
+                    "responsible_person": "Old Holder",
+                },
+            },
+            parsed_person_id=None,
+            parsed_location_id=4,
+            assignment_department="PROGRAM",
+            assignment_date="2026-08-13",
+            status="functional",
+            notes="Updated holder",
+            handover_condition="Used",
+            assignment_scope="warehouse",
+            custody_note="",
+            request=make_admin_request(),
+        )
+    except RuntimeError as error:
+        result = str(error)
+
+    assert result == "Asset transfer could not be created: schema column missing"
+
+
+def test_assignment_date_earlier_than_current_is_rejected_before_mutation(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase(
+        {
+            ("persons", "select"): [{"person_id": 12}],
+            ("locations", "select"): [{"location_id": 4}],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    result = None
+    try:
+        app_module.apply_asset_assignment_change(
+            asset={
+                "asset_id": 101,
+                "asset_tag_number": "HELP-UKR-0753",
+                "current_status": "functional",
+                "tenant_id": app_module.DEFAULT_TENANT_ID,
+                "current_assignment": {
+                    "assignment_id": 77,
+                    "person_id": 12,
+                    "location_id": 4,
+                    "assignment_date": "2026-08-13",
+                    "status": "functional",
+                    "responsible_person": "Old Holder",
+                },
+            },
+            parsed_person_id=12,
+            parsed_location_id=4,
+            assignment_department="PROGRAM",
+            assignment_date="2026-08-12",
+            status="functional",
+            notes="Too early",
+            handover_condition="Used",
+            assignment_scope="personal",
+            custody_note="",
+            request=make_admin_request(),
+        )
+    except ValueError as error:
+        result = str(error)
+
+    assert result == "Assignment date cannot be earlier than the current assignment date (2026-08-13)."
+    assert not any(operation["table"] == "asset_assignments" and operation["action"] in {"insert", "update"} for operation in fake_supabase.operations)
 
 
 def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch):
