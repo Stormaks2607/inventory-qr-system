@@ -6,6 +6,15 @@ Current restored public schema: 19 tables. No current public table may remain ac
 
 General rule: add nullable `tenant_id` first, backfill from the authoritative parent, validate, then add indexes, tenant-scoped uniqueness, composite FKs, and finally `NOT NULL` only after application TenantContext/repositories are live.
 
+Current gate status:
+
+- Tenant #1 foundation: PASSED IN ISOLATED STAGING.
+- Composite tenant constraints: PASSED IN ISOLATED STAGING.
+- P1D tenant-aware application writes: PASSED IN ISOLATED STAGING.
+- `tenant_id` NOT NULL: NEXT SEPARATE ENFORCEMENT GATE.
+- Production tenant migration: NOT AUTHORIZED.
+- Tenant #2: NOT AUTHORIZED.
+
 ## Classification Legend
 
 | Classification | Meaning |

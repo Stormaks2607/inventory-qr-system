@@ -414,6 +414,176 @@ where current_status = 'disposed';
 
 Expected planning assumption: `disposed_asset_count = 0`.
 
+## Tenant NOT NULL Enforcement Preflight
+
+Run this dedicated read-only preflight before `P1B_NOT_APPROVED_03_tenant_not_null.sql`. The NOT NULL draft is a separate one-shot enforcement layer after Tenant #1 foundation, P1B-02 composite constraints, and tenant-aware P1D application writes have already passed in isolated STAGING.
+
+### Tenant ID Columns Exist
+
+```sql
+select table_name, column_name, data_type, udt_name, is_nullable
+from information_schema.columns
+where table_schema = 'public'
+  and column_name = 'tenant_id'
+  and table_name in (
+    'assets',
+    'asset_assignments',
+    'asset_transfers',
+    'asset_transfer_projects',
+    'asset_projects',
+    'asset_payments',
+    'persons',
+    'person_responsibility_scopes',
+    'locations',
+    'projects',
+    'donors',
+    'audit_log',
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
+  )
+order by table_name;
+```
+
+Expected before NOT NULL rehearsal: `19` rows.
+
+### Nullable State Before First Rehearsal
+
+```sql
+select table_name, is_nullable
+from information_schema.columns
+where table_schema = 'public'
+  and column_name = 'tenant_id'
+  and table_name in (
+    'assets',
+    'asset_assignments',
+    'asset_transfers',
+    'asset_transfer_projects',
+    'asset_projects',
+    'asset_payments',
+    'persons',
+    'person_responsibility_scopes',
+    'locations',
+    'projects',
+    'donors',
+    'audit_log',
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
+  )
+order by table_name;
+```
+
+Expected before first rehearsal: `19` rows with `is_nullable = YES`. If some columns are already `NO` and some are `YES`, stop instead of blindly executing the one-shot file. If all are already `NO`, treat the NOT NULL draft as already applied and validate rather than rerunning.
+
+### Missing Tenant IDs
+
+```sql
+select 'assets' table_name, count(*) missing_tenant from public.assets where tenant_id is null
+union all select 'asset_assignments', count(*) from public.asset_assignments where tenant_id is null
+union all select 'asset_transfers', count(*) from public.asset_transfers where tenant_id is null
+union all select 'asset_transfer_projects', count(*) from public.asset_transfer_projects where tenant_id is null
+union all select 'asset_projects', count(*) from public.asset_projects where tenant_id is null
+union all select 'asset_payments', count(*) from public.asset_payments where tenant_id is null
+union all select 'persons', count(*) from public.persons where tenant_id is null
+union all select 'person_responsibility_scopes', count(*) from public.person_responsibility_scopes where tenant_id is null
+union all select 'locations', count(*) from public.locations where tenant_id is null
+union all select 'projects', count(*) from public.projects where tenant_id is null
+union all select 'donors', count(*) from public.donors where tenant_id is null
+union all select 'audit_log', count(*) from public.audit_log where tenant_id is null
+union all select 'organization_branding', count(*) from public.organization_branding where tenant_id is null
+union all select 'asset_classifications', count(*) from public.asset_classifications where tenant_id is null
+union all select 'asset_sub_classifications', count(*) from public.asset_sub_classifications where tenant_id is null
+union all select 'asset_history', count(*) from public.asset_history where tenant_id is null
+union all select 'inventory_sessions', count(*) from public.inventory_sessions where tenant_id is null
+union all select 'inventory_records', count(*) from public.inventory_records where tenant_id is null
+union all select 'notifications', count(*) from public.notifications where tenant_id is null;
+```
+
+Expected: all `0`. If any NULL values exist, do not execute the NOT NULL draft. Investigate and remediate separately from authoritative ownership.
+
+### Unexpected Tenant IDs
+
+```sql
+select 'assets' table_name, count(*) unexpected_tenant from public.assets where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_assignments', count(*) from public.asset_assignments where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_transfers', count(*) from public.asset_transfers where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_transfer_projects', count(*) from public.asset_transfer_projects where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_projects', count(*) from public.asset_projects where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_payments', count(*) from public.asset_payments where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'persons', count(*) from public.persons where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'person_responsibility_scopes', count(*) from public.person_responsibility_scopes where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'locations', count(*) from public.locations where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'projects', count(*) from public.projects where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'donors', count(*) from public.donors where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'audit_log', count(*) from public.audit_log where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'organization_branding', count(*) from public.organization_branding where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_classifications', count(*) from public.asset_classifications where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_sub_classifications', count(*) from public.asset_sub_classifications where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_history', count(*) from public.asset_history where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'inventory_sessions', count(*) from public.inventory_sessions where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'inventory_records', count(*) from public.inventory_records where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'notifications', count(*) from public.notifications where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid;
+```
+
+Expected for current single-tenant STAGING: all `0`.
+
+### P1B-02 Constraints Validated
+
+```sql
+select conname, convalidated
+from pg_constraint
+where connamespace = 'public'::regnamespace
+  and conname like '%tenant%'
+order by conname;
+```
+
+Expected before NOT NULL rehearsal: all expected P1B-02 tenant FK/composite FK constraints are present and `convalidated = true`.
+
+### Application Compatibility Gate
+
+Confirm manually from isolated STAGING smoke evidence before execution:
+
+- STAGING is running tenant-aware P1D application code.
+- Audit writes receive `tenant_id`.
+- Asset, assignment, and transfer writes receive `tenant_id`.
+- Parent tenant mismatches fail closed.
+- Live assignment and transfer mutation passed under composite tenant FKs.
+
+Inactive tables with no current active write paths:
+
+- `asset_history`
+- `inventory_sessions`
+- `inventory_records`
+- `notifications`
+
+Future writes to these tables must supply `tenant_id` before those features are activated.
+
+### Locking And Operational Notes
+
+`ALTER COLUMN SET NOT NULL` may require table validation/scanning and takes a strong table lock. This is acceptable for the current small isolated STAGING rehearsal. Future production execution requires a fresh row-count/null preflight, a controlled deployment or maintenance window, and a PostgreSQL locking review. Do not assume STAGING execution duration equals production duration.
+
+A future production hardening approach may use a validated CHECK constraint strategy before `SET NOT NULL` if table size or lock risk requires it. Do not add that complexity unless the project actually needs it.
+
+### Rollback Shape
+
+Technical rollback for a table is:
+
+```sql
+alter table public.<table>
+    alter column tenant_id drop not null;
+```
+
+Rollback is not automatically executed as part of the migration. Preferred operational response after an unexpected failure is to stop, inspect which statements committed or rolled back, and verify schema state before any rerun. Because the draft runs inside one transaction, expected behavior is all-or-nothing. No data deletion.
+
 ## Tenant #2 Non-SQL Isolation Gates
 
 These do not block Tenant #1 staging rehearsal, but must be recorded before commercial multi-tenant onboarding:

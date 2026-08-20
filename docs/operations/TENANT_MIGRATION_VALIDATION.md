@@ -405,6 +405,49 @@ where n.tenant_id <> p.tenant_id;
 
 Expected: all `0`.
 
+### Tenant ID NOT NULL Validation
+
+Run after `P1B_NOT_APPROVED_03_tenant_not_null.sql` in isolated STAGING.
+
+```sql
+select table_name, column_name, is_nullable
+from information_schema.columns
+where table_schema = 'public'
+  and column_name = 'tenant_id'
+  and table_name in (
+    'assets',
+    'asset_assignments',
+    'asset_transfers',
+    'asset_transfer_projects',
+    'asset_projects',
+    'asset_payments',
+    'persons',
+    'person_responsibility_scopes',
+    'locations',
+    'projects',
+    'donors',
+    'audit_log',
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
+  )
+order by table_name;
+```
+
+Expected: `19` rows and every row has `is_nullable = NO`.
+
+Retain the existing post-migration validation gates after NOT NULL enforcement:
+
+- missing tenant = `0`;
+- unexpected tenant = `0`;
+- cross-owner mismatch = `0`;
+- tenant constraints remain `convalidated = true`;
+- expected tenant-scoped indexes remain present.
+
 `notifications.entity_id` is polymorphic and is intentionally excluded from FK-style validation unless checked by entity-type-specific queries in a later application phase.
 
 ## Tenant #2 Commercial Isolation Gates

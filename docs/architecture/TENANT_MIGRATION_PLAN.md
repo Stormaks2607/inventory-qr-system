@@ -151,15 +151,19 @@ These do not block Tenant #1 staging rehearsal. They require explicit Tenant #2 
 
 Add parent unique pairs `(tenant_id, id)` and child composite FKs `(tenant_id, parent_id)`.
 
-Deployability: split into a second enforcement migration after data validation.
+Staging status: PASSED IN ISOLATED STAGING for Tenant #1 composite tenant constraints.
 
 ### Step I: Make `tenant_id` NOT NULL Where Safe
 
-Only after validation passes and application code uses TenantContext/repositories.
+Next separate enforcement gate. Only after validation passes and application code uses TenantContext/repositories.
+
+Current status: NOT AUTHORIZED FOR PRODUCTION. This must be a separate draft after P1B-02, not appended to the already rehearsed one-shot constraint draft.
 
 ### Step J: Application Uses TenantContext And Repositories
 
 Start with the minimal slice required for assets, assignments, transfers, people, projects, audit, reference taxonomy, inventory, and notifications.
+
+Staging status: P1D tenant-aware application writes PASSED IN ISOLATED STAGING for audit, asset, assignment, and transfer writes. Parent tenant mismatches fail closed. Inactive tables `asset_history`, `inventory_sessions`, `inventory_records`, and `notifications` have no active application write paths; future features writing to them must provide `tenant_id`.
 
 ### Step K: Remove Legacy Fallback Later
 
@@ -382,7 +386,7 @@ Must migrate before notifications are exposed:
 
 ### Assignment Transfer Atomicity
 
-Assignment and transfer creation currently run through separate Supabase requests, so they are not fully transactional. This does not block Tenant #1 composite FK rehearsal, but it remains an application integrity hardening item for future DB RPC or transactional repository work.
+Assignment and transfer creation currently run through separate Supabase requests, so they are not fully transactional. This does not block Tenant #1 composite FK rehearsal or the tenant_id NOT NULL gate because both live writes now explicitly provide tenant_id and passed composite FK validation, but it remains an application integrity hardening item for future DB RPC or transactional repository work.
 
 ## RLS Position
 
@@ -495,6 +499,15 @@ Future implementation tests must prove:
 - Route handlers do not accept client-submitted tenant scope.
 
 Commercial Tenant B must not be implemented against production data in this phase.
+
+## Current Gate Status
+
+- Tenant #1 foundation: PASSED IN ISOLATED STAGING.
+- Composite tenant constraints: PASSED IN ISOLATED STAGING.
+- P1D tenant-aware application writes: PASSED IN ISOLATED STAGING.
+- `tenant_id` NOT NULL: NEXT SEPARATE ENFORCEMENT GATE.
+- Production tenant migration: NOT AUTHORIZED.
+- Tenant #2: NOT AUTHORIZED.
 
 ## Gate Recommendation
 
