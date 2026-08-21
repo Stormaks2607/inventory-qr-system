@@ -14,15 +14,22 @@ Do not place secrets, passwords, connection strings, backup files, or Storage ex
 - [ ] Current production application commit SHA recorded.
 - [ ] Reviewed P1D commit SHA recorded.
 - [ ] PR #11 migration drafts reviewed.
+- [ ] Exact reviewed PR #11 commit SHA recorded.
 - [ ] PR #12 application changes reviewed.
+- [ ] Production auto-deploy behavior recorded and controlled.
 - [ ] Production schema confirmed to match rehearsed assumptions.
 - [ ] Storage backup/inventory approach confirmed.
 - [ ] Rollback owner assigned.
+- [ ] Foundation post-COMMIT recovery decision owner assigned.
 
 ## BACKUP
 
 - [ ] Backup directory outside repository created.
 - [ ] `roles.sql` created.
+- [ ] Raw `roles.sql` SHA256 recorded.
+- [ ] Restore-safe `roles.restore.sql` prepared if restore rehearsal/recovery requires it.
+- [ ] `roles.restore.sql` change from raw file documented exactly.
+- [ ] `roles.restore.sql` SHA256 recorded.
 - [ ] `schema.sql` created.
 - [ ] `data.sql` created.
 - [ ] Dump files are non-zero.
@@ -30,8 +37,17 @@ Do not place secrets, passwords, connection strings, backup files, or Storage ex
 - [ ] Manifest created.
 - [ ] Critical tables confirmed in schema dump.
 - [ ] Production row counts recorded.
-- [ ] Storage objects enumerated/backed up.
+- [ ] Storage physical export complete for every current object in `private-inventory-docs`.
+- [ ] Storage full object path inventory recorded.
+- [ ] Storage object sizes recorded.
+- [ ] Storage SHA256 hash recorded for each exported object.
+- [ ] Storage exported object count matches Storage metadata count.
 - [ ] Backup timestamp recorded.
+- [ ] P1B-01 SHA256 recorded.
+- [ ] P1B-02 SHA256 recorded.
+- [ ] P1B-03 SHA256 recorded.
+- [ ] Exact P1D SHA recorded.
+- [ ] Exact production artifact/deploy commit SHA recorded.
 
 ## WRITE FREEZE
 
@@ -44,6 +60,7 @@ Do not place secrets, passwords, connection strings, backup files, or Storage ex
 
 - [ ] Fresh preflight from `TENANT_MIGRATION_PREFLIGHT.md` passed.
 - [ ] `P1B_NOT_APPROVED_01_tenant_foundation.sql` source confirmed.
+- [ ] `P1B_NOT_APPROVED_01_tenant_foundation.sql` hash verified immediately before execution.
 - [ ] Foundation migration executed in authorized production window.
 - [ ] Tenant #1 row exists.
 - [ ] 19/19 tenant-owned tables have `tenant_id`.
@@ -52,6 +69,7 @@ Do not place secrets, passwords, connection strings, backup files, or Storage ex
 - [ ] Cross-owner mismatch = 0.
 - [ ] Tenant-scoped duplicate checks = 0.
 - [ ] Row counts preserved.
+- [ ] Writes remain frozen after foundation COMMIT until P1D write smoke passes.
 - [ ] GO-1 signed.
 
 ## P1D DEPLOY
@@ -60,6 +78,7 @@ Do not place secrets, passwords, connection strings, backup files, or Storage ex
 - [ ] `PUBLIC_BASE_URL` preserved.
 - [ ] `INTERNAL_API_BASE_URL` preserved if configured.
 - [ ] Existing production secrets preserved.
+- [ ] Production auto-deploy behavior confirmed controlled before P1D runtime starts.
 - [ ] Exact reviewed P1D commit deployed.
 - [ ] Health endpoint passes.
 - [ ] Login/logout passes.
@@ -87,6 +106,7 @@ Do not place secrets, passwords, connection strings, backup files, or Storage ex
 ## CONSTRAINTS
 
 - [ ] `P1B_NOT_APPROVED_02_tenant_constraints.sql` source confirmed.
+- [ ] `P1B_NOT_APPROVED_02_tenant_constraints.sql` hash verified immediately before execution.
 - [ ] Composite constraint migration executed in authorized production window.
 - [ ] 35 expected constraints exist.
 - [ ] 5 expected tenant-scoped indexes exist.
@@ -99,6 +119,7 @@ Do not place secrets, passwords, connection strings, backup files, or Storage ex
 ## NOT NULL
 
 - [ ] `P1B_NOT_APPROVED_03_tenant_not_null.sql` source confirmed.
+- [ ] `P1B_NOT_APPROVED_03_tenant_not_null.sql` hash verified immediately before execution.
 - [ ] Exactly 19 `tenant_id` columns exist.
 - [ ] Before first execution all 19 are nullable.
 - [ ] Missing tenant = 0.

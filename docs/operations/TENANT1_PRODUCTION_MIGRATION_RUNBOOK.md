@@ -85,10 +85,18 @@ Required before any production change:
 - `manifest.txt`;
 - SHA256 hashes for every backup artifact;
 - backup directory outside the repository;
-- Storage backup or inventory for `private-inventory-docs`;
+- physical Storage export for every current object in `private-inventory-docs`;
+- full Storage object path inventory, object sizes, and SHA256 hash for each exported object;
+- verification that exported object count matches Storage metadata count;
 - exact production connection metadata recorded securely outside the repository;
 - backup timestamp;
 - current production application commit SHA;
+- exact reviewed PR #11 commit SHA;
+- SHA256 of `P1B_NOT_APPROVED_01_tenant_foundation.sql`;
+- SHA256 of `P1B_NOT_APPROVED_02_tenant_constraints.sql`;
+- SHA256 of `P1B_NOT_APPROVED_03_tenant_not_null.sql`;
+- exact reviewed P1D application commit SHA;
+- exact production artifact/deploy commit SHA;
 - current DB row counts;
 - write freeze start timestamp and operator.
 
@@ -105,13 +113,40 @@ Get-FileHash "C:\Users\User\Documents\inventory-qr-backups\<YYYY-MM-DD>\schema.s
 Get-FileHash "C:\Users\User\Documents\inventory-qr-backups\<YYYY-MM-DD>\data.sql" -Algorithm SHA256
 ```
 
+### Roles Restore Caveat
+
+During STAGING restore rehearsal, the raw `roles.sql` backup included this line:
+
+```sql
+ALTER ROLE "supabase_admin" SET "statement_timeout" TO '0';
+```
+
+Restoring that raw file directly failed because `supabase_admin` is a reserved Supabase role.
+
+Safe handling:
+
+- keep raw `roles.sql` immutable;
+- record SHA256 for raw `roles.sql`;
+- create a separate restore-only copy, for example `roles.restore.sql`;
+- remove ONLY the unsupported reserved-role `ALTER ROLE "supabase_admin" SET "statement_timeout" TO '0';` line from the restore copy;
+- record SHA256 for `roles.restore.sql`;
+- record exactly which line/change was made;
+- never overwrite the raw backup;
+- use the restore copy only for restore/recovery operations.
+
 Backup validation:
 
 - dump files exist and are non-zero;
 - hashes are recorded in the manifest;
 - schema dump contains critical tables such as `assets`, `asset_assignments`, `asset_transfers`, `persons`, `locations`, `projects`, `audit_log`;
 - data dump row counts are plausible against production row-count checks;
-- Storage objects are enumerated and recorded.
+- Storage physical export is complete;
+- exported Storage object count matches Storage metadata count;
+- each exported Storage object has path, size, timestamp, and SHA256 hash recorded.
+
+Storage inventory-only records may be kept as informational metadata, but inventory-only is not recovery-ready. Logical Supabase DB dumps may restore Storage metadata, but they do not restore physical object bytes.
+
+Before each migration phase, verify the relevant migration file hash against the authorized value. STOP if a hash differs from the authorized value.
 
 Recommendation: a fresh restore rehearsal immediately before production migration is the safest option if time and an isolated target are available. If not, the completed STAGING rehearsal plus fresh backup verification may be sufficient for this small pilot dataset, but the operator must accept that the fresh backup was not restored before cutover.
 
@@ -124,6 +159,8 @@ Reference reviewed draft:
 ```text
 migrations/drafts/P1B_NOT_APPROVED_01_tenant_foundation.sql
 ```
+
+Immediately before execution, verify the file SHA256 against the GO-0 authorized value. STOP if it differs.
 
 Expected behavior:
 
@@ -176,6 +213,23 @@ Use `docs/operations/TENANT_MIGRATION_PREFLIGHT.md` and `docs/operations/TENANT_
 ## PHASE C - Deploy Tenant-Aware P1D Application
 
 Deploy only after foundation schema exists and validates.
+
+STOP unless the operator has an explicit, pre-authorized method to control production deployment timing. Production `main` auto-deploy can launch incompatible P1D code against the legacy DB schema if PR #12 is merged too early.
+
+Requirements:
+
+- GO-1 foundation validation must be complete before P1D runtime starts;
+- the exact reviewed P1D artifact must be deployable only after GO-1;
+- production auto-deploy behavior must be recorded and controlled;
+- do not assume merging PR #12 automatically means safe deployment.
+
+If exact P1D code is rebased, squash-merged, or otherwise receives a new SHA:
+
+- record the new SHA;
+- rerun static tests;
+- compare and review the diff against the STAGING-validated P1D commit;
+- explicitly authorize the exact production artifact;
+- do not assume semantic equivalence solely because Git history came from the same PR.
 
 Required production environment variable:
 
@@ -238,6 +292,8 @@ Reference reviewed draft:
 migrations/drafts/P1B_NOT_APPROVED_02_tenant_constraints.sql
 ```
 
+Immediately before execution, verify the file SHA256 against the GO-0 authorized value. STOP if it differs.
+
 Fresh preflight required:
 
 - missing tenant = 0;
@@ -264,6 +320,8 @@ Reference reviewed draft from PR #11:
 ```text
 migrations/drafts/P1B_NOT_APPROVED_03_tenant_not_null.sql
 ```
+
+Immediately before execution, verify the file SHA256 against the GO-0 authorized value. STOP if it differs.
 
 Fresh preflight required:
 
@@ -319,7 +377,15 @@ STOP with no improvisation if:
 
 - backup is incomplete;
 - backup hashes are missing;
-- Storage backup or inventory is incomplete;
+- raw `roles.sql` hash is missing;
+- restore-safe `roles.restore.sql` is required but not prepared or hashed;
+- Storage physical export is incomplete;
+- Storage exported object count does not match metadata count;
+- any exported Storage object hash is missing;
+- PR #11 reviewed commit SHA is unknown;
+- any authorized migration file hash is missing or differs at execution time;
+- exact reviewed P1D SHA is unknown;
+- production auto-deploy behavior is unknown or uncontrolled;
 - production commit SHA is unknown;
 - production deployment commit differs from reviewed code;
 - schema differs from rehearsed shape;
@@ -346,8 +412,16 @@ Before foundation COMMIT:
 
 After foundation but before P1D:
 
-- preferred response is forward-fix and deploy P1D if DB is healthy;
-- otherwise review a controlled rollback plan.
+- once foundation transaction COMMIT succeeds, do NOT improvise destructive rollback SQL;
+- keep production writes frozen;
+- inspect the exact DB state;
+- choose only between:
+  - controlled forward-fix/deploy of P1D if foundation DB is healthy;
+  - separately reviewed and rehearsed database restore/reverse procedure;
+- do not run ad-hoc `DROP COLUMN`, `DROP TABLE`, delete, or backfill reversal SQL;
+- production reopen is prohibited while the legacy app could create tenant-less writes.
+
+The STAGING exercise rehearsed restore into an isolated target. It did not rehearse an in-place production rollback.
 
 After P1D deploy:
 
@@ -423,6 +497,8 @@ private-inventory-docs/<tenant_id>/...
 
 Storage objects are not automatically included in logical DB dumps.
 
+For production mutation readiness, Storage inventory alone is not sufficient. GO-0 requires physical export/download of every current object in `private-inventory-docs`, a full object path inventory, object size, SHA256 hash per exported object, backup destination outside the repository, timestamp, and verification that exported object count matches Storage metadata count.
+
 ## Tenant #2 Out Of Scope
 
 Known blockers remain:
@@ -444,10 +520,12 @@ Recommended integration order:
 
 1. Review PR #11 as the migration draft and operations documentation package.
 2. Review PR #12 as the P1D application compatibility package.
-3. Merge or otherwise make PR #11 migration/docs available before production execution because it does not alter runtime behavior by itself.
-4. Do not deploy PR #12 code to production before foundation schema exists.
-5. During the production migration window, deploy the exact reviewed P1D commit only after PHASE B foundation migration validates.
-6. Merge P1D to `main` only when the production DB is ready for tenant-aware code or when deployment is explicitly pinned to the reviewed commit and auto-deploy behavior is controlled by the operator.
+3. Rebase/update this PR #13 after required referenced docs/migrations are available on its intended base, OR merge documentation in an order that guarantees all referenced paths exist.
+4. Do not allow documentation to claim executable files exist in `main` when they do not.
+5. PR #11 may be merged before the migration window because its migration files/docs do not alter runtime by themselves, subject to normal review.
+6. Do not deploy PR #12 code to production before foundation schema exists.
+7. During the production migration window, deploy the exact reviewed P1D commit only after PHASE B foundation migration validates.
+8. Merge P1D to `main` only when the production DB is ready for tenant-aware code or when deployment is explicitly pinned to the reviewed commit and auto-deploy behavior is controlled by the operator.
 
 Do not assume Render branch switching is the final production method. The operator must record the exact reviewed commit deployed and confirm that production auto-deploy will not launch incompatible code against an incompatible DB state.
 
