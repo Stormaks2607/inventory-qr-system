@@ -1,10 +1,10 @@
 # Tenant Migration Preflight
 
-Status: READ ONLY. Run against STAGING before executing any P1B draft migration.
+Status: READ ONLY. Run against isolated STAGING before executing any P1B draft migration. Do not run against PILOT_PRODUCTION for rehearsal.
 
-Purpose: verify the actual Supabase schema and data shape before migration. Repository migration files are not a substitute for inspecting the live staging schema restored from backup.
+Purpose: verify the actual restored Supabase schema and data shape before tenant migration. Repository migration files are not a substitute for inspecting the live staging schema restored from backup.
 
-If any required table, column, PK, FK, unique constraint, index, or data relationship differs from assumptions, stop the rehearsal and update the plan before running migration SQL.
+If any required table, column, PK, FK, unique constraint, index, row count, or data relationship differs from assumptions, stop the rehearsal and update the plan before running migration SQL.
 
 ## Required Tables
 
@@ -25,12 +25,54 @@ where table_schema = 'public'
     'projects',
     'donors',
     'audit_log',
-    'organization_branding'
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
   )
 order by table_name;
 ```
 
-Expected: every listed table exists.
+Expected: 19 rows, every listed table exists.
+
+## Row Counts
+
+```sql
+select 'assets' table_name, count(*) row_count from public.assets
+union all select 'asset_assignments', count(*) from public.asset_assignments
+union all select 'asset_transfers', count(*) from public.asset_transfers
+union all select 'asset_transfer_projects', count(*) from public.asset_transfer_projects
+union all select 'asset_projects', count(*) from public.asset_projects
+union all select 'asset_payments', count(*) from public.asset_payments
+union all select 'persons', count(*) from public.persons
+union all select 'person_responsibility_scopes', count(*) from public.person_responsibility_scopes
+union all select 'locations', count(*) from public.locations
+union all select 'projects', count(*) from public.projects
+union all select 'donors', count(*) from public.donors
+union all select 'audit_log', count(*) from public.audit_log
+union all select 'organization_branding', count(*) from public.organization_branding
+union all select 'asset_classifications', count(*) from public.asset_classifications
+union all select 'asset_sub_classifications', count(*) from public.asset_sub_classifications
+union all select 'asset_history', count(*) from public.asset_history
+union all select 'inventory_sessions', count(*) from public.inventory_sessions
+union all select 'inventory_records', count(*) from public.inventory_records
+union all select 'notifications', count(*) from public.notifications
+order by table_name;
+```
+
+Confirmed staging counts for the six addendum tables:
+
+```text
+asset_classifications      8
+asset_sub_classifications  36
+asset_history              0
+inventory_sessions         0
+inventory_records          0
+notifications              0
+```
 
 ## Columns, Types, And Nullability
 
@@ -57,31 +99,30 @@ where table_schema = 'public'
     'projects',
     'donors',
     'audit_log',
-    'organization_branding'
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
   )
 order by table_name, ordinal_position;
 ```
 
-Important columns to confirm before rehearsal:
+Important addendum column checks:
 
 ```sql
 select table_name, column_name, data_type, udt_name, is_nullable
 from information_schema.columns
 where table_schema = 'public'
   and (
-    (table_name = 'assets' and column_name in ('asset_id', 'asset_tag_number', 'current_status'))
-    or (table_name = 'asset_assignments' and column_name in ('assignment_id', 'asset_id', 'person_id', 'location_id', 'status'))
-    or (table_name = 'asset_transfers' and column_name in ('transfer_id', 'asset_id', 'from_person_id', 'to_person_id'))
-    or (table_name = 'asset_transfer_projects' and column_name in ('transfer_project_id', 'transfer_id', 'project_id'))
-    or (table_name = 'asset_projects' and column_name in ('asset_project_id', 'asset_id', 'project_id', 'donor_id'))
-    or (table_name = 'asset_payments' and column_name in ('payment_id', 'asset_id'))
-    or (table_name = 'persons' and column_name in ('person_id', 'email'))
-    or (table_name = 'person_responsibility_scopes' and column_name in ('scope_id', 'person_id', 'location_id'))
-    or (table_name = 'locations' and column_name in ('location_id', 'city', 'office_name'))
-    or (table_name = 'projects' and column_name in ('project_id', 'project_number'))
-    or (table_name = 'donors' and column_name in ('donor_id', 'donor_name'))
-    or (table_name = 'audit_log' and column_name in ('audit_id', 'entity_type', 'entity_id', 'event_key'))
-    or (table_name = 'organization_branding' and column_name in ('tenant_key'))
+    (table_name = 'asset_classifications' and column_name in ('classification_id', 'classification_name', 'description', 'created_at', 'updated_at'))
+    or (table_name = 'asset_sub_classifications' and column_name in ('sub_classification_id', 'classification_id', 'sub_classification_name', 'description', 'created_at', 'updated_at'))
+    or (table_name = 'asset_history' and column_name in ('history_id', 'asset_id', 'action_type', 'changed_by', 'changed_at', 'old_values', 'new_values'))
+    or (table_name = 'inventory_sessions' and column_name in ('session_id', 'session_name', 'start_date', 'end_date', 'status', 'created_by', 'location_id', 'notes', 'created_at', 'updated_at'))
+    or (table_name = 'inventory_records' and column_name in ('record_id', 'session_id', 'asset_id', 'scanned_at', 'scanned_by', 'location_found', 'condition', 'photo_url', 'discrepancy_notes', 'gps_coordinates', 'created_at', 'updated_at'))
+    or (table_name = 'notifications' and column_name in ('notification_id', 'person_id', 'entity_type', 'entity_id', 'notification_type', 'title', 'message', 'priority', 'delivery_channel', 'delivery_status', 'sent_at', 'delivered_at', 'read_at', 'action_url', 'action_taken', 'action_taken_at', 'retry_count', 'error_message', 'created_at', 'updated_at'))
   )
 order by table_name, column_name;
 ```
@@ -112,12 +153,37 @@ where tc.table_schema = 'public'
     'projects',
     'donors',
     'audit_log',
-    'organization_branding'
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
   )
   and tc.constraint_type in ('PRIMARY KEY', 'FOREIGN KEY', 'UNIQUE')
 group by tc.table_name, tc.constraint_name, tc.constraint_type
 order by tc.table_name, tc.constraint_type, tc.constraint_name;
 ```
+
+Expected addendum relationships:
+
+- `asset_classifications`: PK `classification_id`, unique `classification_name`.
+- `asset_sub_classifications`: PK `sub_classification_id`, FK `classification_id -> asset_classifications`, unique `(classification_id, sub_classification_name)`.
+- `asset_history`: PK `history_id`, FK `asset_id -> assets`, FK `changed_by -> persons`.
+- `inventory_sessions`: PK `session_id`, FK `created_by -> persons`, FK `location_id -> locations`.
+- `inventory_records`: PK `record_id`, FK `session_id -> inventory_sessions`, FK `asset_id -> assets`, FK `scanned_by -> persons`.
+- `notifications`: PK `notification_id`, FK `person_id -> persons`; `entity_id` is polymorphic and must not receive an invented FK.
+
+Confirmed current global unique constraints to record:
+
+- `assets.asset_tag_number`;
+- `assets.inventory_code`;
+- `projects.project_number`;
+- `asset_classifications.classification_name`;
+- `organization_branding.tenant_key`.
+
+These do not block Tenant #1 staging rehearsal. They must be reviewed before Tenant #2. Do not drop or destructively change them in P1B.
 
 ## Indexes
 
@@ -142,14 +208,18 @@ where schemaname = 'public'
     'projects',
     'donors',
     'audit_log',
-    'organization_branding'
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
   )
 order by tablename, indexname;
 ```
 
 ## Existing Tenant Draft Objects
-
-The foundation draft is partially idempotent, but the enforcement draft is one-shot. Confirm whether any tenant migration objects already exist:
 
 ```sql
 select table_name, column_name, data_type, udt_name
@@ -165,28 +235,11 @@ where table_schema = 'public'
 order by table_name, constraint_name;
 ```
 
-## Row Counts For Lock Planning
+Expected before P1B rehearsal: no tenant migration objects unless a prior failed rehearsal was intentionally retained for review.
 
-```sql
-select 'assets' table_name, count(*) row_count from public.assets
-union all select 'asset_assignments', count(*) from public.asset_assignments
-union all select 'asset_transfers', count(*) from public.asset_transfers
-union all select 'asset_transfer_projects', count(*) from public.asset_transfer_projects
-union all select 'asset_projects', count(*) from public.asset_projects
-union all select 'asset_payments', count(*) from public.asset_payments
-union all select 'persons', count(*) from public.persons
-union all select 'person_responsibility_scopes', count(*) from public.person_responsibility_scopes
-union all select 'locations', count(*) from public.locations
-union all select 'projects', count(*) from public.projects
-union all select 'donors', count(*) from public.donors
-union all select 'audit_log', count(*) from public.audit_log
-union all select 'organization_branding', count(*) from public.organization_branding
-order by table_name;
-```
+## Orphan Checks
 
-## Data Anomaly Checks
-
-### Orphan Assignments
+### Existing 13-Table Relationships
 
 ```sql
 select aa.assignment_id, aa.asset_id
@@ -203,11 +256,7 @@ select aa.assignment_id, aa.location_id
 from public.asset_assignments aa
 left join public.locations l on l.location_id = aa.location_id
 where aa.location_id is not null and l.location_id is null;
-```
 
-### Orphan Transfers
-
-```sql
 select t.transfer_id, t.asset_id
 from public.asset_transfers t
 left join public.assets a on a.asset_id = t.asset_id
@@ -222,25 +271,22 @@ select t.transfer_id, t.to_person_id
 from public.asset_transfers t
 left join public.persons p on p.person_id = t.to_person_id
 where t.to_person_id is not null and p.person_id is null;
-```
 
-### Orphan Transfer Projects
+select t.transfer_id, t.from_location_id
+from public.asset_transfers t
+left join public.locations l on l.location_id = t.from_location_id
+where t.from_location_id is not null and l.location_id is null;
 
-```sql
+select t.transfer_id, t.to_location_id
+from public.asset_transfers t
+left join public.locations l on l.location_id = t.to_location_id
+where t.to_location_id is not null and l.location_id is null;
+
 select atp.transfer_project_id, atp.transfer_id
 from public.asset_transfer_projects atp
 left join public.asset_transfers t on t.transfer_id = atp.transfer_id
 where atp.transfer_id is not null and t.transfer_id is null;
 
-select atp.transfer_project_id, atp.project_id
-from public.asset_transfer_projects atp
-left join public.projects p on p.project_id = atp.project_id
-where atp.project_id is not null and p.project_id is null;
-```
-
-### Orphan Asset Projects And Payments
-
-```sql
 select ap.asset_project_id, ap.asset_id
 from public.asset_projects ap
 left join public.assets a on a.asset_id = ap.asset_id
@@ -251,32 +297,67 @@ from public.asset_projects ap
 left join public.projects p on p.project_id = ap.project_id
 where ap.project_id is not null and p.project_id is null;
 
-select ap.asset_project_id, ap.donor_id
-from public.asset_projects ap
-left join public.donors d on d.donor_id = ap.donor_id
-where ap.donor_id is not null and d.donor_id is null;
-
 select pay.payment_id, pay.asset_id
 from public.asset_payments pay
 left join public.assets a on a.asset_id = pay.asset_id
 where pay.asset_id is not null and a.asset_id is null;
-```
 
-### Orphan Responsibility Scopes
-
-```sql
 select prs.scope_id, prs.person_id
 from public.person_responsibility_scopes prs
 left join public.persons p on p.person_id = prs.person_id
 where prs.person_id is not null and p.person_id is null;
-
-select prs.scope_id, prs.location_id
-from public.person_responsibility_scopes prs
-left join public.locations l on l.location_id = prs.location_id
-where prs.location_id is not null and l.location_id is null;
 ```
 
-### Duplicate Or Invalid Identifiers
+### Addendum Table Relationships
+
+```sql
+select asc_row.sub_classification_id, asc_row.classification_id
+from public.asset_sub_classifications asc_row
+left join public.asset_classifications ac on ac.classification_id = asc_row.classification_id
+where ac.classification_id is null;
+
+select ah.history_id, ah.asset_id
+from public.asset_history ah
+left join public.assets a on a.asset_id = ah.asset_id
+where ah.asset_id is not null and a.asset_id is null;
+
+select ah.history_id, ah.changed_by
+from public.asset_history ah
+left join public.persons p on p.person_id = ah.changed_by
+where ah.changed_by is not null and p.person_id is null;
+
+select s.session_id, s.created_by
+from public.inventory_sessions s
+left join public.persons p on p.person_id = s.created_by
+where s.created_by is not null and p.person_id is null;
+
+select s.session_id, s.location_id
+from public.inventory_sessions s
+left join public.locations l on l.location_id = s.location_id
+where s.location_id is not null and l.location_id is null;
+
+select ir.record_id, ir.session_id
+from public.inventory_records ir
+left join public.inventory_sessions s on s.session_id = ir.session_id
+where ir.session_id is not null and s.session_id is null;
+
+select ir.record_id, ir.asset_id
+from public.inventory_records ir
+left join public.assets a on a.asset_id = ir.asset_id
+where ir.asset_id is not null and a.asset_id is null;
+
+select ir.record_id, ir.scanned_by
+from public.inventory_records ir
+left join public.persons p on p.person_id = ir.scanned_by
+where ir.scanned_by is not null and p.person_id is null;
+
+select n.notification_id, n.person_id
+from public.notifications n
+left join public.persons p on p.person_id = n.person_id
+where n.person_id is not null and p.person_id is null;
+```
+
+## Duplicate And Taxonomy Checks
 
 ```sql
 select asset_tag_number, count(*)
@@ -291,16 +372,34 @@ where project_number is not null
 group by project_number
 having count(*) > 1;
 
-select count(*) as null_asset_tags
+select inventory_code, count(*)
 from public.assets
-where asset_tag_number is null or btrim(asset_tag_number) = '';
+where inventory_code is not null
+group by inventory_code
+having count(*) > 1;
 
-select count(*) as null_project_numbers
-from public.projects
-where project_number is null or btrim(project_number) = '';
+select classification_name, count(*)
+from public.asset_classifications
+where classification_name is not null
+group by classification_name
+having count(*) > 1;
+
+select classification_id, sub_classification_name, count(*)
+from public.asset_sub_classifications
+where sub_classification_name is not null
+group by classification_id, sub_classification_name
+having count(*) > 1;
 ```
 
-### Status Checks
+Current global uniqueness limitations are known legacy constraints. Do not remove them in P1B.
+
+Tenant #2 gates:
+
+- decide whether `inventory_code` remains globally unique across the SaaS platform or becomes tenant-local with `unique (tenant_id, inventory_code)`;
+- remove or rework global `asset_classifications.classification_name` uniqueness before independent tenant taxonomy;
+- preserve `asset_sub_classifications(classification_id, sub_classification_name)` wording correctly: it is tenant-aware by parent row in practice because `classification_id` is globally unique, although tenant-scoped index/FK remains useful for isolation.
+
+## Status Checks
 
 ```sql
 select current_status, count(*)
@@ -315,6 +414,185 @@ where current_status = 'disposed';
 
 Expected planning assumption: `disposed_asset_count = 0`.
 
+## Tenant NOT NULL Enforcement Preflight
+
+Run this dedicated read-only preflight before `P1B_NOT_APPROVED_03_tenant_not_null.sql`. The NOT NULL draft is a separate one-shot enforcement layer after Tenant #1 foundation, P1B-02 composite constraints, and tenant-aware P1D application writes have already passed in isolated STAGING.
+
+### Tenant ID Columns Exist
+
+```sql
+select table_name, column_name, data_type, udt_name, is_nullable
+from information_schema.columns
+where table_schema = 'public'
+  and column_name = 'tenant_id'
+  and table_name in (
+    'assets',
+    'asset_assignments',
+    'asset_transfers',
+    'asset_transfer_projects',
+    'asset_projects',
+    'asset_payments',
+    'persons',
+    'person_responsibility_scopes',
+    'locations',
+    'projects',
+    'donors',
+    'audit_log',
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
+  )
+order by table_name;
+```
+
+Expected before NOT NULL rehearsal: `19` rows.
+
+### Nullable State Before First Rehearsal
+
+```sql
+select table_name, is_nullable
+from information_schema.columns
+where table_schema = 'public'
+  and column_name = 'tenant_id'
+  and table_name in (
+    'assets',
+    'asset_assignments',
+    'asset_transfers',
+    'asset_transfer_projects',
+    'asset_projects',
+    'asset_payments',
+    'persons',
+    'person_responsibility_scopes',
+    'locations',
+    'projects',
+    'donors',
+    'audit_log',
+    'organization_branding',
+    'asset_classifications',
+    'asset_sub_classifications',
+    'asset_history',
+    'inventory_sessions',
+    'inventory_records',
+    'notifications'
+  )
+order by table_name;
+```
+
+Expected before first rehearsal: `19` rows with `is_nullable = YES`. If some columns are already `NO` and some are `YES`, stop instead of blindly executing the one-shot file. If all are already `NO`, treat the NOT NULL draft as already applied and validate rather than rerunning.
+
+### Missing Tenant IDs
+
+```sql
+select 'assets' table_name, count(*) missing_tenant from public.assets where tenant_id is null
+union all select 'asset_assignments', count(*) from public.asset_assignments where tenant_id is null
+union all select 'asset_transfers', count(*) from public.asset_transfers where tenant_id is null
+union all select 'asset_transfer_projects', count(*) from public.asset_transfer_projects where tenant_id is null
+union all select 'asset_projects', count(*) from public.asset_projects where tenant_id is null
+union all select 'asset_payments', count(*) from public.asset_payments where tenant_id is null
+union all select 'persons', count(*) from public.persons where tenant_id is null
+union all select 'person_responsibility_scopes', count(*) from public.person_responsibility_scopes where tenant_id is null
+union all select 'locations', count(*) from public.locations where tenant_id is null
+union all select 'projects', count(*) from public.projects where tenant_id is null
+union all select 'donors', count(*) from public.donors where tenant_id is null
+union all select 'audit_log', count(*) from public.audit_log where tenant_id is null
+union all select 'organization_branding', count(*) from public.organization_branding where tenant_id is null
+union all select 'asset_classifications', count(*) from public.asset_classifications where tenant_id is null
+union all select 'asset_sub_classifications', count(*) from public.asset_sub_classifications where tenant_id is null
+union all select 'asset_history', count(*) from public.asset_history where tenant_id is null
+union all select 'inventory_sessions', count(*) from public.inventory_sessions where tenant_id is null
+union all select 'inventory_records', count(*) from public.inventory_records where tenant_id is null
+union all select 'notifications', count(*) from public.notifications where tenant_id is null;
+```
+
+Expected: all `0`. If any NULL values exist, do not execute the NOT NULL draft. Investigate and remediate separately from authoritative ownership.
+
+### Unexpected Tenant IDs
+
+```sql
+select 'assets' table_name, count(*) unexpected_tenant from public.assets where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_assignments', count(*) from public.asset_assignments where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_transfers', count(*) from public.asset_transfers where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_transfer_projects', count(*) from public.asset_transfer_projects where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_projects', count(*) from public.asset_projects where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_payments', count(*) from public.asset_payments where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'persons', count(*) from public.persons where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'person_responsibility_scopes', count(*) from public.person_responsibility_scopes where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'locations', count(*) from public.locations where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'projects', count(*) from public.projects where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'donors', count(*) from public.donors where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'audit_log', count(*) from public.audit_log where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'organization_branding', count(*) from public.organization_branding where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_classifications', count(*) from public.asset_classifications where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_sub_classifications', count(*) from public.asset_sub_classifications where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'asset_history', count(*) from public.asset_history where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'inventory_sessions', count(*) from public.inventory_sessions where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'inventory_records', count(*) from public.inventory_records where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid
+union all select 'notifications', count(*) from public.notifications where tenant_id <> '00000000-0000-4000-8000-000000000001'::uuid;
+```
+
+Expected for current single-tenant STAGING: all `0`.
+
+### P1B-02 Constraints Validated
+
+```sql
+select conname, convalidated
+from pg_constraint
+where connamespace = 'public'::regnamespace
+  and conname like '%tenant%'
+order by conname;
+```
+
+Expected before NOT NULL rehearsal: all expected P1B-02 tenant FK/composite FK constraints are present and `convalidated = true`.
+
+### Application Compatibility Gate
+
+Confirm manually from isolated STAGING smoke evidence before execution:
+
+- STAGING is running tenant-aware P1D application code.
+- Audit writes receive `tenant_id`.
+- Asset, assignment, and transfer writes receive `tenant_id`.
+- Parent tenant mismatches fail closed.
+- Live assignment and transfer mutation passed under composite tenant FKs.
+
+Inactive tables with no current active write paths:
+
+- `asset_history`
+- `inventory_sessions`
+- `inventory_records`
+- `notifications`
+
+Future writes to these tables must supply `tenant_id` before those features are activated.
+
+### Locking And Operational Notes
+
+`ALTER COLUMN SET NOT NULL` may require table validation/scanning and takes a strong table lock. This is acceptable for the current small isolated STAGING rehearsal. Future production execution requires a fresh row-count/null preflight, a controlled deployment or maintenance window, and a PostgreSQL locking review. Do not assume STAGING execution duration equals production duration.
+
+A future production hardening approach may use a validated CHECK constraint strategy before `SET NOT NULL` if table size or lock risk requires it. Do not add that complexity unless the project actually needs it.
+
+### Rollback Shape
+
+Technical rollback for a table is:
+
+```sql
+alter table public.<table>
+    alter column tenant_id drop not null;
+```
+
+Rollback is not automatically executed as part of the migration. Preferred operational response after an unexpected failure is to stop, inspect which statements committed or rolled back, and verify schema state before any rerun. Because the draft runs inside one transaction, expected behavior is all-or-nothing. No data deletion.
+
+## Tenant #2 Non-SQL Isolation Gates
+
+These do not block Tenant #1 staging rehearsal, but must be recorded before commercial multi-tenant onboarding:
+
+- Decide whether `assets.inventory_code` remains globally unique or becomes tenant-local with `unique (tenant_id, inventory_code)`.
+- Rework global `asset_classifications.classification_name` uniqueness before independent Tenant #2 taxonomy.
+- Define tenant-scoped Storage ownership. Current path `private-inventory-docs/sync/official_inventory.xlsx` is acceptable for Tenant #1 only. Future path strategy must be tenant-isolated, for example `private-inventory-docs/<tenant_id>/sync/official_inventory.xlsx`.
+- Future asset photos, inventory evidence, disposal evidence, and attachments must not use globally shared unscoped paths.
+
 ## Stop Conditions
 
 Stop staging rehearsal before migration if:
@@ -322,6 +600,11 @@ Stop staging rehearsal before migration if:
 - any required table or column is missing or has an unexpected type;
 - existing constraints differ from the draft assumptions;
 - duplicate asset tags or project numbers exist;
+- duplicate inventory codes exist unexpectedly under the current global rule;
+- taxonomy uniqueness differs from expected legacy constraints;
 - any orphan rows exist in relational child tables;
+- any transfer from/to person or from/to location rows are orphaned or tenant-mismatched;
+- any addendum child table cannot derive tenant from its authoritative parent;
 - row counts are unexpectedly large for a single transaction;
-- `current_status = 'disposed'` is non-zero and lifecycle handling has not been reviewed.
+- `current_status = 'disposed'` is non-zero and lifecycle handling has not been reviewed;
+- tenant migration objects already exist and were not intentionally retained for review.

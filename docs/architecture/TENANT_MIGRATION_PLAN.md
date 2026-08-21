@@ -8,6 +8,7 @@ Status: PLANNING ONLY. This document does not authorize production execution.
 - Keep the current organization as the first tenant without changing asset tags, QR routes, assignments, transfers, status history, or IDs.
 - Enable staging rehearsal before any production tenant migration.
 - Avoid a big-bang `app.py` refactor.
+- Cover the actual restored public schema of 19 tables, including reference taxonomy, legacy history, inventory, and notifications.
 
 ## Tenant Design
 
@@ -80,6 +81,10 @@ Relational child tables must derive `tenant_id` from authoritative parents:
 - assignments, transfers, asset projects, and payments derive from `assets`;
 - transfer project rows derive from `asset_transfers`;
 - responsibility scopes derive from `persons`;
+- asset sub-classifications derive from `asset_classifications`;
+- asset history derives from `assets`;
+- inventory records derive from `inventory_sessions` and must be consistent with `assets`;
+- notifications derive from `persons`; `entity_id` is polymorphic and must not be used as the authoritative backfill source;
 - nullable person/location/project/donor references must be validated before FK enforcement.
 
 Do not silently assign Tenant #1 to unresolved child rows. Remaining null `tenant_id` in child tables after parent-derived backfill is a blocking data-integrity condition and requires an explicit data correction decision.
@@ -87,6 +92,20 @@ Do not silently assign Tenant #1 to unresolved child rows. Remaining null `tenan
 Deployability: separate data migration after backup and staging rehearsal.
 
 Rollback: forward-fix preferred; restore required only if unexpected broad data corruption occurs.
+
+Tenant-owned root/reference tables may be backfilled directly to Tenant #1 for the restored pilot dataset:
+
+- assets;
+- persons;
+- locations;
+- projects;
+- donors;
+- audit_log;
+- organization_branding;
+- asset_classifications;
+- inventory_sessions.
+
+Direct Tenant #1 backfill for `inventory_sessions` is acceptable only because current restored staging represents one existing organization and the table currently has zero rows. Future multi-tenant imports must not infer tenant from global state.
 
 ### Step E: Validate Every Row
 
@@ -106,28 +125,45 @@ Initial confirmed candidates:
 
 - `assets(tenant_id, asset_tag_number)`;
 - `projects(tenant_id, project_number)`.
+- `asset_classifications(tenant_id, classification_name)`;
+- `asset_sub_classifications(tenant_id, classification_id, sub_classification_name)`.
 
 Future candidates requiring business confirmation:
 
 - `persons(tenant_id, lower(email))`;
 - `donors(tenant_id, donor_name)`;
 - `locations(tenant_id, city, office_name)`.
+- `inventory_sessions(tenant_id, session_name)` or a future inventory session number.
 
-Compatibility concern: existing global unique constraints may need to remain temporarily until second tenant support is ready.
+Current global unique constraints preserved in P1B:
+
+- `assets.asset_tag_number`;
+- `assets.inventory_code`;
+- `projects.project_number`;
+- `asset_classifications.classification_name`;
+- `organization_branding.tenant_key`.
+
+These do not block Tenant #1 staging rehearsal. They require explicit Tenant #2 decisions before commercial onboarding. In particular, `asset_classifications.classification_name` remains globally unique in P1B and must be removed or reworked before Tenant #2 independent taxonomy.
+
+`inventory_code` Tenant #2 gate: decide whether it remains platform-global, or becomes tenant-local with `unique (tenant_id, inventory_code)`. Do not remove the existing global constraint in P1B.
 
 ### Step H: Add Composite Foreign Keys
 
 Add parent unique pairs `(tenant_id, id)` and child composite FKs `(tenant_id, parent_id)`.
 
-Deployability: split into a second enforcement migration after data validation.
+Staging status: PASSED IN ISOLATED STAGING for Tenant #1 composite tenant constraints.
 
 ### Step I: Make `tenant_id` NOT NULL Where Safe
 
-Only after validation passes and application code uses TenantContext/repositories.
+Next separate enforcement gate. Only after validation passes and application code uses TenantContext/repositories.
+
+Current status: NOT AUTHORIZED FOR PRODUCTION. This must be a separate draft after P1B-02, not appended to the already rehearsed one-shot constraint draft.
 
 ### Step J: Application Uses TenantContext And Repositories
 
-Start with the minimal slice required for assets, assignments, transfers, people, projects, and audit.
+Start with the minimal slice required for assets, assignments, transfers, people, projects, audit, reference taxonomy, inventory, and notifications.
+
+Staging status: P1D tenant-aware application writes PASSED IN ISOLATED STAGING for audit, asset, assignment, and transfer writes. Parent tenant mismatches fail closed. Inactive tables `asset_history`, `inventory_sessions`, `inventory_records`, and `notifications` have no active application write paths; future features writing to them must provide `tenant_id`.
 
 ### Step K: Remove Legacy Fallback Later
 
@@ -297,6 +333,61 @@ Must migrate before enforcement:
 - audit log page;
 - sync/offboarding/assignment audit writes.
 
+### ReferenceDataRepository
+
+Methods:
+
+- `list_asset_classifications(tenant_id)`
+- `list_asset_sub_classifications(tenant_id, classification_id=None)`
+- `list_projects(tenant_id)`
+- `list_donors(tenant_id)`
+- `list_locations(tenant_id)`
+
+Must migrate before enforcement:
+
+- asset create classification/sub-classification dropdowns;
+- reference data pages;
+- Excel import/export reference matching.
+
+### InventoryRepository
+
+Methods:
+
+- `list_inventory_sessions(tenant_id)`
+- `get_inventory_session(tenant_id, session_id)`
+- `create_inventory_session(tenant_id, payload)`
+- `list_inventory_records(tenant_id, session_id)`
+- `insert_inventory_records(tenant_id, payloads)`
+
+Must migrate before inventory module activation:
+
+- inventory session screens;
+- inventory scan records;
+- inventory reporting and discrepancy review.
+
+### NotificationRepository
+
+Methods:
+
+- `list_notifications_for_person(tenant_id, person_id)`
+- `create_notification(tenant_id, payload)`
+- `mark_notification_read(tenant_id, notification_id, person_id)`
+- `list_admin_notifications(tenant_id, filters)`
+
+Must migrate before notifications are exposed:
+
+- employee notifications;
+- admin notification queues;
+- notification audit/reporting.
+
+### AssetHistory Design
+
+`asset_history` is currently a zero-row legacy table and active application history is represented by `asset_assignments`, `asset_transfers`, and `audit_log`. It should still receive `tenant_id` in P1B and can be handled through the future AssetRepository/AuditLogRepository boundary unless a separate legacy history UI is restored.
+
+### Assignment Transfer Atomicity
+
+Assignment and transfer creation currently run through separate Supabase requests, so they are not fully transactional. This does not block Tenant #1 composite FK rehearsal or the tenant_id NOT NULL gate because both live writes now explicitly provide tenant_id and passed composite FK validation, but it remains an application integrity hardening item for future DB RPC or transactional repository work.
+
 ## RLS Position
 
 Do not enable RLS in P1B.
@@ -357,6 +448,42 @@ Likely future direction:
 
 Do not implement that redesign in P1B.
 
+## Taxonomy Legacy Key Model
+
+Asset classifications and sub-classifications are tenant-local reference data.
+
+Current restored schema still has:
+
+- `asset_classifications.classification_name` globally unique;
+- `asset_sub_classifications(classification_id, sub_classification_name)` unique.
+
+P1B foundation must not destructively remove these constraints. The tenant-scoped replacements are:
+
+- `unique (tenant_id, classification_name)`;
+- `unique (tenant_id, classification_id, sub_classification_name)` or an equivalent tenant-safe taxonomy design.
+
+Before onboarding Tenant #2 with independent taxonomy, remove or rework the legacy global `asset_classifications.classification_name` uniqueness so different tenants can define their own classification names.
+
+Correction: `asset_sub_classifications(classification_id, sub_classification_name)` is not itself a cross-tenant name blocker because `classification_id` is a globally unique primary key and different tenants will have different classification rows. The tenant-aware composite index/FK is still useful for isolation and consistency, but the real taxonomy name blocker is `asset_classifications.classification_name`.
+
+## Storage Tenant #2 Gate
+
+Current workbook Storage path is globally scoped:
+
+```text
+private-inventory-docs/sync/official_inventory.xlsx
+```
+
+This is acceptable for Tenant #1 only. Before Tenant #2, define tenant-scoped Storage ownership, for example:
+
+```text
+private-inventory-docs/<tenant_id>/sync/official_inventory.xlsx
+```
+
+or another explicitly tenant-isolated bucket/path strategy.
+
+Future asset photos, inventory evidence, disposal evidence, and attachments must never use globally shared unscoped paths. Do not implement Storage path changes in P1B addendum; record this as a commercial isolation gate.
+
 ## Tenant Isolation Test Plan
 
 Future implementation tests must prove:
@@ -372,6 +499,15 @@ Future implementation tests must prove:
 - Route handlers do not accept client-submitted tenant scope.
 
 Commercial Tenant B must not be implemented against production data in this phase.
+
+## Current Gate Status
+
+- Tenant #1 foundation: PASSED IN ISOLATED STAGING.
+- Composite tenant constraints: PASSED IN ISOLATED STAGING.
+- P1D tenant-aware application writes: PASSED IN ISOLATED STAGING.
+- `tenant_id` NOT NULL: NEXT SEPARATE ENFORCEMENT GATE.
+- Production tenant migration: NOT AUTHORIZED.
+- Tenant #2: NOT AUTHORIZED.
 
 ## Gate Recommendation
 
