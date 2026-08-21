@@ -25,6 +25,7 @@ from itsdangerous import BadSignature, URLSafeSerializer
 from supabase import Client
 
 from data_access.client import get_supabase_client
+from data_access.tenant import TenantContextError, resolve_tenant_context
 from runtime_config import get_public_base_url
 
 
@@ -49,6 +50,7 @@ SUPABASE_URL = clean_env_value("SUPABASE_URL")
 SUPABASE_KEY = clean_env_value("SUPABASE_KEY")
 BOT_TOKEN = clean_env_value("BOT_TOKEN")
 PUBLIC_BASE_URL = get_public_base_url()
+DEFAULT_TENANT_ID = resolve_tenant_context().tenant_id
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
 ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "replace-this-session-secret")
@@ -178,6 +180,83 @@ def get_admin_actor(request: Optional[Request] = None, fallback: str = "Admin") 
     return fallback
 
 
+def get_current_tenant_id(request: Optional[Request] = None) -> str:
+    return DEFAULT_TENANT_ID
+
+
+def add_tenant_id(payload: dict, request: Optional[Request] = None) -> dict:
+    tenant_id = get_current_tenant_id(request)
+    scoped = dict(payload)
+    scoped["tenant_id"] = tenant_id
+    return scoped
+
+
+def add_tenant_id_to_many(payloads: list[dict], request: Optional[Request] = None) -> list[dict]:
+    return [add_tenant_id(payload, request=request) for payload in payloads]
+
+
+def tenant_filter(query, request: Optional[Request] = None):
+    return query.eq("tenant_id", get_current_tenant_id(request))
+
+
+def assert_record_tenant(record: dict, request: Optional[Request] = None, label: str = "Record") -> None:
+    record_tenant_id = record.get("tenant_id")
+    if record_tenant_id is None:
+        raise TenantContextError(f"{label} is missing tenant_id.")
+    if str(record_tenant_id) != get_current_tenant_id(request):
+        raise TenantContextError(f"{label} belongs to a different tenant.")
+
+
+def ensure_parent_tenant(table_name: str, id_column: str, id_value, request: Optional[Request] = None) -> None:
+    response = (
+        tenant_filter(
+            supabase.table(table_name)
+            .select(id_column)
+            .eq(id_column, id_value),
+            request=request,
+        )
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        raise TenantContextError(f"{table_name}.{id_column} does not belong to the current tenant.")
+
+
+def validate_assignment_parent_tenants(
+    parsed_person_id: Optional[int],
+    parsed_location_id: Optional[int],
+    request: Optional[Request] = None,
+) -> None:
+    if parsed_person_id is not None:
+        ensure_parent_tenant("persons", "person_id", parsed_person_id, request=request)
+    if parsed_location_id is not None:
+        ensure_parent_tenant("locations", "location_id", parsed_location_id, request=request)
+
+
+def validate_transfer_person_tenants(
+    from_person_id: Optional[int],
+    to_person_id: Optional[int],
+    request: Optional[Request] = None,
+) -> None:
+    if from_person_id is not None:
+        ensure_parent_tenant("persons", "person_id", from_person_id, request=request)
+    if to_person_id is not None:
+        ensure_parent_tenant("persons", "person_id", to_person_id, request=request)
+
+
+def validate_assignment_date_not_earlier(current_assignment: Optional[dict], assignment_date: str) -> None:
+    current_date = (current_assignment or {}).get("assignment_date")
+    if not current_date or not assignment_date:
+        return
+    try:
+        current_parsed = datetime.strptime(str(current_date)[:10], "%Y-%m-%d").date()
+        new_parsed = datetime.strptime(str(assignment_date)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return
+    if new_parsed < current_parsed:
+        raise ValueError(f"Assignment date cannot be earlier than the current assignment date ({current_parsed.isoformat()}).")
+
+
 def stringify_audit_value(value) -> Optional[str]:
     if value is None:
         return None
@@ -186,6 +265,11 @@ def stringify_audit_value(value) -> Optional[str]:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, default=str)
     return str(value)
+
+
+def normalize_audit_compare_value(value) -> str:
+    rendered = stringify_audit_value(value) or ""
+    return rendered.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def audit_log_event(
@@ -205,6 +289,7 @@ def audit_log_event(
     event_key: Optional[str] = None,
 ) -> bool:
     payload = {
+        "tenant_id": get_current_tenant_id(request),
         "actor": actor or get_admin_actor(request, fallback=source),
         "source": source,
         "entity_type": entity_type,
@@ -251,7 +336,7 @@ def update_audit_log_event_by_key(event_key: Optional[str], **updates) -> bool:
         if field_name in payload:
             payload[field_name] = stringify_audit_value(payload[field_name])
     try:
-        supabase.table("audit_log").update(payload).eq("event_key", event_key).execute()
+        tenant_filter(supabase.table("audit_log").update(payload)).eq("event_key", event_key).execute()
         return True
     except Exception:
         return False
@@ -273,7 +358,7 @@ def audit_log_field_changes(
     for field_name in fields:
         old_value = old_record.get(field_name)
         new_value = new_record.get(field_name)
-        if stringify_audit_value(old_value) == stringify_audit_value(new_value):
+        if normalize_audit_compare_value(old_value) == normalize_audit_compare_value(new_value):
             continue
         audit_log_event(
             entity_type=entity_type,
@@ -322,7 +407,7 @@ def audit_log_project_field_changes(
     for field_name in fields:
         old_value = old_record.get(field_name)
         new_value = new_record.get(field_name)
-        if stringify_audit_value(old_value) == stringify_audit_value(new_value):
+        if normalize_audit_compare_value(old_value) == normalize_audit_compare_value(new_value):
             continue
         old_display = format_project_audit_value(field_name, old_value)
         new_display = format_project_audit_value(field_name, new_value)
@@ -818,7 +903,7 @@ def resolve_branding_for_request(request: Request) -> tuple[str, dict, str]:
 
 
 def save_branding_settings_to_supabase(tenant_key: str, settings: dict) -> bool:
-    payload = {"tenant_key": tenant_key, **normalize_branding_settings(settings)}
+    payload = add_tenant_id({"tenant_key": tenant_key, **normalize_branding_settings(settings)})
     try:
         supabase.table(BRANDING_SUPABASE_TABLE).upsert(payload, on_conflict="tenant_key").execute()
         return True
@@ -1678,8 +1763,7 @@ def list_asset_records(batch_size: int = 1000) -> list[dict]:
     start = 0
     while True:
         response = (
-            supabase.table("assets")
-            .select("*")
+            tenant_filter(supabase.table("assets").select("*"))
             .order("asset_tag_number")
             .range(start, start + batch_size - 1)
             .execute()
@@ -1697,8 +1781,7 @@ def list_current_assignment_records(batch_size: int = 1000) -> list[dict]:
     start = 0
     while True:
         response = (
-            supabase.table("asset_assignments")
-            .select("*")
+            tenant_filter(supabase.table("asset_assignments").select("*"))
             .is_("return_date", "null")
             .order("assignment_date", desc=True)
             .range(start, start + batch_size - 1)
@@ -1717,8 +1800,7 @@ def list_asset_project_records(batch_size: int = 1000) -> list[dict]:
     start = 0
     while True:
         response = (
-            supabase.table("asset_projects")
-            .select("*")
+            tenant_filter(supabase.table("asset_projects").select("*"))
             .order("is_primary", desc=True)
             .order("asset_project_id")
             .range(start, start + batch_size - 1)
@@ -1737,8 +1819,7 @@ def list_asset_payment_records(batch_size: int = 1000) -> list[dict]:
     start = 0
     while True:
         response = (
-            supabase.table("asset_payments")
-            .select("*")
+            tenant_filter(supabase.table("asset_payments").select("*"))
             .order("asset_id")
             .order("payment_date")
             .range(start, start + batch_size - 1)
@@ -1757,8 +1838,7 @@ def list_asset_transfer_records(batch_size: int = 1000) -> list[dict]:
     start = 0
     while True:
         response = (
-            supabase.table("asset_transfers")
-            .select("*")
+            tenant_filter(supabase.table("asset_transfers").select("*"))
             .order("asset_id")
             .order("transfer_date")
             .range(start, start + batch_size - 1)
@@ -2370,6 +2450,7 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict], tr
 
 
 def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> int:
+    ensure_parent_tenant("assets", "asset_id", asset_id)
     excel_recipient = normalize_sync_string(record.get("recipient_name"))
     assignment_date = record.get("last_transfer_date") or datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
     actor = "Excel import"
@@ -2385,6 +2466,7 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     location = resolve_excel_location(record, person, sync_context["location_lookup"])
     if not location:
         return 0
+    validate_assignment_parent_tenants(person.get("person_id"), location.get("location_id"))
     assignment_department = normalize_sync_string(record.get("department_name") or person.get("department"))
 
     existing = sync_context.get("assignment_by_asset_id", {}).get(asset_id) or {}
@@ -2405,26 +2487,29 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
 
     close_current_assignments(asset_id, assignment_date, actor)
     supabase.table("asset_assignments").insert(
-        add_assignment_actor_fields(
-            add_assignment_department_field(
-                {
-                    "asset_id": asset_id,
-                    "person_id": person.get("person_id"),
-                    "location_id": location.get("location_id"),
-                    "assignment_date": assignment_date,
-                    "return_date": None,
-                    "status": record.get("current_status"),
-                    "notes": " | ".join(notes_parts) if notes_parts else None,
-                },
-                assignment_department,
-            ),
-            actor,
+        add_tenant_id(
+            add_assignment_actor_fields(
+                add_assignment_department_field(
+                    {
+                        "asset_id": asset_id,
+                        "person_id": person.get("person_id"),
+                        "location_id": location.get("location_id"),
+                        "assignment_date": assignment_date,
+                        "return_date": None,
+                        "status": record.get("current_status"),
+                        "notes": " | ".join(notes_parts) if notes_parts else None,
+                    },
+                    assignment_department,
+                ),
+                actor,
+            )
         )
     ).execute()
     return 1
 
 
 def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
+    ensure_parent_tenant("assets", "asset_id", asset_id)
     purchased_allocations = get_excel_purchased_project_allocations(record)
     transferred_allocations = get_excel_transferred_project_allocations(record)
     if not purchased_allocations and not transferred_allocations:
@@ -2473,7 +2558,7 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
     reset_payload = {"is_current": False, "is_primary": False}
     if supports_purchase_origin:
         reset_payload["is_purchase_origin"] = False
-    supabase.table("asset_projects").update(reset_payload).eq("asset_id", asset_id).execute()
+    tenant_filter(supabase.table("asset_projects").update(reset_payload)).eq("asset_id", asset_id).execute()
 
     applied = 0
     has_transferred_project = bool(resolved_transferred)
@@ -2543,9 +2628,9 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
         existing = existing_by_key.get(payload_key)
 
         if existing:
-            supabase.table("asset_projects").update(payload).eq("asset_project_id", existing["asset_project_id"]).execute()
+            tenant_filter(supabase.table("asset_projects").update(payload)).eq("asset_project_id", existing["asset_project_id"]).execute()
         else:
-            supabase.table("asset_projects").insert({"asset_id": asset_id, **payload}).execute()
+            supabase.table("asset_projects").insert(add_tenant_id({"asset_id": asset_id, **payload})).execute()
         applied += 1
 
     return applied
@@ -2555,8 +2640,9 @@ def apply_sync_payments(asset_id: int, record: dict) -> int:
     payments = get_excel_payment_records(record)
     if not payments:
         return 0
+    ensure_parent_tenant("assets", "asset_id", asset_id)
 
-    supabase.table("asset_payments").delete().eq("asset_id", asset_id).execute()
+    tenant_filter(supabase.table("asset_payments").delete()).eq("asset_id", asset_id).execute()
     payloads = []
     for index, payment in enumerate(payments, start=1):
         payloads.append(
@@ -2571,7 +2657,7 @@ def apply_sync_payments(asset_id: int, record: dict) -> int:
             }
         )
 
-    supabase.table("asset_payments").insert(payloads).execute()
+    supabase.table("asset_payments").insert(add_tenant_id_to_many(payloads)).execute()
     return len(payloads)
 
 
@@ -2594,8 +2680,8 @@ def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: di
     if not payloads:
         return 0
 
-    supabase.table("asset_transfer_projects").delete().eq("transfer_id", transfer_id).execute()
-    supabase.table("asset_transfer_projects").insert(payloads).execute()
+    tenant_filter(supabase.table("asset_transfer_projects").delete()).eq("transfer_id", transfer_id).execute()
+    supabase.table("asset_transfer_projects").insert(add_tenant_id_to_many(payloads)).execute()
     return len(payloads)
 
 
@@ -2603,8 +2689,10 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
     asset_id = record.get("asset_id")
     if not asset_id:
         return 0
+    ensure_parent_tenant("assets", "asset_id", asset_id)
+    validate_transfer_person_tenants(record.get("from_person_id"), record.get("to_person_id"))
 
-    payload = {
+    payload = add_tenant_id({
         "asset_id": asset_id,
         "from_person_id": record.get("from_person_id"),
         "to_person_id": record.get("to_person_id"),
@@ -2621,7 +2709,7 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
         "to_project_raw": record.get("to_project_raw"),
         "asset_status": record.get("asset_status"),
         "asset_condition_description": record.get("asset_condition_description"),
-    }
+    })
 
     signature = make_transfer_signature(asset_id, record)
     if signature in sync_context.get("transfer_signatures", set()):
@@ -2678,6 +2766,7 @@ def apply_sync_preview(preview: dict) -> dict:
         insert_record = {field_name: record.get(field_name) for field_name in asset_fields}
         insert_record["asset_tag_number"] = record.get("asset_tag_number")
         insert_record["inventory_code"] = insert_record.get("asset_tag_number")
+        insert_record = add_tenant_id(insert_record)
         insert_response = supabase.table("assets").insert(insert_record).execute()
         inserted_asset = (insert_response.data or [{}])[0]
         asset_id = inserted_asset.get("asset_id")
@@ -2711,7 +2800,8 @@ def apply_sync_preview(preview: dict) -> dict:
             if field_name in asset_fields
         }
         if update_data:
-            supabase.table("assets").update(update_data).eq("asset_id", asset_id).execute()
+            ensure_parent_tenant("assets", "asset_id", asset_id)
+            tenant_filter(supabase.table("assets").update(update_data)).eq("asset_id", asset_id).execute()
             updated += 1
             audit_log_event(
                 entity_type="Asset",
@@ -3372,8 +3462,7 @@ def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_
 
 def get_current_assignment(asset_id: int) -> Optional[dict]:
     assignment_response = (
-        supabase.table("asset_assignments")
-        .select("*")
+        tenant_filter(supabase.table("asset_assignments").select("*"))
         .eq("asset_id", asset_id)
         .is_("return_date", "null")
         .order("assignment_date", desc=True)
@@ -3391,8 +3480,7 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
     person_id = assignment.get("person_id")
     if person_id:
         person_response = (
-            supabase.table("persons")
-            .select("*")
+            tenant_filter(supabase.table("persons").select("*"))
             .eq("person_id", person_id)
             .limit(1)
             .execute()
@@ -3403,8 +3491,7 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
     location_id = assignment.get("location_id")
     if location_id:
         location_response = (
-            supabase.table("locations")
-            .select("*")
+            tenant_filter(supabase.table("locations").select("*"))
             .eq("location_id", location_id)
             .limit(1)
             .execute()
@@ -3450,8 +3537,7 @@ def enrich_assignment(assignment: dict) -> dict:
     person_id = assignment.get("person_id")
     if person_id:
         person_response = (
-            supabase.table("persons")
-            .select("*")
+            tenant_filter(supabase.table("persons").select("*"))
             .eq("person_id", person_id)
             .limit(1)
             .execute()
@@ -3462,8 +3548,7 @@ def enrich_assignment(assignment: dict) -> dict:
     location_id = assignment.get("location_id")
     if location_id:
         location_response = (
-            supabase.table("locations")
-            .select("*")
+            tenant_filter(supabase.table("locations").select("*"))
             .eq("location_id", location_id)
             .limit(1)
             .execute()
@@ -3504,8 +3589,7 @@ def enrich_assignment(assignment: dict) -> dict:
 
 def get_asset_by_tag(asset_tag: str) -> Optional[dict]:
     query = (
-        supabase.table("assets")
-        .select("*")
+        tenant_filter(supabase.table("assets").select("*"))
         .eq("asset_tag_number", asset_tag)
         .limit(1)
     )
@@ -3522,8 +3606,7 @@ def get_asset_by_tag(asset_tag: str) -> Optional[dict]:
 
 def get_asset_by_id(asset_id: int) -> Optional[dict]:
     response = (
-        supabase.table("assets")
-        .select("*")
+        tenant_filter(supabase.table("assets").select("*"))
         .eq("asset_id", asset_id)
         .limit(1)
         .execute()
@@ -3541,8 +3624,7 @@ def get_asset_by_id(asset_id: int) -> Optional[dict]:
 
 def get_assignment_history(asset_id: int, limit: int = 20) -> list[dict]:
     response = (
-        supabase.table("asset_assignments")
-        .select("*")
+        tenant_filter(supabase.table("asset_assignments").select("*"))
         .eq("asset_id", asset_id)
         .order("assignment_date", desc=True)
         .limit(limit)
@@ -3555,8 +3637,7 @@ def get_assignment_history(asset_id: int, limit: int = 20) -> list[dict]:
 
 def list_people() -> list[dict]:
     response = (
-        supabase.table("persons")
-        .select("*")
+        tenant_filter(supabase.table("persons").select("*"))
         .order("name_eng")
         .execute()
     )
@@ -3565,8 +3646,7 @@ def list_people() -> list[dict]:
 
 def list_projects() -> list[dict]:
     response = (
-        supabase.table("projects")
-        .select("*")
+        tenant_filter(supabase.table("projects").select("*"))
         .order("project_number")
         .execute()
     )
@@ -3575,8 +3655,7 @@ def list_projects() -> list[dict]:
 
 def list_donors() -> list[dict]:
     response = (
-        supabase.table("donors")
-        .select("*")
+        tenant_filter(supabase.table("donors").select("*"))
         .order("donor_name")
         .execute()
     )
@@ -3585,8 +3664,7 @@ def list_donors() -> list[dict]:
 
 def get_next_numeric_id(table_name: str, id_column: str) -> int:
     response = (
-        supabase.table(table_name)
-        .select(id_column)
+        tenant_filter(supabase.table(table_name).select(id_column))
         .order(id_column, desc=True)
         .limit(1)
         .execute()
@@ -3599,8 +3677,7 @@ def get_next_numeric_id(table_name: str, id_column: str) -> int:
 
 def get_project_by_id(project_id: int) -> Optional[dict]:
     response = (
-        supabase.table("projects")
-        .select("*")
+        tenant_filter(supabase.table("projects").select("*"))
         .eq("project_id", project_id)
         .limit(1)
         .execute()
@@ -3612,8 +3689,7 @@ def get_project_by_id(project_id: int) -> Optional[dict]:
 
 def get_donor_by_id(donor_id: int) -> Optional[dict]:
     response = (
-        supabase.table("donors")
-        .select("*")
+        tenant_filter(supabase.table("donors").select("*"))
         .eq("donor_id", donor_id)
         .limit(1)
         .execute()
@@ -3625,8 +3701,7 @@ def get_donor_by_id(donor_id: int) -> Optional[dict]:
 
 def get_location_by_id(location_id: int) -> Optional[dict]:
     response = (
-        supabase.table("locations")
-        .select("*")
+        tenant_filter(supabase.table("locations").select("*"))
         .eq("location_id", location_id)
         .limit(1)
         .execute()
@@ -3724,8 +3799,7 @@ def describe_asset_project_error(error: Exception) -> str:
 
 def get_asset_projects(asset_id: int) -> list[dict]:
     response = (
-        supabase.table("asset_projects")
-        .select("*")
+        tenant_filter(supabase.table("asset_projects").select("*"))
         .eq("asset_id", asset_id)
         .order("is_primary", desc=True)
         .order("asset_project_id")
@@ -3811,8 +3885,7 @@ def get_asset_transfer_project_rows(transfer_ids: list[int]) -> dict[int, list[d
 
     try:
         response = (
-            supabase.table("asset_transfer_projects")
-            .select("*")
+            tenant_filter(supabase.table("asset_transfer_projects").select("*"))
             .in_("transfer_id", transfer_ids)
             .order("direction")
             .order("transfer_project_id")
@@ -3862,45 +3935,51 @@ def create_asset_transfer_from_assignment_change(
     transfer_reason: str,
     status: Optional[str] = None,
     condition: Optional[str] = None,
+    to_location_id: Optional[int] = None,
 ) -> Optional[int]:
     asset_id = asset.get("asset_id")
     if not asset_id or not transfer_date:
         return None
+    assert_record_tenant(asset, label="Asset")
 
     from_assignment = from_assignment or {}
     from_person_id = from_assignment.get("person_id")
+    from_location_id = from_assignment.get("location_id")
+    validate_transfer_person_tenants(from_person_id, to_person_id)
     from_holder_name = from_assignment.get("responsible_person")
     if not from_holder_name and from_assignment.get("location_id"):
         from_holder_name = "Warehouse"
 
     to_person = get_person_by_id(to_person_id) if to_person_id else None
+    if to_person_id is not None and not to_person:
+        raise TenantContextError("persons.person_id does not belong to the current tenant.")
     to_holder_name = get_person_display_name(to_person) if to_person else "Warehouse"
     current_project_rows = get_current_project_rows(get_asset_projects(asset_id))
     current_project_raw = format_project_allocations(get_project_allocations_from_rows(current_project_rows))
 
-    payload = {
+    payload = add_tenant_id({
         "asset_id": asset_id,
         "from_person_id": from_person_id,
         "to_person_id": to_person_id,
+        "from_location_id": from_location_id,
+        "to_location_id": to_location_id,
         "transfer_date": transfer_date,
         "transfer_reason": transfer_reason,
         "notes": transfer_reason,
         "source_asset_type": get_asset_usage_type_label(asset.get("usage_type")),
         "asset_tag_snapshot": asset.get("asset_tag_number"),
-        "description_snapshot": asset.get("item_description"),
-        "serial_snapshot": asset.get("serial_chassis_number") or asset.get("serial_number"),
         "from_holder_name": from_holder_name,
         "to_holder_name": to_holder_name,
         "from_project_raw": current_project_raw,
         "to_project_raw": current_project_raw,
         "asset_status": status or from_assignment.get("status") or asset.get("current_status"),
         "asset_condition_description": condition or from_assignment.get("handover_condition"),
-    }
+    })
 
     try:
         response = supabase.table("asset_transfers").insert(payload).execute()
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RuntimeError(f"Asset transfer could not be created: {exc}") from exc
 
     transfer = (response.data or [{}])[0]
     transfer_id = transfer.get("transfer_id")
@@ -3918,9 +3997,9 @@ def create_asset_transfer_from_assignment_change(
                     }
                 )
         try:
-            supabase.table("asset_transfer_projects").insert(project_payloads).execute()
-        except Exception:
-            pass
+            supabase.table("asset_transfer_projects").insert(add_tenant_id_to_many(project_payloads)).execute()
+        except Exception as exc:
+            raise RuntimeError(f"Asset transfer project history could not be created: {exc}") from exc
 
     return transfer_id
 
@@ -3928,8 +4007,7 @@ def create_asset_transfer_from_assignment_change(
 def get_asset_transfer_history(asset_id: int, limit: int = 50) -> list[dict]:
     try:
         response = (
-            supabase.table("asset_transfers")
-            .select("*")
+            tenant_filter(supabase.table("asset_transfers").select("*"))
             .eq("asset_id", asset_id)
             .order("transfer_date", desc=True)
             .order("transfer_id", desc=True)
@@ -3975,8 +4053,7 @@ def get_asset_transfer_context(asset_id: int) -> dict:
 
 def get_asset_payments(asset_id: int) -> list[dict]:
     response = (
-        supabase.table("asset_payments")
-        .select("*")
+        tenant_filter(supabase.table("asset_payments").select("*"))
         .eq("asset_id", asset_id)
         .order("payment_date")
         .order("payment_number")
@@ -4028,8 +4105,7 @@ def get_person_status_label(person: dict) -> str:
 
 def get_person_by_id(person_id: int) -> Optional[dict]:
     response = (
-        supabase.table("persons")
-        .select("*")
+        tenant_filter(supabase.table("persons").select("*"))
         .eq("person_id", person_id)
         .limit(1)
         .execute()
@@ -4044,8 +4120,7 @@ def get_person_by_email(email: str) -> Optional[dict]:
     if not normalized_email:
         return None
     response = (
-        supabase.table("persons")
-        .select("*")
+        tenant_filter(supabase.table("persons").select("*"))
         .ilike("email", normalized_email)
         .limit(1)
         .execute()
@@ -4156,15 +4231,15 @@ def build_person_offboarding_context(person: dict) -> dict:
 
 
 def update_person_inactive(person_id: int, offboarding_date: str, note: str) -> None:
-    supabase.table("persons").update({"is_active": False}).eq("person_id", person_id).execute()
+    tenant_filter(supabase.table("persons").update({"is_active": False})).eq("person_id", person_id).execute()
 
     try:
-        supabase.table("persons").update(
+        tenant_filter(supabase.table("persons").update(
             {
                 "offboarded_at": offboarding_date,
                 "offboarding_note": note or None,
             }
-        ).eq("person_id", person_id).execute()
+        )).eq("person_id", person_id).execute()
     except Exception as error:
         if isinstance(error, APIError):
             combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
@@ -4223,21 +4298,23 @@ def apply_person_offboarding(person: dict, form) -> dict:
             if offboarding_note:
                 notes = f"{notes}: {offboarding_note}"
             supabase.table("asset_assignments").insert(
-                add_assignment_actor_fields(
-                    add_assignment_department_field(
-                        {
-                            "asset_id": asset_id,
-                            "person_id": target_person_id,
-                            "location_id": target_location_id,
-                            "assignment_date": offboarding_date,
-                            "return_date": None,
-                            "status": status,
-                            "notes": notes,
-                            "handover_condition": current_assignment.get("handover_condition"),
-                        },
+                add_tenant_id(
+                    add_assignment_actor_fields(
+                        add_assignment_department_field(
+                            {
+                                "asset_id": asset_id,
+                                "person_id": target_person_id,
+                                "location_id": target_location_id,
+                                "assignment_date": offboarding_date,
+                                "return_date": None,
+                                "status": status,
+                                "notes": notes,
+                                "handover_condition": current_assignment.get("handover_condition"),
+                            },
                         current_assignment.get("assignment_department") or current_assignment.get("department"),
                     ),
                     "Offboarding",
+                )
                 )
             ).execute()
             transfer_id = create_asset_transfer_from_assignment_change(
@@ -4248,6 +4325,7 @@ def apply_person_offboarding(person: dict, form) -> dict:
                 transfer_reason="Employee offboarding",
                 status=(asset.get("current_assignment") or {}).get("status") or asset.get("current_status"),
                 condition=(asset.get("current_assignment") or {}).get("handover_condition"),
+                to_location_id=target_location_id,
             )
             target_person = target_people.get(target_person_id) if target_person_id else None
             target_label = get_person_display_name(target_person) if target_person else "No responsible person"
@@ -4493,8 +4571,7 @@ def find_existing_person(person_form: dict) -> Optional[dict]:
 
 def get_next_person_id() -> int:
     response = (
-        supabase.table("persons")
-        .select("person_id")
+        tenant_filter(supabase.table("persons").select("person_id"))
         .order("person_id", desc=True)
         .limit(1)
         .execute()
@@ -4536,8 +4613,7 @@ def describe_person_create_error(error: Exception) -> str:
 
 def list_locations() -> list[dict]:
     response = (
-        supabase.table("locations")
-        .select("*")
+        tenant_filter(supabase.table("locations").select("*"))
         .order("city")
         .execute()
     )
@@ -4626,8 +4702,7 @@ def enrich_responsibility_scope(scope: dict, locations_by_id: Optional[dict[int,
 def list_person_responsibility_scopes(person_id: int, active_only: bool = False) -> list[dict]:
     try:
         query = (
-            supabase.table("person_responsibility_scopes")
-            .select("*")
+            tenant_filter(supabase.table("person_responsibility_scopes").select("*"))
             .eq("person_id", person_id)
             .order("scope_type")
             .order("department")
@@ -4697,8 +4772,7 @@ def get_responsibility_scope_form_options() -> dict:
 
 def close_current_assignments(asset_id: int, return_date: Optional[str], actor: Optional[str] = None) -> None:
     current_assignments = (
-        supabase.table("asset_assignments")
-        .select("assignment_id")
+        tenant_filter(supabase.table("asset_assignments").select("assignment_id"))
         .eq("asset_id", asset_id)
         .is_("return_date", "null")
         .execute()
@@ -4709,8 +4783,7 @@ def close_current_assignments(asset_id: int, return_date: Optional[str], actor: 
         if actor:
             update_payload = add_assignment_actor_fields(update_payload, actor, created=False)
         (
-            supabase.table("asset_assignments")
-            .update(update_payload)
+            tenant_filter(supabase.table("asset_assignments").update(update_payload))
             .eq("assignment_id", row["assignment_id"])
             .execute()
         )
@@ -4749,6 +4822,12 @@ def get_assignment_form_context(asset: dict) -> dict:
 
 
 def describe_assignment_update_error(error: Exception) -> str:
+    if isinstance(error, TenantContextError):
+        return str(error)
+    if isinstance(error, ValueError) and str(error):
+        return str(error)
+    if isinstance(error, RuntimeError) and str(error):
+        return str(error)
     if not isinstance(error, APIError):
         return "Assignment could not be saved due to an unexpected database error."
 
@@ -4787,29 +4866,39 @@ def apply_asset_assignment_change(
     asset_id = asset.get("asset_id")
     if not asset_id:
         raise ValueError("Asset ID is required.")
+    assert_record_tenant(asset, request=request, label="Asset")
     if not assignment_date:
         raise ValueError("Assignment date is required.")
     if parsed_person_id and not parsed_location_id:
         raise ValueError("Location is required when a responsible person is selected.")
+    validate_assignment_parent_tenants(parsed_person_id, parsed_location_id, request=request)
 
     actor = get_admin_actor(request)
     current_assignment = asset.get("current_assignment") or get_current_assignment(asset_id)
+    if current_assignment:
+        validate_transfer_person_tenants(current_assignment.get("person_id"), parsed_person_id, request=request)
+        validate_assignment_date_not_earlier(current_assignment, assignment_date)
     old_responsible = (current_assignment or {}).get("responsible_person") or "-"
 
     if not parsed_person_id and not parsed_location_id:
         if current_assignment:
-            close_current_assignments(asset_id, assignment_date, actor)
-            if status:
-                supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
-            transfer_id = create_asset_transfer_from_assignment_change(
-                asset=asset,
-                from_assignment=current_assignment,
-                to_person_id=None,
-                transfer_date=assignment_date,
-                transfer_reason="Assignment closed in web app",
-                status=status or current_assignment.get("status") or asset.get("current_status"),
-                condition=handover_condition or current_assignment.get("handover_condition"),
-            )
+            try:
+                close_current_assignments(asset_id, assignment_date, actor)
+                if status:
+                    tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
+                transfer_id = create_asset_transfer_from_assignment_change(
+                    asset=asset,
+                    from_assignment=current_assignment,
+                    to_person_id=None,
+                    transfer_date=assignment_date,
+                    transfer_reason="Assignment closed in web app",
+                    status=status or current_assignment.get("status") or asset.get("current_status"),
+                    condition=handover_condition or current_assignment.get("handover_condition"),
+                    to_location_id=None,
+                )
+            except Exception as exc:
+                set_flash(request, "error", describe_assignment_update_error(exc))
+                return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
             audit_log_event(
                 entity_type="Transfer",
                 entity_id=transfer_id or asset_id,
@@ -4823,7 +4912,7 @@ def apply_asset_assignment_change(
             )
             return {"changed": True, "message": "Assignment closed."}
         if status:
-            supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+            tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
         return {"changed": False, "message": "Asset is already unassigned."}
 
     new_assignment = add_assignment_department_field(
@@ -4851,16 +4940,16 @@ def apply_asset_assignment_change(
         and current_assignment.get("location_id") == parsed_location_id
     ):
         close_current_assignments(asset_id, assignment_date, actor)
-        supabase.table("asset_assignments").insert(add_assignment_actor_fields(new_assignment, actor)).execute()
+        supabase.table("asset_assignments").insert(add_tenant_id(add_assignment_actor_fields(new_assignment, actor), request=request)).execute()
         if status:
-            supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+            tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
         log_assignment_field_changes(asset, assignment_changes, request)
         return {"changed": True, "message": "Assignment updated."}
 
     close_current_assignments(asset_id, assignment_date, actor)
-    supabase.table("asset_assignments").insert(add_assignment_actor_fields(new_assignment, actor)).execute()
+    supabase.table("asset_assignments").insert(add_tenant_id(add_assignment_actor_fields(new_assignment, actor), request=request)).execute()
     if status:
-        supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+        tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
 
     target_person = get_person_by_id(parsed_person_id) if parsed_person_id else None
     new_responsible = get_person_display_name(target_person) if target_person else "Warehouse"
@@ -4872,6 +4961,7 @@ def apply_asset_assignment_change(
         transfer_reason=transfer_reason,
         status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
         condition=handover_condition or (current_assignment or {}).get("handover_condition"),
+        to_location_id=parsed_location_id,
     )
     audit_log_event(
         entity_type="Transfer",
@@ -5161,6 +5251,13 @@ def resolve_create_funding_payloads(asset_id: int, funding_forms: list[dict]) ->
 
     if any(not row.get("project_id") for row in filled_rows):
         raise ValueError("Project is required for every purchase funding row.")
+    for row in filled_rows:
+        try:
+            ensure_parent_tenant("projects", "project_id", int(row.get("project_id")))
+            if row.get("donor_id"):
+                ensure_parent_tenant("donors", "donor_id", int(row.get("donor_id")))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Project and donor values must be valid reference records.") from exc
 
     parsed_percents = []
     any_explicit_percent = False
@@ -5378,8 +5475,7 @@ def get_assets_by_tags(asset_tags: list[str]) -> list[dict]:
     if not normalized_tags:
         return []
     response = (
-        supabase.table("assets")
-        .select("*")
+        tenant_filter(supabase.table("assets").select("*"))
         .in_("asset_tag_number", normalized_tags)
         .execute()
     )
@@ -5393,8 +5489,7 @@ def fetch_rows_by_asset_ids(table_name: str, asset_ids: list[int], select_column
     if not asset_ids:
         return []
     response = (
-        supabase.table(table_name)
-        .select(select_columns)
+        tenant_filter(supabase.table(table_name).select(select_columns))
         .in_("asset_id", asset_ids)
         .execute()
     )
@@ -5409,8 +5504,7 @@ def get_asset_delete_preview(asset_tags: list[str]) -> dict:
     transfer_project_count = 0
     if transfer_ids:
         transfer_project_response = (
-            supabase.table("asset_transfer_projects")
-            .select("transfer_project_id")
+            tenant_filter(supabase.table("asset_transfer_projects").select("transfer_project_id"))
             .in_("transfer_id", transfer_ids)
             .execute()
         )
@@ -5439,10 +5533,10 @@ def delete_assets_cascade(asset_ids: list[int]) -> dict:
     transfers = fetch_rows_by_asset_ids("asset_transfers", asset_ids, "transfer_id,asset_id")
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
     if transfer_ids:
-        supabase.table("asset_transfer_projects").delete().in_("transfer_id", transfer_ids).execute()
+        tenant_filter(supabase.table("asset_transfer_projects").delete()).in_("transfer_id", transfer_ids).execute()
     for table_name in ["asset_transfers", "asset_assignments", "asset_payments", "asset_projects"]:
-        supabase.table(table_name).delete().in_("asset_id", asset_ids).execute()
-    supabase.table("assets").delete().in_("asset_id", asset_ids).execute()
+        tenant_filter(supabase.table(table_name).delete()).in_("asset_id", asset_ids).execute()
+    tenant_filter(supabase.table("assets").delete()).in_("asset_id", asset_ids).execute()
     return {"deleted_assets": len(asset_ids)}
 
 
@@ -5922,8 +6016,7 @@ def find_person_by_telegram_user_id(telegram_user_id) -> Optional[dict]:
     telegram_user_id = str(telegram_user_id)
     try:
         response = (
-            supabase.table("persons")
-            .select("*")
+            tenant_filter(supabase.table("persons").select("*"))
             .eq("messenger_type", "telegram")
             .eq("messenger_id", telegram_user_id)
             .limit(1)
@@ -5945,7 +6038,7 @@ def save_person_telegram_identity(person_id: int, telegram_user: dict, phone_num
     if phone_number:
         payload["mobile_phone"] = phone_number
     try:
-        supabase.table("persons").update(payload).eq("person_id", person_id).execute()
+        tenant_filter(supabase.table("persons").update(payload)).eq("person_id", person_id).execute()
     except Exception:
         return
 
@@ -6777,7 +6870,7 @@ def account_login_submit(
     request.session["account_display_name"] = get_person_display_name(person)
     request.session["account_role"] = normalize_account_role(person.get("account_role"))
     try:
-        supabase.table("persons").update({"last_login_at": datetime.now(ZoneInfo("Europe/Kyiv")).isoformat()}).eq("person_id", person.get("person_id")).execute()
+        tenant_filter(supabase.table("persons").update({"last_login_at": datetime.now(ZoneInfo("Europe/Kyiv")).isoformat()})).eq("person_id", person.get("person_id")).execute()
     except Exception:
         pass
 
@@ -7638,11 +7731,14 @@ def admin_asset_create(
 
     try:
         insert_payloads = [
-            {
-                **insert_data_base,
-                "asset_tag_number": generated_tag,
-                "inventory_code": generated_tag,
-            }
+            add_tenant_id(
+                {
+                    **insert_data_base,
+                    "asset_tag_number": generated_tag,
+                    "inventory_code": generated_tag,
+                },
+                request=request,
+            )
             for generated_tag in asset_tags_to_create
         ]
         response = (
@@ -7707,7 +7803,7 @@ def admin_asset_create(
                             eur_equivalent_amount=payment.get("payment_eur_amount") or "",
                         )
                     )
-            supabase.table("asset_payments").insert(payment_payloads).execute()
+            supabase.table("asset_payments").insert(add_tenant_id_to_many(payment_payloads, request=request)).execute()
             for created_asset in created_assets_in_order:
                 created_tag = created_asset.get("asset_tag_number")
                 audit_log_event(
@@ -7737,7 +7833,7 @@ def admin_asset_create(
             funding_payloads = []
             for created_asset in created_assets_in_order:
                 for template in funding_payload_templates:
-                    funding_payloads.append({**template, "asset_id": created_asset.get("asset_id")})
+                    funding_payloads.append(add_tenant_id({**template, "asset_id": created_asset.get("asset_id")}, request=request))
             supabase.table("asset_projects").insert(funding_payloads).execute()
             for created_asset in created_assets_in_order:
                 created_tag = created_asset.get("asset_tag_number")
@@ -8197,6 +8293,7 @@ def admin_person_create(
         "name_eng": person_form["name_eng"] or None,
         "department": person_form["department"] or None,
     }
+    insert_data = add_tenant_id(insert_data, request=request)
 
     try:
         response = supabase.table("persons").insert(insert_data).execute()
@@ -8379,7 +8476,7 @@ def admin_person_responsibility_scope_create(
         return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
 
     try:
-        supabase.table("person_responsibility_scopes").insert(payload).execute()
+        supabase.table("person_responsibility_scopes").insert(add_tenant_id(payload, request=request)).execute()
     except Exception as error:
         set_flash(request, "error", f"Responsibility scope could not be added: {error}")
         return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
@@ -8398,7 +8495,7 @@ def admin_person_responsibility_scope_delete(request: Request, person_id: int, s
         return redirect
 
     try:
-        supabase.table("person_responsibility_scopes").delete().eq("scope_id", scope_id).eq("person_id", person_id).execute()
+        tenant_filter(supabase.table("person_responsibility_scopes").delete(), request=request).eq("scope_id", scope_id).eq("person_id", person_id).execute()
     except Exception as error:
         set_flash(request, "error", f"Responsibility scope could not be removed: {error}")
         return RedirectResponse(url=f"/admin/people/{person_id}", status_code=303)
@@ -8571,7 +8668,7 @@ async def admin_person_edit_submit(request: Request, person_id: int):
         )
 
     try:
-        supabase.table("persons").update(update_data).eq("person_id", person_id).execute()
+        tenant_filter(supabase.table("persons").update(update_data), request=request).eq("person_id", person_id).execute()
         audit_log_field_changes(
             entity_type="Employee",
             entity_id=person_id,
@@ -8767,6 +8864,7 @@ def admin_reference_data_location_create(
         "name": name,
         "department": None,
     }
+    payload = add_tenant_id(payload, request=request)
 
     try:
         supabase.table("locations").insert(payload).execute()
@@ -8818,7 +8916,7 @@ def admin_reference_data_location_update(
     }
 
     try:
-        supabase.table("locations").update(payload).eq("location_id", location_id).execute()
+        tenant_filter(supabase.table("locations").update(payload), request=request).eq("location_id", location_id).execute()
     except Exception as error:
         set_flash(request, "error", describe_reference_data_error(error, "Location", "name"))
         return RedirectResponse(url=f"/admin/reference-data?edit_location_id={location_id}#locations", status_code=303)
@@ -8856,6 +8954,7 @@ def admin_reference_data_project_create(
         "end_date": end_date.strip() or None,
         "status": status.strip() or None,
     }
+    payload = add_tenant_id(payload, request=request)
 
     try:
         supabase.table("projects").insert(payload).execute()
@@ -8902,7 +9001,7 @@ def admin_reference_data_project_update(
     }
 
     try:
-        supabase.table("projects").update(payload).eq("project_id", project_id).execute()
+        tenant_filter(supabase.table("projects").update(payload), request=request).eq("project_id", project_id).execute()
     except Exception as error:
         set_flash(request, "error", describe_reference_data_error(error, "Project", "project_number"))
         return RedirectResponse(url=f"/admin/reference-data?edit_project_id={project_id}#projects", status_code=303)
@@ -8936,6 +9035,7 @@ def admin_reference_data_donor_create(
         "contact_person": contact_person.strip() or None,
         "contact_email": contact_email.strip() or None,
     }
+    payload = add_tenant_id(payload, request=request)
 
     try:
         supabase.table("donors").insert(payload).execute()
@@ -8978,7 +9078,7 @@ def admin_reference_data_donor_update(
     }
 
     try:
-        supabase.table("donors").update(payload).eq("donor_id", donor_id).execute()
+        tenant_filter(supabase.table("donors").update(payload), request=request).eq("donor_id", donor_id).execute()
     except Exception as error:
         set_flash(request, "error", describe_reference_data_error(error, "Donor", "donor_name"))
         return RedirectResponse(url=f"/admin/reference-data?edit_donor_id={donor_id}#donors", status_code=303)
@@ -8996,6 +9096,7 @@ def admin_asset_detail(request: Request, asset_id: int):
     asset = get_asset_by_id(asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+    assert_record_tenant(asset, request=request, label="Asset")
 
     assignment_history = get_assignment_history(asset_id)
 
@@ -9063,8 +9164,7 @@ def admin_asset_edit(
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     (
-        supabase.table("assets")
-        .update(update_data)
+        tenant_filter(supabase.table("assets").update(update_data), request=request)
         .eq("asset_id", asset_id)
         .execute()
     )
@@ -9124,15 +9224,27 @@ def admin_asset_assignment_update(
     if parsed_person_id and not parsed_location_id:
         set_flash(request, "error", "Location is required when a responsible person is selected.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
+    try:
+        validate_assignment_parent_tenants(parsed_person_id, parsed_location_id, request=request)
+    except Exception as exc:
+        set_flash(request, "error", describe_assignment_update_error(exc))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     current_assignment = asset.get("current_assignment")
+    if current_assignment:
+        try:
+            validate_transfer_person_tenants(current_assignment.get("person_id"), parsed_person_id, request=request)
+            validate_assignment_date_not_earlier(current_assignment, assignment_date)
+        except Exception as exc:
+            set_flash(request, "error", describe_assignment_update_error(exc))
+            return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
     old_responsible = (current_assignment or {}).get("responsible_person") or "-"
 
     if not parsed_person_id and not parsed_location_id:
         if current_assignment:
             close_current_assignments(asset_id, assignment_date, actor)
             if status:
-                supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+                tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
             transfer_id = create_asset_transfer_from_assignment_change(
                 asset=asset,
                 from_assignment=current_assignment,
@@ -9141,6 +9253,7 @@ def admin_asset_assignment_update(
                 transfer_reason="Assignment closed in web app",
                 status=status or current_assignment.get("status") or asset.get("current_status"),
                 condition=handover_condition or current_assignment.get("handover_condition"),
+                to_location_id=None,
             )
             audit_log_event(
                 entity_type="Transfer",
@@ -9156,7 +9269,7 @@ def admin_asset_assignment_update(
             set_flash(request, "success", "Current assignment was closed and the asset is now unassigned.")
         else:
             if status:
-                supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+                tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
             set_flash(request, "success", "Asset is already unassigned.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
@@ -9188,9 +9301,9 @@ def admin_asset_assignment_update(
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
         try:
             close_current_assignments(asset_id, assignment_date, actor)
-            supabase.table("asset_assignments").insert(add_assignment_actor_fields(new_assignment, actor)).execute()
+            supabase.table("asset_assignments").insert(add_tenant_id(add_assignment_actor_fields(new_assignment, actor), request=request)).execute()
             if status:
-                supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+                tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
         except Exception as exc:
             set_flash(request, "error", describe_assignment_update_error(exc))
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
@@ -9200,25 +9313,29 @@ def admin_asset_assignment_update(
 
     try:
         close_current_assignments(asset_id, assignment_date, actor)
-        supabase.table("asset_assignments").insert(add_assignment_actor_fields(new_assignment, actor)).execute()
+        supabase.table("asset_assignments").insert(add_tenant_id(add_assignment_actor_fields(new_assignment, actor), request=request)).execute()
         if status:
-            supabase.table("assets").update({"current_status": status}).eq("asset_id", asset_id).execute()
+            tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
     except Exception as exc:
         set_flash(request, "error", describe_assignment_update_error(exc))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
-    set_flash(request, "success", "Assignment was updated.")
     target_person = get_person_by_id(parsed_person_id) if parsed_person_id else None
     new_responsible = get_person_display_name(target_person) if target_person else "Warehouse"
-    transfer_id = create_asset_transfer_from_assignment_change(
-        asset=asset,
-        from_assignment=current_assignment,
-        to_person_id=parsed_person_id,
-        transfer_date=assignment_date,
-        transfer_reason="Assignment changed in web app",
-        status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
-        condition=handover_condition or (current_assignment or {}).get("handover_condition"),
-    )
+    try:
+        transfer_id = create_asset_transfer_from_assignment_change(
+            asset=asset,
+            from_assignment=current_assignment,
+            to_person_id=parsed_person_id,
+            transfer_date=assignment_date,
+            transfer_reason="Assignment changed in web app",
+            status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
+            condition=handover_condition or (current_assignment or {}).get("handover_condition"),
+            to_location_id=parsed_location_id,
+        )
+    except Exception as exc:
+        set_flash(request, "error", describe_assignment_update_error(exc))
+        return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
     audit_log_event(
         entity_type="Transfer",
         entity_id=transfer_id or asset_id,
@@ -9237,6 +9354,7 @@ def admin_asset_assignment_update(
         [change for change in assignment_changes if change["field_name"] not in transfer_logged_fields],
         request,
     )
+    set_flash(request, "success", "Assignment was updated.")
     return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
 
@@ -9270,7 +9388,7 @@ def admin_asset_payment_create(
             notes=notes,
             eur_equivalent_amount=eur_equivalent_amount,
         )
-        supabase.table("asset_payments").insert(payload).execute()
+        supabase.table("asset_payments").insert(add_tenant_id(payload, request=request)).execute()
         audit_log_event(
             entity_type="Payment",
             entity_id=asset_id,
@@ -9310,8 +9428,7 @@ def admin_asset_payment_update(
 
     try:
         old_payment_response = (
-            supabase.table("asset_payments")
-            .select("*")
+            tenant_filter(supabase.table("asset_payments").select("*"), request=request)
             .eq("payment_id", payment_id)
             .eq("asset_id", asset_id)
             .limit(1)
@@ -9330,7 +9447,7 @@ def admin_asset_payment_update(
             eur_equivalent_amount=eur_equivalent_amount,
         )
         payload.pop("asset_id", None)
-        supabase.table("asset_payments").update(payload).eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
+        tenant_filter(supabase.table("asset_payments").update(payload), request=request).eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
         audit_log_field_changes(
             entity_type="Payment",
             entity_id=payment_id,
@@ -9360,15 +9477,14 @@ def admin_asset_payment_delete(request: Request, asset_id: int, payment_id: int)
 
     try:
         old_payment_response = (
-            supabase.table("asset_payments")
-            .select("*")
+            tenant_filter(supabase.table("asset_payments").select("*"), request=request)
             .eq("payment_id", payment_id)
             .eq("asset_id", asset_id)
             .limit(1)
             .execute()
         )
         old_payment = (old_payment_response.data or [{}])[0]
-        supabase.table("asset_payments").delete().eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
+        tenant_filter(supabase.table("asset_payments").delete(), request=request).eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
         audit_log_event(
             entity_type="Payment",
             entity_id=payment_id,
@@ -9443,9 +9559,12 @@ def admin_asset_project_create(
         payload.pop("is_purchase_origin", None)
 
     try:
+        ensure_parent_tenant("projects", "project_id", payload["project_id"], request=request)
+        if payload.get("donor_id"):
+            ensure_parent_tenant("donors", "donor_id", payload["donor_id"], request=request)
         if payload["is_primary"]:
-            supabase.table("asset_projects").update({"is_primary": False}).eq("asset_id", asset_id).execute()
-        supabase.table("asset_projects").insert(payload).execute()
+            tenant_filter(supabase.table("asset_projects").update({"is_primary": False}), request=request).eq("asset_id", asset_id).execute()
+        supabase.table("asset_projects").insert(add_tenant_id(payload, request=request)).execute()
         audit_log_event(
             entity_type="Project",
             entity_id=asset_id,
@@ -9520,9 +9639,11 @@ def admin_asset_project_update(
         payload.pop("is_purchase_origin", None)
 
     try:
+        ensure_parent_tenant("projects", "project_id", payload["project_id"], request=request)
+        if payload.get("donor_id"):
+            ensure_parent_tenant("donors", "donor_id", payload["donor_id"], request=request)
         old_project_response = (
-            supabase.table("asset_projects")
-            .select("*")
+            tenant_filter(supabase.table("asset_projects").select("*"), request=request)
             .eq("asset_project_id", asset_project_id)
             .eq("asset_id", asset_id)
             .limit(1)
@@ -9530,8 +9651,8 @@ def admin_asset_project_update(
         )
         old_project = (old_project_response.data or [{}])[0]
         if payload["is_primary"]:
-            supabase.table("asset_projects").update({"is_primary": False}).eq("asset_id", asset_id).execute()
-        supabase.table("asset_projects").update(payload).eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
+            tenant_filter(supabase.table("asset_projects").update({"is_primary": False}), request=request).eq("asset_id", asset_id).execute()
+        tenant_filter(supabase.table("asset_projects").update(payload), request=request).eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
         audit_log_project_field_changes(
             entity_id=asset_project_id,
             entity_label=asset.get("asset_tag_number"),
@@ -9560,15 +9681,14 @@ def admin_asset_project_delete(request: Request, asset_id: int, asset_project_id
 
     try:
         old_project_response = (
-            supabase.table("asset_projects")
-            .select("*")
+            tenant_filter(supabase.table("asset_projects").select("*"), request=request)
             .eq("asset_project_id", asset_project_id)
             .eq("asset_id", asset_id)
             .limit(1)
             .execute()
         )
         old_project = (old_project_response.data or [{}])[0]
-        supabase.table("asset_projects").delete().eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
+        tenant_filter(supabase.table("asset_projects").delete(), request=request).eq("asset_project_id", asset_project_id).eq("asset_id", asset_id).execute()
         audit_log_event(
             entity_type="Project",
             entity_id=asset_project_id,
