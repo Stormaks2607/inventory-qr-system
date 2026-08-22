@@ -169,6 +169,79 @@ def test_asset_edit_route_updates_payload_and_redirects(app_module, monkeypatch)
     assert audit_calls[0]["entity_label"] == "HELP-UKR-0753"
 
 
+def test_asset_detail_edit_description_renders_multiline_textarea(app_module):
+    multiline_description = "Type: Monitor holder\nHeight Adjustment Range: 0-260 mm\nRotation: +90°"
+    template_source = (app_module.templates.env.loader.get_source(app_module.templates.env, "admin_asset_detail.html"))[0]
+    description_control = '<textarea id="item_description" name="item_description" rows="4">{{ asset.item_description or \'\' }}</textarea>'
+    rendered = app_module.templates.env.from_string(description_control).render(
+        asset={"item_description": multiline_description}
+    )
+
+    assert description_control in template_source
+    assert '<textarea id="item_description" name="item_description" rows="4">' in rendered
+    assert multiline_description in rendered
+    assert 'name="item_description" type="text"' not in template_source
+
+
+def test_asset_edit_preserves_unchanged_multiline_description_and_audits_only_remarks(app_module, monkeypatch):
+    multiline_description = "Type: Monitor holder\nHeight Adjustment Range: 0-260 mm\nRotation: +90°"
+    fake_supabase = RecordingSupabase()
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(
+        app_module,
+        "get_asset_by_id",
+        lambda asset_id: {
+            "asset_id": asset_id,
+            "asset_tag_number": "HELP-UKR-0572",
+            "usage_type": "standard",
+            "item_description": multiline_description,
+            "brand_make": "RZTK",
+            "model": "NB-F80",
+            "asset_classification": "EQUIPMENT",
+            "asset_sub_classification": "Computer Accessories",
+            "quantity": 1,
+            "purchase_price": 20.31,
+            "currency": "EUR",
+            "serial_chassis_number": "SN-0572",
+            "current_status": "functional",
+            "remarks": "Old remarks",
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+        },
+    )
+    audit_calls = []
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: audit_calls.append(kwargs) or True)
+
+    response = app_module.admin_asset_edit(
+        make_admin_request(),
+        657,
+        usage_type="standard",
+        item_description=multiline_description,
+        brand_make="RZTK",
+        model="NB-F80",
+        asset_classification="EQUIPMENT",
+        asset_sub_classification="Computer Accessories",
+        quantity="1",
+        purchase_price="20.31",
+        currency="EUR",
+        serial_number="SN-0572",
+        current_status="functional",
+        remarks="Updated remarks",
+    )
+
+    update_operation = fake_supabase.operations[0]
+    assert response.status_code == 303
+    assert update_operation["filters"] == [
+        ("eq", "tenant_id", app_module.DEFAULT_TENANT_ID),
+        ("eq", "asset_id", 657),
+    ]
+    assert update_operation["payload"]["item_description"] == multiline_description
+    assert update_operation["payload"]["remarks"] == "Updated remarks"
+    assert {call["field_name"] for call in audit_calls} == {"remarks"}
+    assert audit_calls[0]["old_value"] == "Old remarks"
+    assert audit_calls[0]["new_value"] == "Updated remarks"
+    assert audit_calls[0]["request"].session["admin_username"] == "admin"
+
+
 def test_assignment_update_closes_current_assignment_inserts_new_status_and_updates_asset(app_module, monkeypatch):
     fake_supabase = RecordingSupabase(
         {
