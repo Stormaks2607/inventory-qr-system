@@ -272,6 +272,15 @@ def normalize_audit_compare_value(value) -> str:
     return rendered.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
+def preserve_existing_text_if_newline_equivalent(existing_value, submitted_value: str) -> Optional[str]:
+    cleaned_value = submitted_value.strip()
+    if not cleaned_value:
+        return None
+    if existing_value is not None and normalize_audit_compare_value(existing_value) == normalize_audit_compare_value(cleaned_value):
+        return existing_value
+    return cleaned_value
+
+
 def audit_log_event(
     *,
     entity_type: str,
@@ -9147,7 +9156,7 @@ def admin_asset_edit(
     try:
         update_data = {
             "usage_type": normalize_asset_usage_type(usage_type, asset.get("asset_tag_number")),
-            "item_description": item_description.strip() or None,
+            "item_description": preserve_existing_text_if_newline_equivalent(asset.get("item_description"), item_description),
             "brand_make": brand_make.strip() or None,
             "model": model.strip() or None,
             "asset_classification": asset_classification.strip() or None,
@@ -9157,7 +9166,7 @@ def admin_asset_edit(
             "currency": currency.strip() or None,
             "serial_chassis_number": serial_number.strip() or None,
             "current_status": current_status.strip() or None,
-            "remarks": remarks.strip() or None,
+            "remarks": preserve_existing_text_if_newline_equivalent(asset.get("remarks"), remarks),
         }
     except ValueError:
         set_flash(request, "error", "Quantity must be an integer and purchase price must be a number.")

@@ -242,6 +242,217 @@ def test_asset_edit_preserves_unchanged_multiline_description_and_audits_only_re
     assert audit_calls[0]["request"].session["admin_username"] == "admin"
 
 
+def test_asset_edit_preserves_description_lf_bytes_when_browser_posts_crlf(app_module, monkeypatch):
+    existing_description = "Line 1\nLine 2\nLine 3"
+    submitted_description = "Line 1\r\nLine 2\r\nLine 3"
+    fake_supabase = RecordingSupabase()
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(
+        app_module,
+        "get_asset_by_id",
+        lambda asset_id: {
+            "asset_id": asset_id,
+            "asset_tag_number": "HELP-UKR-0572",
+            "usage_type": "standard",
+            "item_description": existing_description,
+            "brand_make": "RZTK",
+            "model": "NB-F80",
+            "asset_classification": "EQUIPMENT",
+            "asset_sub_classification": "Computer Accessories",
+            "quantity": 1,
+            "purchase_price": 20.31,
+            "currency": "EUR",
+            "serial_chassis_number": "SN-0572",
+            "current_status": "functional",
+            "remarks": "Old remarks",
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+        },
+    )
+    audit_calls = []
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: audit_calls.append(kwargs) or True)
+
+    app_module.admin_asset_edit(
+        make_admin_request(),
+        657,
+        usage_type="standard",
+        item_description=submitted_description,
+        brand_make="RZTK",
+        model="NB-F80",
+        asset_classification="EQUIPMENT",
+        asset_sub_classification="Computer Accessories",
+        quantity="1",
+        purchase_price="20.31",
+        currency="EUR",
+        serial_number="SN-0572",
+        current_status="functional",
+        remarks="Updated remarks",
+    )
+
+    update_operation = fake_supabase.operations[0]
+    assert update_operation["filters"] == [
+        ("eq", "tenant_id", app_module.DEFAULT_TENANT_ID),
+        ("eq", "asset_id", 657),
+    ]
+    assert update_operation["payload"]["item_description"] == existing_description
+    assert "\r" not in update_operation["payload"]["item_description"]
+    assert update_operation["payload"]["remarks"] == "Updated remarks"
+    assert {call["field_name"] for call in audit_calls} == {"remarks"}
+
+
+def test_asset_edit_preserves_remarks_lf_bytes_when_browser_posts_crlf(app_module, monkeypatch):
+    existing_remarks = "Remark 1\nRemark 2"
+    submitted_remarks = "Remark 1\r\nRemark 2"
+    fake_supabase = RecordingSupabase()
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(
+        app_module,
+        "get_asset_by_id",
+        lambda asset_id: {
+            "asset_id": asset_id,
+            "asset_tag_number": "HELP-UKR-0572",
+            "usage_type": "standard",
+            "item_description": "Description",
+            "brand_make": "RZTK",
+            "model": "Old model",
+            "asset_classification": "EQUIPMENT",
+            "asset_sub_classification": "Computer Accessories",
+            "quantity": 1,
+            "purchase_price": 20.31,
+            "currency": "EUR",
+            "serial_chassis_number": "SN-0572",
+            "current_status": "functional",
+            "remarks": existing_remarks,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+        },
+    )
+    audit_calls = []
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: audit_calls.append(kwargs) or True)
+
+    app_module.admin_asset_edit(
+        make_admin_request(),
+        657,
+        usage_type="standard",
+        item_description="Description",
+        brand_make="RZTK",
+        model="New model",
+        asset_classification="EQUIPMENT",
+        asset_sub_classification="Computer Accessories",
+        quantity="1",
+        purchase_price="20.31",
+        currency="EUR",
+        serial_number="SN-0572",
+        current_status="functional",
+        remarks=submitted_remarks,
+    )
+
+    update_operation = fake_supabase.operations[0]
+    assert update_operation["payload"]["remarks"] == existing_remarks
+    assert "\r" not in update_operation["payload"]["remarks"]
+    assert update_operation["payload"]["model"] == "New model"
+    assert {call["field_name"] for call in audit_calls} == {"model"}
+
+
+def test_asset_edit_audits_genuine_multiline_description_change(app_module, monkeypatch):
+    existing_description = "Line 1\nLine 2"
+    submitted_description = "Line 1\r\nChanged line"
+    fake_supabase = RecordingSupabase()
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(
+        app_module,
+        "get_asset_by_id",
+        lambda asset_id: {
+            "asset_id": asset_id,
+            "asset_tag_number": "HELP-UKR-0572",
+            "usage_type": "standard",
+            "item_description": existing_description,
+            "brand_make": "RZTK",
+            "model": "NB-F80",
+            "asset_classification": "EQUIPMENT",
+            "asset_sub_classification": "Computer Accessories",
+            "quantity": 1,
+            "purchase_price": 20.31,
+            "currency": "EUR",
+            "serial_chassis_number": "SN-0572",
+            "current_status": "functional",
+            "remarks": "Remarks",
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+        },
+    )
+    audit_calls = []
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: audit_calls.append(kwargs) or True)
+
+    app_module.admin_asset_edit(
+        make_admin_request(),
+        657,
+        usage_type="standard",
+        item_description=submitted_description,
+        brand_make="RZTK",
+        model="NB-F80",
+        asset_classification="EQUIPMENT",
+        asset_sub_classification="Computer Accessories",
+        quantity="1",
+        purchase_price="20.31",
+        currency="EUR",
+        serial_number="SN-0572",
+        current_status="functional",
+        remarks="Remarks",
+    )
+
+    update_operation = fake_supabase.operations[0]
+    assert update_operation["payload"]["item_description"] == submitted_description.strip()
+    assert {call["field_name"] for call in audit_calls} == {"item_description"}
+
+
+def test_asset_edit_clearing_description_and_remarks_still_sets_none_and_audits(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase()
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(
+        app_module,
+        "get_asset_by_id",
+        lambda asset_id: {
+            "asset_id": asset_id,
+            "asset_tag_number": "HELP-UKR-0572",
+            "usage_type": "standard",
+            "item_description": "Line 1\nLine 2",
+            "brand_make": "RZTK",
+            "model": "NB-F80",
+            "asset_classification": "EQUIPMENT",
+            "asset_sub_classification": "Computer Accessories",
+            "quantity": 1,
+            "purchase_price": 20.31,
+            "currency": "EUR",
+            "serial_chassis_number": "SN-0572",
+            "current_status": "functional",
+            "remarks": "Remark 1\nRemark 2",
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+        },
+    )
+    audit_calls = []
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: audit_calls.append(kwargs) or True)
+
+    app_module.admin_asset_edit(
+        make_admin_request(),
+        657,
+        usage_type="standard",
+        item_description="",
+        brand_make="RZTK",
+        model="NB-F80",
+        asset_classification="EQUIPMENT",
+        asset_sub_classification="Computer Accessories",
+        quantity="1",
+        purchase_price="20.31",
+        currency="EUR",
+        serial_number="SN-0572",
+        current_status="functional",
+        remarks="",
+    )
+
+    update_operation = fake_supabase.operations[0]
+    assert update_operation["payload"]["item_description"] is None
+    assert update_operation["payload"]["remarks"] is None
+    assert {call["field_name"] for call in audit_calls} == {"item_description", "remarks"}
+
+
 def test_assignment_update_closes_current_assignment_inserts_new_status_and_updates_asset(app_module, monkeypatch):
     fake_supabase = RecordingSupabase(
         {
