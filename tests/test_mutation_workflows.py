@@ -1314,3 +1314,138 @@ def test_recent_audit_candidate_queries_break_limit_ties_by_audit_id(app_module,
         ("created_at", {"desc": True}),
         ("audit_id", {"desc": True}),
     ]
+
+
+def test_full_audit_log_orders_by_effective_timestamp_and_audit_id(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 655,
+            "event_date": None,
+            "created_at": "2026-08-23T12:00:00+00:00",
+            "entity_label": "OLDER-NULL",
+        },
+        {
+            "audit_id": 661,
+            "event_date": "2026-08-24T08:00:00+00:00",
+            "created_at": "2026-08-24T08:00:10+00:00",
+            "entity_label": "NEWER-EVENT",
+        },
+        {
+            "audit_id": 663,
+            "event_date": None,
+            "created_at": "2026-08-24T09:30:00+00:00",
+            "entity_label": "NULL-USES-CREATED",
+        },
+        {
+            "audit_id": 10,
+            "event_date": None,
+            "created_at": "2026-08-24T09:30:00+00:00",
+            "entity_label": "NULL-TIE-LOWER-ID",
+        },
+    ]
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", lambda *args, **kwargs: rows)
+
+    result = app_module.list_audit_log_events(page_size=100)
+
+    assert [row["entity_label"] for row in result["rows"]] == [
+        "NULL-USES-CREATED",
+        "NULL-TIE-LOWER-ID",
+        "NEWER-EVENT",
+        "OLDER-NULL",
+    ]
+    assert result["total_matches"] == 4
+
+
+def test_full_audit_log_filters_query_after_effective_sort(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 1,
+            "event_date": "2026-08-24T08:00:00+00:00",
+            "created_at": "2026-08-24T08:00:00+00:00",
+            "entity_label": "HELP-UKR-0001",
+            "summary": "Ignored change",
+        },
+        {
+            "audit_id": 2,
+            "event_date": None,
+            "created_at": "2026-08-25T08:00:00+00:00",
+            "entity_label": "HELP-UKR-0002",
+            "summary": "Target remarks",
+        },
+    ]
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", lambda *args, **kwargs: rows)
+
+    result = app_module.list_audit_log_events(q="target", page_size=100)
+
+    assert [row["entity_label"] for row in result["rows"]] == ["HELP-UKR-0002"]
+    assert result["total_matches"] == 1
+
+
+def test_full_audit_log_paginates_effective_sorted_rows(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": audit_id,
+            "event_date": None,
+            "created_at": "2026-08-24T10:00:00+00:00",
+            "entity_label": f"ROW-{audit_id}",
+        }
+        for audit_id in range(1, 56)
+    ]
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", lambda *args, **kwargs: rows)
+
+    result = app_module.list_audit_log_events(page=2, page_size=50)
+
+    assert [row["entity_label"] for row in result["rows"]] == ["ROW-5", "ROW-4", "ROW-3", "ROW-2", "ROW-1"]
+    assert result["page"] == 2
+    assert result["page_count"] == 2
+    assert result["total_matches"] == 55
+
+
+def test_full_audit_log_preserves_entity_type_source_filters(app_module, monkeypatch):
+    calls = []
+
+    def fake_fetch(entity_type="", source="", *, use_event_date=True):
+        calls.append({"entity_type": entity_type, "source": source, "use_event_date": use_event_date})
+        return []
+
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", fake_fetch)
+
+    app_module.list_audit_log_events(entity_type="Asset", source="Admin")
+
+    assert calls == [{"entity_type": "Asset", "source": "Admin", "use_event_date": True}]
+
+
+def test_full_audit_log_legacy_event_date_fallback_still_sorts_created_at(app_module, monkeypatch):
+    class FakeApiError(Exception):
+        def __init__(self):
+            self.message = "Column event_date does not exist"
+            self.details = ""
+
+    calls = []
+
+    def fake_fetch(entity_type="", source="", *, use_event_date=True):
+        calls.append(use_event_date)
+        if use_event_date:
+            raise FakeApiError()
+        return [
+            {
+                "audit_id": 1,
+                "event_date": None,
+                "created_at": "2026-08-24T08:00:00+00:00",
+                "entity_label": "OLDER",
+            },
+            {
+                "audit_id": 2,
+                "event_date": None,
+                "created_at": "2026-08-25T08:00:00+00:00",
+                "entity_label": "NEWER",
+            },
+        ]
+
+    monkeypatch.setattr(app_module, "APIError", FakeApiError)
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", fake_fetch)
+
+    result = app_module.list_audit_log_events(page_size=100)
+
+    assert calls == [True, False]
+    assert [row["entity_label"] for row in result["rows"]] == ["NEWER", "OLDER"]

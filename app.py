@@ -721,7 +721,11 @@ def list_audit_log_events(
         else:
             return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_matches": 0, "page_count": 1}
 
-    all_rows = [row for row in candidate_rows if audit_row_matches_query(row, q)]
+    all_rows = sorted(
+        [row for row in candidate_rows if audit_row_matches_query(row, q)],
+        key=audit_event_sort_key,
+        reverse=True,
+    )
     total_matches = len(all_rows)
     page_count = max((total_matches + page_size - 1) // page_size, 1)
     page = min(page, page_count)
