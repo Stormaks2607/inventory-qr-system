@@ -1071,3 +1071,87 @@ def test_audit_whitespace_and_line_endings_do_not_create_noise(app_module, monke
 
     assert logged == 0
     assert audit_calls == []
+
+
+def test_recent_audit_orders_valid_event_date_above_older_null_event_date(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 655,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-23T12:00:00+00:00",
+            "entity_label": "OLDER-NULL",
+        },
+        {
+            "audit_id": 661,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": "2026-08-24T08:00:00+00:00",
+            "created_at": "2026-08-24T08:00:10+00:00",
+            "entity_label": "NEWER-EVENT",
+        },
+    ]
+    fake_supabase = RecordingSupabase({("audit_log", "select"): rows})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert [row["entity_label"] for row in recent] == ["NEWER-EVENT", "OLDER-NULL"]
+    assert {operation["action"] for operation in fake_supabase.operations} == {"select"}
+
+
+def test_recent_audit_null_event_date_uses_created_at_as_effective_time(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 662,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": "2026-08-23T20:00:00+00:00",
+            "created_at": "2026-08-23T20:00:01+00:00",
+            "entity_label": "VALID-EVENT",
+        },
+        {
+            "audit_id": 663,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T09:30:00+00:00",
+            "entity_label": "NULL-USES-CREATED",
+        },
+    ]
+    fake_supabase = RecordingSupabase({("audit_log", "select"): rows})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert [row["entity_label"] for row in recent] == ["NULL-USES-CREATED", "VALID-EVENT"]
+
+
+def test_recent_audit_orders_newest_first_with_deterministic_tie_break(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 10,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T10:00:00+00:00",
+            "entity_label": "TIE-LOWER-ID",
+        },
+        {
+            "audit_id": 9,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": "2026-08-25T09:00:00+00:00",
+            "created_at": "2026-08-24T09:00:00+00:00",
+            "entity_label": "NEWEST-EVENT",
+        },
+        {
+            "audit_id": 11,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T10:00:00+00:00",
+            "entity_label": "TIE-HIGHER-ID",
+        },
+    ]
+    fake_supabase = RecordingSupabase({("audit_log", "select"): rows})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert [row["entity_label"] for row in recent] == ["NEWEST-EVENT", "TIE-HIGHER-ID", "TIE-LOWER-ID"]
+    assert [row["tenant_id"] for row in recent] == [app_module.DEFAULT_TENANT_ID] * 3

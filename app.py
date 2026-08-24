@@ -9,7 +9,7 @@ import secrets
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
@@ -522,15 +522,63 @@ def format_audit_datetime(value) -> str:
         return str(value)
 
 
+def parse_audit_sort_datetime(value) -> datetime:
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def audit_event_sort_key(row: dict) -> tuple[datetime, datetime, int]:
+    audit_id = row.get("audit_id") or 0
+    try:
+        audit_id = int(audit_id)
+    except (TypeError, ValueError):
+        audit_id = 0
+    return (
+        parse_audit_sort_datetime(row.get("event_date") or row.get("created_at")),
+        parse_audit_sort_datetime(row.get("created_at")),
+        audit_id,
+    )
+
+
+def merge_audit_candidate_rows(*batches: list[dict]) -> list[dict]:
+    merged = []
+    seen = set()
+    for batch in batches:
+        for row in batch:
+            key = row.get("audit_id")
+            if key is None:
+                key = ("event_key", row.get("event_key")) if row.get("event_key") else ("row", id(row))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+    return merged
+
+
 def list_recent_audit_events(limit: int = 5) -> list[dict]:
     limit = normalize_audit_limit(limit)
+    candidate_limit = max(limit * 10, 100)
     try:
-        response = (
+        event_date_response = (
             supabase.table("audit_log")
             .select("*")
-            .order("event_date", desc=True)
+            .order("event_date", desc=True, nullsfirst=False)
             .order("created_at", desc=True)
-            .limit(limit)
+            .limit(candidate_limit)
+            .execute()
+        )
+        created_at_response = (
+            supabase.table("audit_log")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(candidate_limit)
             .execute()
         )
     except Exception as error:
@@ -542,9 +590,11 @@ def list_recent_audit_events(limit: int = 5) -> list[dict]:
                         supabase.table("audit_log")
                         .select("*")
                         .order("created_at", desc=True)
-                        .limit(limit)
+                        .limit(candidate_limit)
                         .execute()
                     )
+                    rows = sorted(response.data or [], key=audit_event_sort_key, reverse=True)
+                    return enrich_audit_rows(rows[:limit])
                 except Exception:
                     return []
             else:
@@ -552,7 +602,9 @@ def list_recent_audit_events(limit: int = 5) -> list[dict]:
         else:
             return []
 
-    return enrich_audit_rows(response.data or [])
+    rows = merge_audit_candidate_rows(event_date_response.data or [], created_at_response.data or [])
+    rows = sorted(rows, key=audit_event_sort_key, reverse=True)
+    return enrich_audit_rows(rows[:limit])
 
 
 def normalize_audit_page_size(value, default: int = 100) -> int:
