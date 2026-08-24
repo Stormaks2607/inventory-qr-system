@@ -13,6 +13,7 @@ class RecordingQuery:
         self.action = None
         self.payload = None
         self.filters = []
+        self.orders = []
 
     def select(self, *args, **kwargs):
         self.action = "select"
@@ -52,7 +53,8 @@ class RecordingQuery:
     def not_(self):
         return RecordingNotFilter(self)
 
-    def order(self, *args, **kwargs):
+    def order(self, field_name, **kwargs):
+        self.orders.append((field_name, kwargs))
         return self
 
     def range(self, *args, **kwargs):
@@ -67,6 +69,7 @@ class RecordingQuery:
             "action": self.action,
             "payload": self.payload,
             "filters": self.filters,
+            "orders": self.orders,
         }
         self.database.operations.append(operation)
         return FakeResponse(self.database.responses.get((self.table_name, self.action), []))
@@ -1186,7 +1189,12 @@ def test_recent_audit_fetches_null_event_date_batch_exactly(app_module, monkeypa
                 rows = [row for row in rows if row.get("event_date") is not None]
             if ("is", "event_date", "null") in self.filters:
                 rows = [row for row in rows if row.get("event_date") is None]
-            rows = sorted(rows, key=app_module.audit_event_sort_key, reverse=True)
+            for field_name, kwargs in reversed(self.orders):
+                rows = sorted(
+                    rows,
+                    key=lambda row: int(row.get(field_name) or 0) if field_name == "audit_id" else str(row.get(field_name) or ""),
+                    reverse=bool(kwargs.get("desc")),
+                )
             if self.limit_value is not None:
                 rows = rows[: self.limit_value]
             self.database.operations.append(
@@ -1195,6 +1203,7 @@ def test_recent_audit_fetches_null_event_date_batch_exactly(app_module, monkeypa
                     "action": self.action,
                     "payload": self.payload,
                     "filters": self.filters,
+                    "orders": self.orders,
                 }
             )
             return FakeResponse(rows)
@@ -1235,3 +1244,73 @@ def test_recent_audit_fetches_null_event_date_batch_exactly(app_module, monkeypa
     assert recent[0]["entity_label"] == "NULL-EVENT-BELONGS-IN-TOP"
     assert fake_supabase.operations[0]["filters"] == [("not_is", "event_date", "null")]
     assert fake_supabase.operations[1]["filters"] == [("is", "event_date", "null")]
+
+
+def test_recent_audit_candidate_queries_break_limit_ties_by_audit_id(app_module, monkeypatch):
+    class FilteredAuditQuery(RecordingQuery):
+        def __init__(self, database, table_name):
+            super().__init__(database, table_name)
+            self.limit_value = None
+
+        def limit(self, value):
+            self.limit_value = value
+            return self
+
+        def execute(self):
+            rows = list(self.database.rows)
+            if ("not_is", "event_date", "null") in self.filters:
+                rows = [row for row in rows if row.get("event_date") is not None]
+            if ("is", "event_date", "null") in self.filters:
+                rows = [row for row in rows if row.get("event_date") is None]
+            for field_name, kwargs in reversed(self.orders):
+                rows = sorted(
+                    rows,
+                    key=lambda row: int(row.get(field_name) or 0) if field_name == "audit_id" else str(row.get(field_name) or ""),
+                    reverse=bool(kwargs.get("desc")),
+                )
+            if self.limit_value is not None:
+                rows = rows[: self.limit_value]
+            self.database.operations.append(
+                {
+                    "table": self.table_name,
+                    "action": self.action,
+                    "payload": self.payload,
+                    "filters": self.filters,
+                    "orders": self.orders,
+                }
+            )
+            return FakeResponse(rows)
+
+    class FilteredAuditSupabase:
+        def __init__(self, rows):
+            self.rows = rows
+            self.operations = []
+
+        def table(self, table_name):
+            return FilteredAuditQuery(self, table_name)
+
+    rows = [
+        {
+            "audit_id": audit_id,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T10:00:00+00:00",
+            "entity_label": f"NULL-TIE-{audit_id}",
+        }
+        for audit_id in range(1, 8)
+    ]
+    fake_supabase = FilteredAuditSupabase(rows)
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert [row["audit_id"] for row in recent] == [7, 6, 5, 4, 3]
+    assert fake_supabase.operations[0]["orders"] == [
+        ("event_date", {"desc": True, "nullsfirst": False}),
+        ("created_at", {"desc": True}),
+        ("audit_id", {"desc": True}),
+    ]
+    assert fake_supabase.operations[1]["orders"] == [
+        ("created_at", {"desc": True}),
+        ("audit_id", {"desc": True}),
+    ]
