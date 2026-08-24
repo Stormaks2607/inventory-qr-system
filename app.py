@@ -564,21 +564,22 @@ def merge_audit_candidate_rows(*batches: list[dict]) -> list[dict]:
 
 def list_recent_audit_events(limit: int = 5) -> list[dict]:
     limit = normalize_audit_limit(limit)
-    candidate_limit = max(limit * 10, 100)
     try:
         event_date_response = (
             supabase.table("audit_log")
             .select("*")
+            .not_.is_("event_date", "null")
             .order("event_date", desc=True, nullsfirst=False)
             .order("created_at", desc=True)
-            .limit(candidate_limit)
+            .limit(limit)
             .execute()
         )
         created_at_response = (
             supabase.table("audit_log")
             .select("*")
+            .is_("event_date", "null")
             .order("created_at", desc=True)
-            .limit(candidate_limit)
+            .limit(limit)
             .execute()
         )
     except Exception as error:
@@ -590,7 +591,7 @@ def list_recent_audit_events(limit: int = 5) -> list[dict]:
                         supabase.table("audit_log")
                         .select("*")
                         .order("created_at", desc=True)
-                        .limit(candidate_limit)
+                        .limit(limit)
                         .execute()
                     )
                     rows = sorted(response.data or [], key=audit_event_sort_key, reverse=True)
