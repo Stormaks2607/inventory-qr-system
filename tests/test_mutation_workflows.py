@@ -13,6 +13,7 @@ class RecordingQuery:
         self.action = None
         self.payload = None
         self.filters = []
+        self.orders = []
 
     def select(self, *args, **kwargs):
         self.action = "select"
@@ -48,7 +49,12 @@ class RecordingQuery:
         self.filters.append(("is", field_name, value))
         return self
 
-    def order(self, *args, **kwargs):
+    @property
+    def not_(self):
+        return RecordingNotFilter(self)
+
+    def order(self, field_name, **kwargs):
+        self.orders.append((field_name, kwargs))
         return self
 
     def range(self, *args, **kwargs):
@@ -63,9 +69,19 @@ class RecordingQuery:
             "action": self.action,
             "payload": self.payload,
             "filters": self.filters,
+            "orders": self.orders,
         }
         self.database.operations.append(operation)
         return FakeResponse(self.database.responses.get((self.table_name, self.action), []))
+
+
+class RecordingNotFilter:
+    def __init__(self, query):
+        self.query = query
+
+    def is_(self, field_name, value):
+        self.query.filters.append(("not_is", field_name, value))
+        return self.query
 
 
 class RecordingSupabase:
@@ -1071,3 +1087,365 @@ def test_audit_whitespace_and_line_endings_do_not_create_noise(app_module, monke
 
     assert logged == 0
     assert audit_calls == []
+
+
+def test_recent_audit_orders_valid_event_date_above_older_null_event_date(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 655,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-23T12:00:00+00:00",
+            "entity_label": "OLDER-NULL",
+        },
+        {
+            "audit_id": 661,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": "2026-08-24T08:00:00+00:00",
+            "created_at": "2026-08-24T08:00:10+00:00",
+            "entity_label": "NEWER-EVENT",
+        },
+    ]
+    fake_supabase = RecordingSupabase({("audit_log", "select"): rows})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert [row["entity_label"] for row in recent] == ["NEWER-EVENT", "OLDER-NULL"]
+    assert {operation["action"] for operation in fake_supabase.operations} == {"select"}
+
+
+def test_recent_audit_null_event_date_uses_created_at_as_effective_time(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 662,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": "2026-08-23T20:00:00+00:00",
+            "created_at": "2026-08-23T20:00:01+00:00",
+            "entity_label": "VALID-EVENT",
+        },
+        {
+            "audit_id": 663,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T09:30:00+00:00",
+            "entity_label": "NULL-USES-CREATED",
+        },
+    ]
+    fake_supabase = RecordingSupabase({("audit_log", "select"): rows})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert [row["entity_label"] for row in recent] == ["NULL-USES-CREATED", "VALID-EVENT"]
+
+
+def test_recent_audit_orders_newest_first_with_deterministic_tie_break(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 10,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T10:00:00+00:00",
+            "entity_label": "TIE-LOWER-ID",
+        },
+        {
+            "audit_id": 9,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": "2026-08-25T09:00:00+00:00",
+            "created_at": "2026-08-24T09:00:00+00:00",
+            "entity_label": "NEWEST-EVENT",
+        },
+        {
+            "audit_id": 11,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T10:00:00+00:00",
+            "entity_label": "TIE-HIGHER-ID",
+        },
+    ]
+    fake_supabase = RecordingSupabase({("audit_log", "select"): rows})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert [row["entity_label"] for row in recent] == ["NEWEST-EVENT", "TIE-HIGHER-ID", "TIE-LOWER-ID"]
+    assert [row["tenant_id"] for row in recent] == [app_module.DEFAULT_TENANT_ID] * 3
+
+
+def test_recent_audit_fetches_null_event_date_batch_exactly(app_module, monkeypatch):
+    class FilteredAuditQuery(RecordingQuery):
+        def __init__(self, database, table_name):
+            super().__init__(database, table_name)
+            self.limit_value = None
+
+        def limit(self, value):
+            self.limit_value = value
+            return self
+
+        def execute(self):
+            rows = list(self.database.rows)
+            if ("not_is", "event_date", "null") in self.filters:
+                rows = [row for row in rows if row.get("event_date") is not None]
+            if ("is", "event_date", "null") in self.filters:
+                rows = [row for row in rows if row.get("event_date") is None]
+            for field_name, kwargs in reversed(self.orders):
+                rows = sorted(
+                    rows,
+                    key=lambda row: int(row.get(field_name) or 0) if field_name == "audit_id" else str(row.get(field_name) or ""),
+                    reverse=bool(kwargs.get("desc")),
+                )
+            if self.limit_value is not None:
+                rows = rows[: self.limit_value]
+            self.database.operations.append(
+                {
+                    "table": self.table_name,
+                    "action": self.action,
+                    "payload": self.payload,
+                    "filters": self.filters,
+                    "orders": self.orders,
+                }
+            )
+            return FakeResponse(rows)
+
+    class FilteredAuditSupabase:
+        def __init__(self, rows):
+            self.rows = rows
+            self.operations = []
+
+        def table(self, table_name):
+            return FilteredAuditQuery(self, table_name)
+
+    old_valid_event_rows = [
+        {
+            "audit_id": audit_id,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": f"2020-01-{audit_id:02d}T00:00:00+00:00",
+            "created_at": f"2026-08-24T12:{audit_id:02d}:00+00:00",
+            "entity_label": f"OLD-EVENT-{audit_id}",
+        }
+        for audit_id in range(1, 8)
+    ]
+    rows = old_valid_event_rows + [
+        {
+            "audit_id": 100,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T11:59:00+00:00",
+            "entity_label": "NULL-EVENT-BELONGS-IN-TOP",
+        }
+    ]
+    fake_supabase = FilteredAuditSupabase(rows)
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert "NULL-EVENT-BELONGS-IN-TOP" in [row["entity_label"] for row in recent]
+    assert recent[0]["entity_label"] == "NULL-EVENT-BELONGS-IN-TOP"
+    assert fake_supabase.operations[0]["filters"] == [("not_is", "event_date", "null")]
+    assert fake_supabase.operations[1]["filters"] == [("is", "event_date", "null")]
+
+
+def test_recent_audit_candidate_queries_break_limit_ties_by_audit_id(app_module, monkeypatch):
+    class FilteredAuditQuery(RecordingQuery):
+        def __init__(self, database, table_name):
+            super().__init__(database, table_name)
+            self.limit_value = None
+
+        def limit(self, value):
+            self.limit_value = value
+            return self
+
+        def execute(self):
+            rows = list(self.database.rows)
+            if ("not_is", "event_date", "null") in self.filters:
+                rows = [row for row in rows if row.get("event_date") is not None]
+            if ("is", "event_date", "null") in self.filters:
+                rows = [row for row in rows if row.get("event_date") is None]
+            for field_name, kwargs in reversed(self.orders):
+                rows = sorted(
+                    rows,
+                    key=lambda row: int(row.get(field_name) or 0) if field_name == "audit_id" else str(row.get(field_name) or ""),
+                    reverse=bool(kwargs.get("desc")),
+                )
+            if self.limit_value is not None:
+                rows = rows[: self.limit_value]
+            self.database.operations.append(
+                {
+                    "table": self.table_name,
+                    "action": self.action,
+                    "payload": self.payload,
+                    "filters": self.filters,
+                    "orders": self.orders,
+                }
+            )
+            return FakeResponse(rows)
+
+    class FilteredAuditSupabase:
+        def __init__(self, rows):
+            self.rows = rows
+            self.operations = []
+
+        def table(self, table_name):
+            return FilteredAuditQuery(self, table_name)
+
+    rows = [
+        {
+            "audit_id": audit_id,
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "event_date": None,
+            "created_at": "2026-08-24T10:00:00+00:00",
+            "entity_label": f"NULL-TIE-{audit_id}",
+        }
+        for audit_id in range(1, 8)
+    ]
+    fake_supabase = FilteredAuditSupabase(rows)
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    recent = app_module.list_recent_audit_events(5)
+
+    assert [row["audit_id"] for row in recent] == [7, 6, 5, 4, 3]
+    assert fake_supabase.operations[0]["orders"] == [
+        ("event_date", {"desc": True, "nullsfirst": False}),
+        ("created_at", {"desc": True}),
+        ("audit_id", {"desc": True}),
+    ]
+    assert fake_supabase.operations[1]["orders"] == [
+        ("created_at", {"desc": True}),
+        ("audit_id", {"desc": True}),
+    ]
+
+
+def test_full_audit_log_orders_by_effective_timestamp_and_audit_id(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 655,
+            "event_date": None,
+            "created_at": "2026-08-23T12:00:00+00:00",
+            "entity_label": "OLDER-NULL",
+        },
+        {
+            "audit_id": 661,
+            "event_date": "2026-08-24T08:00:00+00:00",
+            "created_at": "2026-08-24T08:00:10+00:00",
+            "entity_label": "NEWER-EVENT",
+        },
+        {
+            "audit_id": 663,
+            "event_date": None,
+            "created_at": "2026-08-24T09:30:00+00:00",
+            "entity_label": "NULL-USES-CREATED",
+        },
+        {
+            "audit_id": 10,
+            "event_date": None,
+            "created_at": "2026-08-24T09:30:00+00:00",
+            "entity_label": "NULL-TIE-LOWER-ID",
+        },
+    ]
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", lambda *args, **kwargs: rows)
+
+    result = app_module.list_audit_log_events(page_size=100)
+
+    assert [row["entity_label"] for row in result["rows"]] == [
+        "NULL-USES-CREATED",
+        "NULL-TIE-LOWER-ID",
+        "NEWER-EVENT",
+        "OLDER-NULL",
+    ]
+    assert result["total_matches"] == 4
+
+
+def test_full_audit_log_filters_query_after_effective_sort(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": 1,
+            "event_date": "2026-08-24T08:00:00+00:00",
+            "created_at": "2026-08-24T08:00:00+00:00",
+            "entity_label": "HELP-UKR-0001",
+            "summary": "Ignored change",
+        },
+        {
+            "audit_id": 2,
+            "event_date": None,
+            "created_at": "2026-08-25T08:00:00+00:00",
+            "entity_label": "HELP-UKR-0002",
+            "summary": "Target remarks",
+        },
+    ]
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", lambda *args, **kwargs: rows)
+
+    result = app_module.list_audit_log_events(q="target", page_size=100)
+
+    assert [row["entity_label"] for row in result["rows"]] == ["HELP-UKR-0002"]
+    assert result["total_matches"] == 1
+
+
+def test_full_audit_log_paginates_effective_sorted_rows(app_module, monkeypatch):
+    rows = [
+        {
+            "audit_id": audit_id,
+            "event_date": None,
+            "created_at": "2026-08-24T10:00:00+00:00",
+            "entity_label": f"ROW-{audit_id}",
+        }
+        for audit_id in range(1, 56)
+    ]
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", lambda *args, **kwargs: rows)
+
+    result = app_module.list_audit_log_events(page=2, page_size=50)
+
+    assert [row["entity_label"] for row in result["rows"]] == ["ROW-5", "ROW-4", "ROW-3", "ROW-2", "ROW-1"]
+    assert result["page"] == 2
+    assert result["page_count"] == 2
+    assert result["total_matches"] == 55
+
+
+def test_full_audit_log_preserves_entity_type_source_filters(app_module, monkeypatch):
+    calls = []
+
+    def fake_fetch(entity_type="", source="", *, use_event_date=True):
+        calls.append({"entity_type": entity_type, "source": source, "use_event_date": use_event_date})
+        return []
+
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", fake_fetch)
+
+    app_module.list_audit_log_events(entity_type="Asset", source="Admin")
+
+    assert calls == [{"entity_type": "Asset", "source": "Admin", "use_event_date": True}]
+
+
+def test_full_audit_log_legacy_event_date_fallback_still_sorts_created_at(app_module, monkeypatch):
+    class FakeApiError(Exception):
+        def __init__(self):
+            self.message = "Column event_date does not exist"
+            self.details = ""
+
+    calls = []
+
+    def fake_fetch(entity_type="", source="", *, use_event_date=True):
+        calls.append(use_event_date)
+        if use_event_date:
+            raise FakeApiError()
+        return [
+            {
+                "audit_id": 1,
+                "event_date": None,
+                "created_at": "2026-08-24T08:00:00+00:00",
+                "entity_label": "OLDER",
+            },
+            {
+                "audit_id": 2,
+                "event_date": None,
+                "created_at": "2026-08-25T08:00:00+00:00",
+                "entity_label": "NEWER",
+            },
+        ]
+
+    monkeypatch.setattr(app_module, "APIError", FakeApiError)
+    monkeypatch.setattr(app_module, "fetch_audit_log_candidates", fake_fetch)
+
+    result = app_module.list_audit_log_events(page_size=100)
+
+    assert calls == [True, False]
+    assert [row["entity_label"] for row in result["rows"]] == ["NEWER", "OLDER"]
