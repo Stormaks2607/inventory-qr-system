@@ -44,4 +44,4 @@ def normalize_tenant_uuid(value: str) -> str:
     try:
         return str(UUID(str(value)))
     except (TypeError, ValueError) as exc:
-        raise TenantContextError("DEFAULT_TENANT_ID must be a valid UUID.") from exc
+        raise TenantContextError("Tenant ID must be a valid UUID.") from exc

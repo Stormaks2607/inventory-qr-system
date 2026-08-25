@@ -25,7 +25,7 @@ from itsdangerous import BadSignature, URLSafeSerializer
 from supabase import Client
 
 from data_access.client import get_supabase_client
-from data_access.tenant import TenantContextError, resolve_tenant_context
+from data_access.tenant import TenantContextError, normalize_tenant_uuid, resolve_tenant_context
 from runtime_config import get_public_base_url
 
 
@@ -51,6 +51,7 @@ SUPABASE_KEY = clean_env_value("SUPABASE_KEY")
 BOT_TOKEN = clean_env_value("BOT_TOKEN")
 PUBLIC_BASE_URL = get_public_base_url()
 DEFAULT_TENANT_ID = resolve_tenant_context().tenant_id
+TENANT_SESSION_KEY = "tenant_id"
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
 ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "replace-this-session-secret")
@@ -181,7 +182,21 @@ def get_admin_actor(request: Optional[Request] = None, fallback: str = "Admin") 
 
 
 def get_current_tenant_id(request: Optional[Request] = None) -> str:
-    return DEFAULT_TENANT_ID
+    if request is None:
+        return DEFAULT_TENANT_ID
+
+    session = request.session
+    is_authenticated = (
+        session.get("admin_authenticated") is True
+        or session.get("account_person_id") is not None
+    )
+    if not is_authenticated:
+        return DEFAULT_TENANT_ID
+
+    session_tenant_id = session.get(TENANT_SESSION_KEY)
+    if not session_tenant_id:
+        raise TenantContextError("Authenticated session is missing tenant_id.")
+    return normalize_tenant_uuid(session_tenant_id)
 
 
 def add_tenant_id(payload: dict, request: Optional[Request] = None) -> dict:
@@ -1067,6 +1082,19 @@ def is_admin_readonly(request: Request) -> bool:
 
 def is_account_authenticated(request: Request) -> bool:
     return request.session.get("account_person_id") is not None
+
+
+def clear_account_session(request: Request) -> None:
+    request.session.pop("account_person_id", None)
+    request.session.pop("account_display_name", None)
+    request.session.pop("account_role", None)
+    request.session.pop(TENANT_SESSION_KEY, None)
+    if request.session.get("admin_login_source") == "account":
+        request.session.pop("admin_authenticated", None)
+        request.session.pop("admin_username", None)
+        request.session.pop("admin_role", None)
+        request.session.pop("admin_tenant_key", None)
+        request.session.pop("admin_login_source", None)
 
 
 def normalize_account_role(value: Optional[str]) -> str:
@@ -4171,9 +4199,9 @@ def get_person_status_label(person: dict) -> str:
     return "Active" if is_person_active(person) else "Inactive"
 
 
-def get_person_by_id(person_id: int) -> Optional[dict]:
+def get_person_by_id(person_id: int, request: Optional[Request] = None) -> Optional[dict]:
     response = (
-        tenant_filter(supabase.table("persons").select("*"))
+        tenant_filter(supabase.table("persons").select("*"), request=request)
         .eq("person_id", person_id)
         .limit(1)
         .execute()
@@ -4198,16 +4226,34 @@ def get_person_by_email(email: str) -> Optional[dict]:
     return response.data[0]
 
 
+def get_account_login_person_by_email(email: str) -> Optional[dict]:
+    normalized_email = normalize_email(email)
+    if not normalized_email:
+        return None
+    response = (
+        supabase.table("persons")
+        .select("*")
+        .ilike("email", normalized_email)
+        .limit(2)
+        .execute()
+    )
+    rows = response.data or []
+    return rows[0] if len(rows) == 1 else None
+
+
 def get_account_person(request: Request) -> Optional[dict]:
     person_id = request.session.get("account_person_id")
     if not person_id:
         return None
     try:
-        person = get_person_by_id(int(person_id))
-    except (TypeError, ValueError):
+        session_tenant_id = get_current_tenant_id(request)
+        person = get_person_by_id(int(person_id), request=request)
+        person_tenant_id = normalize_tenant_uuid(person.get("tenant_id")) if person else None
+    except (TypeError, ValueError, TenantContextError):
+        clear_account_session(request)
         return None
-    if not person or not is_person_active(person):
-        request.session.pop("account_person_id", None)
+    if not person or not is_person_active(person) or person_tenant_id != session_tenant_id:
+        clear_account_session(request)
         return None
     return person
 
@@ -6921,8 +6967,12 @@ def account_login_submit(
     next: str = Form("/account"),
 ):
     normalized_email = normalize_email(email)
-    person = get_person_by_email(normalized_email)
-    if not person or not is_person_active(person) or not verify_password(password, person.get("password_hash")):
+    person = get_account_login_person_by_email(normalized_email)
+    try:
+        person_tenant_id = normalize_tenant_uuid(person.get("tenant_id")) if person else None
+    except TenantContextError:
+        person_tenant_id = None
+    if not person or not person_tenant_id or not is_person_active(person) or not verify_password(password, person.get("password_hash")):
         return templates.TemplateResponse(
             request=request,
             name="account_login.html",
@@ -6934,6 +6984,7 @@ def account_login_submit(
             status_code=401,
         )
 
+    request.session[TENANT_SESSION_KEY] = person_tenant_id
     request.session["account_person_id"] = person.get("person_id")
     request.session["account_display_name"] = get_person_display_name(person)
     request.session["account_role"] = normalize_account_role(person.get("account_role"))
@@ -6956,15 +7007,7 @@ def account_login_submit(
 
 @app.get("/account/logout")
 def account_logout(request: Request):
-    request.session.pop("account_person_id", None)
-    request.session.pop("account_display_name", None)
-    request.session.pop("account_role", None)
-    if request.session.get("admin_login_source") == "account":
-        request.session.pop("admin_authenticated", None)
-        request.session.pop("admin_username", None)
-        request.session.pop("admin_role", None)
-        request.session.pop("admin_tenant_key", None)
-        request.session.pop("admin_login_source", None)
+    clear_account_session(request)
     return RedirectResponse(url="/account/login", status_code=303)
 
 
@@ -7108,6 +7151,7 @@ def admin_login_submit(
     request.session["admin_authenticated"] = True
     request.session["admin_username"] = input_username
     request.session["admin_role"] = "admin"
+    request.session[TENANT_SESSION_KEY] = DEFAULT_TENANT_ID
     request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
     return RedirectResponse(url=next or "/admin", status_code=303)
 
