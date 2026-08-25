@@ -22,9 +22,9 @@ def is_test_mode() -> bool:
 
 
 def get_supabase_client(supabase_url: Optional[str], supabase_key: Optional[str]):
-    if supabase_url and supabase_key:
-        return create_client(supabase_url, supabase_key)
     if is_test_mode():
         return UnconfiguredSupabaseClient()
+    if supabase_url and supabase_key:
+        return create_client(supabase_url, supabase_key)
     raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set.")
 

@@ -11,9 +11,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-os.environ.setdefault("INVENTORY_TEST_MODE", "1")
-os.environ.pop("SUPABASE_URL", None)
-os.environ.pop("SUPABASE_KEY", None)
+os.environ["INVENTORY_TEST_MODE"] = "1"
+os.environ["SUPABASE_URL"] = ""
+os.environ["SUPABASE_KEY"] = ""
 os.environ.pop("PUBLIC_BASE_URL", None)
 os.environ.pop("INTERNAL_API_BASE_URL", None)
 
