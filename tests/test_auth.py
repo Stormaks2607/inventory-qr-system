@@ -7,6 +7,22 @@ TENANT_ONE_ID = "00000000-0000-4000-8000-000000000001"
 TENANT_TWO_ID = "00000000-0000-4000-8000-000000000002"
 
 
+class NoopQuery:
+    def update(self, payload):
+        return self
+
+    def eq(self, field_name, value):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=[])
+
+
+class NoopSupabase:
+    def table(self, table_name):
+        return NoopQuery()
+
+
 class DummyUrl:
     def __init__(self, path="/admin", query=""):
         self.path = path
@@ -80,20 +96,6 @@ def test_environment_admin_login_stores_default_tenant(app_module):
 
 
 def test_account_login_stores_person_tenant(app_module, monkeypatch):
-    class NoopQuery:
-        def update(self, payload):
-            return self
-
-        def eq(self, field_name, value):
-            return self
-
-        def execute(self):
-            return SimpleNamespace(data=[])
-
-    class NoopSupabase:
-        def table(self, table_name):
-            return NoopQuery()
-
     request = make_request(app_module, path="/account/login", method="POST")
     person = {
         "person_id": 202,
@@ -119,6 +121,78 @@ def test_account_login_stores_person_tenant(app_module, monkeypatch):
     assert request.session["account_person_id"] == 202
 
 
+def test_account_login_clears_environment_admin_state(app_module, monkeypatch):
+    request = make_request(
+        app_module,
+        path="/account/login",
+        method="POST",
+        session={
+            "admin_authenticated": True,
+            "admin_username": "environment-admin",
+            "admin_role": "admin",
+            "admin_tenant_key": "default",
+            "admin_login_source": "environment",
+            "tenant_id": TENANT_ONE_ID,
+        },
+    )
+    person = {
+        "person_id": 202,
+        "tenant_id": TENANT_TWO_ID,
+        "name_eng": "Tenant Two User",
+        "email": "user@tenant-two.example",
+        "is_active": True,
+        "account_role": "employee",
+        "password_hash": app_module.hash_password("secret"),
+    }
+    monkeypatch.setattr(app_module, "get_account_login_person_by_email", lambda email: person)
+    monkeypatch.setattr(app_module, "supabase", NoopSupabase())
+
+    response = app_module.account_login_submit(
+        request,
+        email=person["email"],
+        password="secret",
+        next="/account",
+    )
+
+    assert response.status_code == 303
+    assert request.session["account_person_id"] == 202
+    assert request.session[app_module.TENANT_SESSION_KEY] == TENANT_TWO_ID
+    assert "admin_authenticated" not in request.session
+    assert "admin_username" not in request.session
+    assert "admin_role" not in request.session
+    assert "admin_login_source" not in request.session
+
+
+def test_environment_admin_login_clears_account_state(app_module):
+    request = make_request(
+        app_module,
+        path="/admin/login",
+        method="POST",
+        session={
+            "account_person_id": 202,
+            "account_display_name": "Tenant Two User",
+            "account_role": "employee",
+            "tenant_id": TENANT_TWO_ID,
+        },
+    )
+
+    response = app_module.admin_login_submit(
+        request,
+        username=app_module.ADMIN_USERNAME,
+        password=app_module.ADMIN_PASSWORD,
+        next="/admin",
+    )
+
+    assert response.status_code == 303
+    assert request.session["admin_authenticated"] is True
+    assert request.session["admin_role"] == "admin"
+    assert request.session["admin_login_source"] == "environment"
+    assert request.session[app_module.TENANT_SESSION_KEY] == app_module.DEFAULT_TENANT_ID
+    assert "account_person_id" not in request.session
+    assert "account_display_name" not in request.session
+    assert "account_role" not in request.session
+
+
 def test_account_promoted_admin_keeps_account_tenant(app_module, monkeypatch):
     request = make_request(
         app_module,
@@ -141,6 +215,9 @@ def test_account_promoted_admin_keeps_account_tenant(app_module, monkeypatch):
     response = app_module.account_home(request)
 
     assert response.headers["location"] == "/admin"
+    assert request.session["account_person_id"] == 202
+    assert request.session["admin_authenticated"] is True
+    assert request.session["admin_role"] == "admin"
     assert request.session[app_module.TENANT_SESSION_KEY] == TENANT_TWO_ID
     assert request.session["admin_login_source"] == "account"
 
@@ -206,14 +283,28 @@ def test_get_account_person_rejects_tenant_mismatch(app_module, monkeypatch):
 def test_logout_removes_tenant_state(app_module):
     account_request = make_request(
         app_module,
-        session={"account_person_id": 202, "tenant_id": TENANT_TWO_ID},
+        session={
+            "account_person_id": 202,
+            "account_role": "admin",
+            "admin_authenticated": True,
+            "admin_role": "admin",
+            "admin_login_source": "account",
+            "tenant_id": TENANT_TWO_ID,
+        },
     )
     app_module.account_logout(account_request)
     assert app_module.TENANT_SESSION_KEY not in account_request.session
+    assert "account_person_id" not in account_request.session
+    assert "admin_authenticated" not in account_request.session
+    assert "admin_login_source" not in account_request.session
 
     admin_request = make_request(
         app_module,
-        session={"admin_authenticated": True, "tenant_id": TENANT_ONE_ID},
+        session={
+            "admin_authenticated": True,
+            "admin_login_source": "environment",
+            "tenant_id": TENANT_ONE_ID,
+        },
     )
     app_module.admin_logout(admin_request)
     assert admin_request.session == {}

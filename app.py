@@ -1084,17 +1084,25 @@ def is_account_authenticated(request: Request) -> bool:
     return request.session.get("account_person_id") is not None
 
 
+def clear_admin_session(request: Request) -> None:
+    request.session.pop("admin_authenticated", None)
+    request.session.pop("admin_username", None)
+    request.session.pop("admin_role", None)
+    request.session.pop("admin_tenant_key", None)
+    request.session.pop("admin_login_source", None)
+    if not is_account_authenticated(request):
+        request.session.pop(TENANT_SESSION_KEY, None)
+
+
 def clear_account_session(request: Request) -> None:
+    account_promoted_admin = request.session.get("admin_login_source") == "account"
     request.session.pop("account_person_id", None)
     request.session.pop("account_display_name", None)
     request.session.pop("account_role", None)
-    request.session.pop(TENANT_SESSION_KEY, None)
-    if request.session.get("admin_login_source") == "account":
-        request.session.pop("admin_authenticated", None)
-        request.session.pop("admin_username", None)
-        request.session.pop("admin_role", None)
-        request.session.pop("admin_tenant_key", None)
-        request.session.pop("admin_login_source", None)
+    if account_promoted_admin:
+        clear_admin_session(request)
+    elif not is_admin_authenticated(request):
+        request.session.pop(TENANT_SESSION_KEY, None)
 
 
 def normalize_account_role(value: Optional[str]) -> str:
@@ -6930,6 +6938,7 @@ def account_home(request: Request):
         return redirect
     person = get_account_person(request)
     if person and account_role_has_admin_access(person.get("account_role")):
+        clear_admin_session(request)
         request.session["admin_authenticated"] = True
         request.session["admin_username"] = get_person_display_name(person)
         request.session["admin_role"] = normalize_account_role(person.get("account_role"))
@@ -6984,6 +6993,8 @@ def account_login_submit(
             status_code=401,
         )
 
+    clear_account_session(request)
+    clear_admin_session(request)
     request.session[TENANT_SESSION_KEY] = person_tenant_id
     request.session["account_person_id"] = person.get("person_id")
     request.session["account_display_name"] = get_person_display_name(person)
@@ -7148,11 +7159,14 @@ def admin_login_submit(
             status_code=401,
         )
 
+    clear_account_session(request)
+    clear_admin_session(request)
     request.session["admin_authenticated"] = True
     request.session["admin_username"] = input_username
     request.session["admin_role"] = "admin"
     request.session[TENANT_SESSION_KEY] = DEFAULT_TENANT_ID
     request.session["admin_tenant_key"] = DEFAULT_BRANDING_TENANT_KEY
+    request.session["admin_login_source"] = "environment"
     return RedirectResponse(url=next or "/admin", status_code=303)
 
 
