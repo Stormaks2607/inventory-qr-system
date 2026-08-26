@@ -119,7 +119,12 @@ class FailingInsertSupabase(RecordingSupabase):
 
 def make_admin_request():
     return SimpleNamespace(
-        session={"admin_authenticated": True, "admin_role": "admin", "admin_username": "admin"},
+        session={
+            "admin_authenticated": True,
+            "admin_role": "admin",
+            "admin_username": "admin",
+            "tenant_id": "00000000-0000-4000-8000-000000000001",
+        },
         method="POST",
         url=SimpleNamespace(path="/admin/assets/101/edit", query=""),
     )
