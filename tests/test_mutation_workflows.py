@@ -136,7 +136,7 @@ def test_asset_edit_route_updates_payload_and_redirects(app_module, monkeypatch)
     monkeypatch.setattr(
         app_module,
         "get_asset_by_id",
-        lambda asset_id: {
+        lambda asset_id, request=None: {
             "asset_id": asset_id,
             "asset_tag_number": "HELP-UKR-0753",
             "usage_type": "standard",
@@ -211,7 +211,7 @@ def test_asset_edit_preserves_unchanged_multiline_description_and_audits_only_re
     monkeypatch.setattr(
         app_module,
         "get_asset_by_id",
-        lambda asset_id: {
+        lambda asset_id, request=None: {
             "asset_id": asset_id,
             "asset_tag_number": "HELP-UKR-0572",
             "usage_type": "standard",
@@ -271,7 +271,7 @@ def test_asset_edit_preserves_description_lf_bytes_when_browser_posts_crlf(app_m
     monkeypatch.setattr(
         app_module,
         "get_asset_by_id",
-        lambda asset_id: {
+        lambda asset_id, request=None: {
             "asset_id": asset_id,
             "asset_tag_number": "HELP-UKR-0572",
             "usage_type": "standard",
@@ -328,7 +328,7 @@ def test_asset_edit_preserves_remarks_lf_bytes_when_browser_posts_crlf(app_modul
     monkeypatch.setattr(
         app_module,
         "get_asset_by_id",
-        lambda asset_id: {
+        lambda asset_id, request=None: {
             "asset_id": asset_id,
             "asset_tag_number": "HELP-UKR-0572",
             "usage_type": "standard",
@@ -381,7 +381,7 @@ def test_asset_edit_audits_genuine_multiline_description_change(app_module, monk
     monkeypatch.setattr(
         app_module,
         "get_asset_by_id",
-        lambda asset_id: {
+        lambda asset_id, request=None: {
             "asset_id": asset_id,
             "asset_tag_number": "HELP-UKR-0572",
             "usage_type": "standard",
@@ -430,7 +430,7 @@ def test_asset_edit_clearing_description_and_remarks_still_sets_none_and_audits(
     monkeypatch.setattr(
         app_module,
         "get_asset_by_id",
-        lambda asset_id: {
+        lambda asset_id, request=None: {
             "asset_id": asset_id,
             "asset_tag_number": "HELP-UKR-0572",
             "usage_type": "standard",
@@ -559,11 +559,11 @@ def test_transfer_creation_records_asset_movement_and_project_history(app_module
         }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
-    monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id: {"person_id": person_id, "name_eng": "New Holder"})
+    monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id, request=None: {"person_id": person_id, "name_eng": "New Holder"})
     monkeypatch.setattr(
         app_module,
         "get_asset_projects",
-        lambda asset_id: [
+        lambda asset_id, request=None: [
             {
                 "project_id": 6,
                 "project_number": "GLO-001",
@@ -633,8 +633,8 @@ def test_transfer_insert_failure_is_not_silently_swallowed(app_module, monkeypat
         responses={("persons", "select"): [{"person_id": 13, "name_eng": "New Holder"}]},
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
-    monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id: {"person_id": person_id, "name_eng": "New Holder"})
-    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id: [])
+    monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id, request=None: {"person_id": person_id, "name_eng": "New Holder"})
+    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id, request=None: [])
 
     result = None
     try:
@@ -670,8 +670,8 @@ def test_assignment_flow_does_not_report_success_when_transfer_creation_fails(ap
     monkeypatch.setattr(app_module, "log_assignment_field_changes", lambda *args, **kwargs: None)
     monkeypatch.setattr(app_module, "supports_asset_assignment_actor_columns", lambda: True)
     monkeypatch.setattr(app_module, "supports_asset_assignment_department_column", lambda: True)
-    monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id: {"person_id": person_id, "name_eng": "New Holder"})
-    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id: [])
+    monkeypatch.setattr(app_module, "get_person_by_id", lambda person_id, request=None: {"person_id": person_id, "name_eng": "New Holder"})
+    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id, request=None: [])
 
     result = None
     try:
@@ -794,7 +794,7 @@ def test_payment_create_includes_tenant_id(app_module, monkeypatch):
     monkeypatch.setattr(
         app_module,
         "get_asset_by_id",
-        lambda asset_id: {
+        lambda asset_id, request=None: {
             "asset_id": asset_id,
             "asset_tag_number": "HELP-UKR-0753",
             "currency": "EUR",
@@ -832,7 +832,7 @@ def test_project_funding_create_includes_tenant_id(app_module, monkeypatch):
     monkeypatch.setattr(
         app_module,
         "get_asset_by_id",
-        lambda asset_id: {
+        lambda asset_id, request=None: {
             "asset_id": asset_id,
             "asset_tag_number": "HELP-UKR-0753",
             "tenant_id": app_module.DEFAULT_TENANT_ID,
@@ -938,7 +938,7 @@ def test_assignment_rejects_cross_tenant_location_before_insert(app_module, monk
 def test_transfer_rejects_cross_tenant_person_before_insert(app_module, monkeypatch):
     fake_supabase = RecordingSupabase({("persons", "select"): []})
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
-    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id: [])
+    monkeypatch.setattr(app_module, "get_asset_projects", lambda asset_id, request=None: [])
 
     result = None
     try:
@@ -1247,8 +1247,14 @@ def test_recent_audit_fetches_null_event_date_batch_exactly(app_module, monkeypa
 
     assert "NULL-EVENT-BELONGS-IN-TOP" in [row["entity_label"] for row in recent]
     assert recent[0]["entity_label"] == "NULL-EVENT-BELONGS-IN-TOP"
-    assert fake_supabase.operations[0]["filters"] == [("not_is", "event_date", "null")]
-    assert fake_supabase.operations[1]["filters"] == [("is", "event_date", "null")]
+    assert fake_supabase.operations[0]["filters"] == [
+        ("eq", "tenant_id", app_module.DEFAULT_TENANT_ID),
+        ("not_is", "event_date", "null"),
+    ]
+    assert fake_supabase.operations[1]["filters"] == [
+        ("eq", "tenant_id", app_module.DEFAULT_TENANT_ID),
+        ("is", "event_date", "null"),
+    ]
 
 
 def test_recent_audit_candidate_queries_break_limit_ties_by_audit_id(app_module, monkeypatch):
@@ -1409,7 +1415,7 @@ def test_full_audit_log_paginates_effective_sorted_rows(app_module, monkeypatch)
 def test_full_audit_log_preserves_entity_type_source_filters(app_module, monkeypatch):
     calls = []
 
-    def fake_fetch(entity_type="", source="", *, use_event_date=True):
+    def fake_fetch(entity_type="", source="", *, use_event_date=True, request=None):
         calls.append({"entity_type": entity_type, "source": source, "use_event_date": use_event_date})
         return []
 
@@ -1428,7 +1434,7 @@ def test_full_audit_log_legacy_event_date_fallback_still_sorts_created_at(app_mo
 
     calls = []
 
-    def fake_fetch(entity_type="", source="", *, use_event_date=True):
+    def fake_fetch(entity_type="", source="", *, use_event_date=True, request=None):
         calls.append(use_event_date)
         if use_event_date:
             raise FakeApiError()
