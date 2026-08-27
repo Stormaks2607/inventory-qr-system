@@ -2604,19 +2604,14 @@ def build_sync_preview(
     }
 
 
-def apply_sync_assignment(
-    asset_id: int,
-    record: dict,
-    sync_context: dict,
-    request: Optional[Request] = None,
-) -> int:
-    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
+def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> int:
+    ensure_parent_tenant("assets", "asset_id", asset_id)
     excel_recipient = normalize_sync_string(record.get("recipient_name"))
     assignment_date = record.get("last_transfer_date") or datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
     actor = "Excel import"
 
     if not excel_recipient:
-        close_current_assignments(asset_id, assignment_date, actor, request=request)
+        close_current_assignments(asset_id, assignment_date, actor)
         return 1
 
     person = resolve_excel_person(record, sync_context["person_lookup"])
@@ -2626,11 +2621,7 @@ def apply_sync_assignment(
     location = resolve_excel_location(record, person, sync_context["location_lookup"])
     if not location:
         return 0
-    validate_assignment_parent_tenants(
-        person.get("person_id"),
-        location.get("location_id"),
-        request=request,
-    )
+    validate_assignment_parent_tenants(person.get("person_id"), location.get("location_id"))
     assignment_department = normalize_sync_string(record.get("department_name") or person.get("department"))
 
     existing = sync_context.get("assignment_by_asset_id", {}).get(asset_id) or {}
@@ -2649,7 +2640,7 @@ def apply_sync_assignment(
     if record.get("remarks"):
         notes_parts.append(f"Remarks: {record.get('remarks')}")
 
-    close_current_assignments(asset_id, assignment_date, actor, request=request)
+    close_current_assignments(asset_id, assignment_date, actor)
     supabase.table("asset_assignments").insert(
         add_tenant_id(
             add_assignment_actor_fields(
@@ -2666,20 +2657,14 @@ def apply_sync_assignment(
                     assignment_department,
                 ),
                 actor,
-            ),
-            request=request,
+            )
         )
     ).execute()
     return 1
 
 
-def apply_sync_project(
-    asset_id: int,
-    record: dict,
-    sync_context: dict,
-    request: Optional[Request] = None,
-) -> int:
-    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
+def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
+    ensure_parent_tenant("assets", "asset_id", asset_id)
     purchased_allocations = get_excel_purchased_project_allocations(record)
     transferred_allocations = get_excel_transferred_project_allocations(record)
     if not purchased_allocations and not transferred_allocations:
@@ -2728,10 +2713,7 @@ def apply_sync_project(
     reset_payload = {"is_current": False, "is_primary": False}
     if supports_purchase_origin:
         reset_payload["is_purchase_origin"] = False
-    tenant_filter(
-        supabase.table("asset_projects").update(reset_payload),
-        request=request,
-    ).eq("asset_id", asset_id).execute()
+    tenant_filter(supabase.table("asset_projects").update(reset_payload)).eq("asset_id", asset_id).execute()
 
     applied = 0
     has_transferred_project = bool(resolved_transferred)
@@ -2801,33 +2783,21 @@ def apply_sync_project(
         existing = existing_by_key.get(payload_key)
 
         if existing:
-            tenant_filter(
-                supabase.table("asset_projects").update(payload),
-                request=request,
-            ).eq("asset_project_id", existing["asset_project_id"]).execute()
+            tenant_filter(supabase.table("asset_projects").update(payload)).eq("asset_project_id", existing["asset_project_id"]).execute()
         else:
-            supabase.table("asset_projects").insert(
-                add_tenant_id({"asset_id": asset_id, **payload}, request=request)
-            ).execute()
+            supabase.table("asset_projects").insert(add_tenant_id({"asset_id": asset_id, **payload})).execute()
         applied += 1
 
     return applied
 
 
-def apply_sync_payments(
-    asset_id: int,
-    record: dict,
-    request: Optional[Request] = None,
-) -> int:
+def apply_sync_payments(asset_id: int, record: dict) -> int:
     payments = get_excel_payment_records(record)
     if not payments:
         return 0
-    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
+    ensure_parent_tenant("assets", "asset_id", asset_id)
 
-    tenant_filter(
-        supabase.table("asset_payments").delete(),
-        request=request,
-    ).eq("asset_id", asset_id).execute()
+    tenant_filter(supabase.table("asset_payments").delete()).eq("asset_id", asset_id).execute()
     payloads = []
     for index, payment in enumerate(payments, start=1):
         payloads.append(
@@ -2842,18 +2812,11 @@ def apply_sync_payments(
             }
         )
 
-    supabase.table("asset_payments").insert(
-        add_tenant_id_to_many(payloads, request=request)
-    ).execute()
+    supabase.table("asset_payments").insert(add_tenant_id_to_many(payloads)).execute()
     return len(payloads)
 
 
-def apply_transfer_project_rows(
-    transfer_id: int,
-    record: dict,
-    sync_context: dict,
-    request: Optional[Request] = None,
-) -> int:
+def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: dict) -> int:
     payloads = []
     for direction, field_name in [("from", "from_project_raw"), ("to", "to_project_raw")]:
         for allocation in transfer_project_allocations(record.get(field_name)):
@@ -2872,30 +2835,17 @@ def apply_transfer_project_rows(
     if not payloads:
         return 0
 
-    tenant_filter(
-        supabase.table("asset_transfer_projects").delete(),
-        request=request,
-    ).eq("transfer_id", transfer_id).execute()
-    supabase.table("asset_transfer_projects").insert(
-        add_tenant_id_to_many(payloads, request=request)
-    ).execute()
+    tenant_filter(supabase.table("asset_transfer_projects").delete()).eq("transfer_id", transfer_id).execute()
+    supabase.table("asset_transfer_projects").insert(add_tenant_id_to_many(payloads)).execute()
     return len(payloads)
 
 
-def apply_sync_transfer(
-    record: dict,
-    sync_context: dict,
-    request: Optional[Request] = None,
-) -> int:
+def apply_sync_transfer(record: dict, sync_context: dict) -> int:
     asset_id = record.get("asset_id")
     if not asset_id:
         return 0
-    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
-    validate_transfer_person_tenants(
-        record.get("from_person_id"),
-        record.get("to_person_id"),
-        request=request,
-    )
+    ensure_parent_tenant("assets", "asset_id", asset_id)
+    validate_transfer_person_tenants(record.get("from_person_id"), record.get("to_person_id"))
 
     payload = add_tenant_id({
         "asset_id": asset_id,
@@ -2914,7 +2864,7 @@ def apply_sync_transfer(
         "to_project_raw": record.get("to_project_raw"),
         "asset_status": record.get("asset_status"),
         "asset_condition_description": record.get("asset_condition_description"),
-    }, request=request)
+    })
 
     signature = make_transfer_signature(asset_id, record)
     if signature in sync_context.get("transfer_signatures", set()):
@@ -2924,7 +2874,7 @@ def apply_sync_transfer(
     transfer = (response.data or [{}])[0]
     transfer_id = transfer.get("transfer_id")
     if transfer_id:
-        apply_transfer_project_rows(transfer_id, record, sync_context, request=request)
+        apply_transfer_project_rows(transfer_id, record, sync_context)
         sync_context.setdefault("transfer_signatures", set()).add(signature)
         audit_log_event(
             entity_type="Transfer",
@@ -2939,12 +2889,11 @@ def apply_sync_transfer(
             actor="Excel Transfer log",
             event_date=record.get("transfer_date"),
             event_key=f"asset_transfer:{transfer_id}",
-            request=request,
         )
     return 1
 
 
-def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict:
+def apply_sync_preview(preview: dict) -> dict:
     inserted = 0
     updated = 0
     assignment_updated = 0
@@ -2952,7 +2901,7 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
     payment_updated = 0
     transfer_updated = 0
     skipped_relationships = 0
-    sync_context = build_sync_context(request=request)
+    sync_context = build_sync_context()
     asset_fields = {
         "usage_type",
         "asset_classification",
@@ -2972,7 +2921,7 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
         insert_record = {field_name: record.get(field_name) for field_name in asset_fields}
         insert_record["asset_tag_number"] = record.get("asset_tag_number")
         insert_record["inventory_code"] = insert_record.get("asset_tag_number")
-        insert_record = add_tenant_id(insert_record, request=request)
+        insert_record = add_tenant_id(insert_record)
         insert_response = supabase.table("assets").insert(insert_record).execute()
         inserted_asset = (insert_response.data or [{}])[0]
         asset_id = inserted_asset.get("asset_id")
@@ -2985,26 +2934,15 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
             summary=f"Created asset from Excel: {record.get('asset_tag_number')}",
             source="Excel import",
             actor="Excel import",
-            request=request,
         )
         if asset_id:
             if record.get("_has_recipient_column") and normalize_sync_string(record.get("recipient_name")):
-                assignment_updated += apply_sync_assignment(
-                    asset_id,
-                    record,
-                    sync_context,
-                    request=request,
-                )
+                assignment_updated += apply_sync_assignment(asset_id, record, sync_context)
             if record.get("_has_project_column") and (
                 get_excel_purchased_project_allocations(record) or get_excel_transferred_project_allocations(record)
             ):
-                project_updated += apply_sync_project(
-                    asset_id,
-                    record,
-                    sync_context,
-                    request=request,
-                )
-            payment_updated += apply_sync_payments(asset_id, record, request=request)
+                project_updated += apply_sync_project(asset_id, record, sync_context)
+            payment_updated += apply_sync_payments(asset_id, record)
 
     for item in preview.get("changed_records", []):
         asset_id = item.get("asset_id")
@@ -3017,11 +2955,8 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
             if field_name in asset_fields
         }
         if update_data:
-            ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
-            tenant_filter(
-                supabase.table("assets").update(update_data),
-                request=request,
-            ).eq("asset_id", asset_id).execute()
+            ensure_parent_tenant("assets", "asset_id", asset_id)
+            tenant_filter(supabase.table("assets").update(update_data)).eq("asset_id", asset_id).execute()
             updated += 1
             audit_log_event(
                 entity_type="Asset",
@@ -3031,23 +2966,22 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
                 summary=f"Excel updated fields: {', '.join(update_data.keys())}",
                 source="Excel import",
                 actor="Excel import",
-                request=request,
             )
         if "responsible_person" in item.get("changed_fields", []):
-            applied = apply_sync_assignment(asset_id, record, sync_context, request=request)
+            applied = apply_sync_assignment(asset_id, record, sync_context)
             assignment_updated += applied
             skipped_relationships += 0 if applied else 1
         if any(field_name in item.get("changed_fields", []) for field_name in ["project_number", "purchased_project_number", "transferred_project_number"]):
-            applied = apply_sync_project(asset_id, record, sync_context, request=request)
+            applied = apply_sync_project(asset_id, record, sync_context)
             project_updated += applied
             skipped_relationships += 0 if applied else 1
         if "purchase_date_raw" in item.get("changed_fields", []) or "remarks" in item.get("changed_fields", []):
-            applied = apply_sync_payments(asset_id, record, request=request)
+            applied = apply_sync_payments(asset_id, record)
             payment_updated += applied
             skipped_relationships += 0 if applied else 1
 
     for record in preview.get("transfer_log", {}).get("new_records", []):
-        applied = apply_sync_transfer(record, sync_context, request=request)
+        applied = apply_sync_transfer(record, sync_context)
         transfer_updated += applied
         skipped_relationships += 0 if applied else 1
 
@@ -3890,13 +3824,10 @@ def list_donors(request: Optional[Request] = None) -> list[dict]:
     return response.data or []
 
 
-def get_next_numeric_id(
-    table_name: str,
-    id_column: str,
-    request: Optional[Request] = None,
-) -> int:
+def get_next_numeric_id(table_name: str, id_column: str) -> int:
     response = (
-        tenant_filter(supabase.table(table_name).select(id_column), request=request)
+        supabase.table(table_name)
+        .select(id_column)
         .order(id_column, desc=True)
         .limit(1)
         .execute()
@@ -5335,7 +5266,7 @@ def get_asset_form_values(
     current_status = asset.get("current_status") or ""
     standard_status_values = {value for value, _ in ASSET_STATUS_SELECT_OPTIONS}
     return {
-        "asset_tag_number": asset.get("asset_tag_number") or suggest_next_asset_tag(request=request),
+        "asset_tag_number": asset.get("asset_tag_number") or suggest_next_asset_tag(),
         "usage_type": normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")),
         "item_description": asset.get("item_description") or "",
         "brand_make": asset.get("brand_make") or "",
@@ -5797,16 +5728,15 @@ def get_asset_create_options(request: Optional[Request] = None) -> dict:
     }
 
 
-def asset_tag_exists(asset_tag_number: str, request: Optional[Request] = None) -> bool:
+def asset_tag_exists(asset_tag_number: str) -> bool:
     try:
         response = (
-            tenant_filter(supabase.table("assets").select("asset_id"), request=request)
+            supabase.table("assets")
+            .select("asset_id")
             .eq("asset_tag_number", asset_tag_number)
             .limit(1)
             .execute()
         )
-    except TenantContextError:
-        raise
     except Exception:
         return False
 
@@ -5965,18 +5895,13 @@ def describe_asset_create_error(error: Exception) -> str:
     return f"Asset could not be created: {message}"
 
 
-def list_asset_tag_rows(
-    batch_size: int = 1000,
-    request: Optional[Request] = None,
-) -> list[dict]:
+def list_asset_tag_rows(batch_size: int = 1000) -> list[dict]:
     rows: list[dict] = []
     start = 0
     while True:
         response = (
-            tenant_filter(
-                supabase.table("assets").select("asset_tag_number"),
-                request=request,
-            )
+            supabase.table("assets")
+            .select("asset_tag_number")
             .order("asset_tag_number")
             .range(start, start + batch_size - 1)
             .execute()
@@ -5992,12 +5917,9 @@ def list_asset_tag_rows(
 def get_asset_tag_standard(
     usage_type: Optional[str] = None,
     asset_tag_rows: Optional[list[dict]] = None,
-    request: Optional[Request] = None,
 ) -> dict:
     try:
-        rows = asset_tag_rows if asset_tag_rows is not None else list_asset_tag_rows(request=request)
-    except TenantContextError:
-        raise
+        rows = asset_tag_rows if asset_tag_rows is not None else list_asset_tag_rows()
     except Exception:
         return {"prefix": "", "width": 0, "example": "", "suggested_next": ""}
 
@@ -6037,11 +5959,9 @@ def get_asset_tag_standard(
     }
 
 
-def get_asset_tag_standards(request: Optional[Request] = None) -> dict:
+def get_asset_tag_standards() -> dict:
     try:
-        asset_tag_rows = list_asset_tag_rows(request=request)
-    except TenantContextError:
-        raise
+        asset_tag_rows = list_asset_tag_rows()
     except Exception:
         asset_tag_rows = []
     return {
@@ -6050,11 +5970,8 @@ def get_asset_tag_standards(request: Optional[Request] = None) -> dict:
     }
 
 
-def suggest_next_asset_tag(
-    usage_type: str = "standard",
-    request: Optional[Request] = None,
-) -> str:
-    return get_asset_tag_standard(usage_type, request=request).get("suggested_next") or ""
+def suggest_next_asset_tag(usage_type: str = "standard") -> str:
+    return get_asset_tag_standard(usage_type).get("suggested_next") or ""
 
 
 def get_asset_tag_warning(asset_tag_number: str, standard: Optional[dict] = None) -> str:
@@ -7684,7 +7601,7 @@ def admin_asset_new(request: Request):
     if redirect:
         return redirect
 
-    asset_tag_standards = get_asset_tag_standards(request=request)
+    asset_tag_standards = get_asset_tag_standards()
     asset_tag_standard = asset_tag_standards.get("standard") or {}
     return templates.TemplateResponse(
         request=request,
@@ -7751,7 +7668,7 @@ def admin_asset_create(
         return redirect
 
     resolved_status = current_status_custom.strip() if current_status == "__custom__" else current_status.strip()
-    asset_tag_standards = get_asset_tag_standards(request=request)
+    asset_tag_standards = get_asset_tag_standards()
     payment_forms = build_create_payment_forms(
         payment_date,
         payment_amount,
@@ -7921,7 +7838,7 @@ def admin_asset_create(
     existing_asset_tags = [
         generated_tag
         for generated_tag in asset_tags_to_create
-        if asset_tag_exists(generated_tag, request=request)
+        if asset_tag_exists(generated_tag)
     ]
     if existing_asset_tags:
         return templates.TemplateResponse(
@@ -9337,7 +9254,7 @@ def admin_reference_data_location_create(
         return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
 
     payload = {
-        "location_id": get_next_numeric_id("locations", "location_id", request=request),
+        "location_id": get_next_numeric_id("locations", "location_id"),
         "country": country,
         "city": city,
         "name": name,
@@ -9426,7 +9343,7 @@ def admin_reference_data_project_create(
         return RedirectResponse(url="/admin/reference-data#projects", status_code=303)
 
     payload = {
-        "project_id": get_next_numeric_id("projects", "project_id", request=request),
+        "project_id": get_next_numeric_id("projects", "project_id"),
         "project_number": project_number,
         "project_name": project_name.strip() or None,
         "start_date": start_date.strip() or None,
@@ -9509,7 +9426,7 @@ def admin_reference_data_donor_create(
         return RedirectResponse(url="/admin/reference-data#donors", status_code=303)
 
     payload = {
-        "donor_id": get_next_numeric_id("donors", "donor_id", request=request),
+        "donor_id": get_next_numeric_id("donors", "donor_id"),
         "donor_name": donor_name,
         "contact_person": contact_person.strip() or None,
         "contact_email": contact_email.strip() or None,
@@ -10398,7 +10315,7 @@ def admin_sync_apply(
         return RedirectResponse(url="/admin/sync", status_code=303)
 
     try:
-        result = apply_sync_preview(selected_preview, request=request)
+        result = apply_sync_preview(selected_preview)
     except Exception as error:
         set_flash(request, "error", f"Could not apply sync changes: {error}")
         return RedirectResponse(url="/admin/sync", status_code=303)

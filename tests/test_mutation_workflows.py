@@ -764,7 +764,7 @@ def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch)
         }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
-    monkeypatch.setattr(app_module, "build_sync_context", lambda request=None: {})
+    monkeypatch.setattr(app_module, "build_sync_context", lambda: {})
 
     result = app_module.apply_sync_preview(
         {

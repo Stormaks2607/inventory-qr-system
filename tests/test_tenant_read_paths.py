@@ -376,6 +376,42 @@ def test_client_supplied_tenant_id_cannot_change_read_scope(app_module, mixed_te
     assert [row["project_number"] for row in projects] == ["T1-PROJECT"]
 
 
+def test_numeric_id_allocation_uses_global_maximum(app_module, mixed_tenant_supabase):
+    mixed_tenant_supabase.rows["projects"] = [
+        {"project_id": 1, "tenant_id": TENANT_ONE},
+        {"project_id": 2, "tenant_id": TENANT_ONE},
+        {"project_id": 7, "tenant_id": TENANT_ONE},
+        {"project_id": 3, "tenant_id": TENANT_TWO},
+        {"project_id": 4, "tenant_id": TENANT_TWO},
+    ]
+    tenant_two_request = authenticated_request(TENANT_TWO)
+
+    assert app_module.get_current_tenant_id(tenant_two_request) == TENANT_TWO
+    assert app_module.get_next_numeric_id("projects", "project_id") == 8
+    assert mixed_tenant_supabase.operations[-1]["filters"] == []
+
+
+def test_asset_tag_existence_remains_global(app_module, mixed_tenant_supabase):
+    assert app_module.asset_tag_exists("TENANT-TWO-ASSET") is True
+    assert mixed_tenant_supabase.operations[-1]["filters"] == [
+        ("eq", "asset_tag_number", "TENANT-TWO-ASSET"),
+    ]
+
+
+def test_next_asset_tag_suggestion_uses_global_tag_set(app_module, mixed_tenant_supabase):
+    mixed_tenant_supabase.rows["assets"] = [
+        {"asset_id": 1, "asset_tag_number": "HELP-UKR-0007", "tenant_id": TENANT_ONE},
+        {"asset_id": 2, "asset_tag_number": "HELP-UKR-0009", "tenant_id": TENANT_TWO},
+    ]
+
+    assert app_module.suggest_next_asset_tag("standard") == "HELP-UKR-0010"
+    assert all(
+        filter_row[1] != "tenant_id"
+        for operation in mixed_tenant_supabase.operations
+        for filter_row in operation["filters"]
+    )
+
+
 @pytest.mark.parametrize("tenant_id", [None, "not-a-uuid"])
 def test_authenticated_reads_fail_closed_for_missing_or_malformed_tenant(app_module, mixed_tenant_supabase, tenant_id):
     request = authenticated_request(TENANT_ONE)
@@ -401,7 +437,6 @@ def test_authenticated_reads_fail_closed_for_missing_or_malformed_tenant(app_mod
             "classification_name",
             request=request,
         ),
-        lambda app, request: app.get_asset_tag_standards(request=request),
     ],
 )
 def test_read_fallbacks_do_not_swallow_missing_tenant_context(
