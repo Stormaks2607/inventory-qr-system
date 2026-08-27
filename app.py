@@ -840,15 +840,15 @@ def build_transfer_audit_summary(transfer: dict, project_rows: Optional[list[dic
     return f"{asset_label} transfer log update: holder/project unchanged"
 
 
-def backfill_audit_from_transfer_log(request: Optional[Request] = None) -> dict:
-    transfers = list_asset_transfer_records(request=request)
+def backfill_audit_from_transfer_log() -> dict:
+    transfers = list_asset_transfer_records()
     if not transfers:
         return {"created": 0, "available": 0}
 
-    assets_by_id = {row.get("asset_id"): row for row in list_asset_records(request=request)}
-    people_by_id = {row.get("person_id"): row for row in list_people(request=request)}
+    assets_by_id = {row.get("asset_id"): row for row in list_asset_records()}
+    people_by_id = {row.get("person_id"): row for row in list_people()}
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
-    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids, request=request)
+    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
     created = 0
     updated = 0
 
@@ -1015,6 +1015,8 @@ def branding_matches_defaults(settings: dict) -> bool:
 def resolve_branding_for_request(request: Request) -> tuple[str, dict, str]:
     tenant_key = get_current_tenant_key(request)
     branding, branding_storage = load_branding_settings(tenant_key, request=request)
+    if get_current_tenant_id(request) != DEFAULT_TENANT_ID:
+        return tenant_key, branding, branding_storage
     if not branding_matches_defaults(branding):
         if branding_storage == "local" and save_branding_settings_to_supabase(tenant_key, branding):
             branding_storage = "supabase"
@@ -4805,9 +4807,10 @@ def find_existing_person(
     return None
 
 
-def get_next_person_id(request: Optional[Request] = None) -> int:
+def get_next_person_id() -> int:
     response = (
-        tenant_filter(supabase.table("persons").select("person_id"), request=request)
+        supabase.table("persons")
+        .select("person_id")
         .order("person_id", desc=True)
         .limit(1)
         .execute()
@@ -7459,7 +7462,7 @@ def admin_audit_backfill_transfer_log(request: Request):
         return redirect
 
     try:
-        result = backfill_audit_from_transfer_log(request=request)
+        result = backfill_audit_from_transfer_log()
     except Exception as error:
         set_flash(request, "error", f"Transfer log backfill could not be completed: {error}")
         return RedirectResponse(url="/admin", status_code=303)
@@ -8694,7 +8697,7 @@ def admin_person_create(
         if is_person_id_sequence_conflict(exc):
             retry_data = dict(insert_data)
             try:
-                retry_data["person_id"] = get_next_person_id(request=request)
+                retry_data["person_id"] = get_next_person_id()
                 response = supabase.table("persons").insert(retry_data).execute()
             except Exception as retry_exc:
                 exc = retry_exc

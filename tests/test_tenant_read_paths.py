@@ -309,14 +309,48 @@ def test_non_default_tenant_branding_does_not_fall_back_to_tenant_one_file(
         "load_branding_settings_from_file",
         lambda tenant_key: pytest.fail("Tenant #2 must not read the Tenant #1 branding file"),
     )
-
-    settings, storage = app_module.load_branding_settings(
-        "default",
-        request=authenticated_request(TENANT_TWO),
+    monkeypatch.setattr(
+        app_module,
+        "save_branding_settings_to_supabase",
+        lambda tenant_key, settings: pytest.fail("Tenant #2 must not auto-migrate legacy branding"),
     )
+    request = authenticated_request(TENANT_TWO)
 
+    tenant_key, settings, storage = app_module.resolve_branding_for_request(request)
+
+    assert tenant_key == "default"
     assert settings == app_module.get_default_branding_settings()
     assert storage == "default"
+
+
+def test_tenant_one_branding_keeps_legacy_lookup_and_auto_migration(app_module, monkeypatch):
+    request = authenticated_request(TENANT_ONE)
+    request.session["admin_tenant_key"] = "default"
+    request.session["admin_username"] = "legacy-admin"
+    legacy_branding = {**app_module.get_default_branding_settings(), "company_name": "Legacy Tenant One"}
+    loads = []
+    saves = []
+
+    def fake_load(tenant_key, request=None):
+        loads.append((tenant_key, request))
+        if tenant_key == "legacy-admin":
+            return legacy_branding, "local"
+        return app_module.get_default_branding_settings(), "local"
+
+    monkeypatch.setattr(app_module, "load_branding_settings", fake_load)
+    monkeypatch.setattr(
+        app_module,
+        "save_branding_settings_to_supabase",
+        lambda tenant_key, settings: saves.append((tenant_key, settings)) or True,
+    )
+
+    tenant_key, settings, storage = app_module.resolve_branding_for_request(request)
+
+    assert tenant_key == "default"
+    assert settings["company_name"] == "Legacy Tenant One"
+    assert storage == "supabase"
+    assert [tenant_key for tenant_key, _ in loads] == ["default", "legacy-admin"]
+    assert saves == [("default", legacy_branding)]
 
 
 def test_audit_log_and_recent_changes_are_tenant_scoped(app_module, mixed_tenant_supabase):
@@ -328,6 +362,47 @@ def test_audit_log_and_recent_changes_are_tenant_scoped(app_module, mixed_tenant
     assert [row["entity_label"] for row in recent] == ["TENANT-ONE-ASSET"]
     assert [row["entity_label"] for row in full_log["rows"]] == ["TENANT-ONE-ASSET"]
     assert full_log["total_matches"] == 1
+
+
+def test_audit_backfill_keeps_baseline_non_request_bound_behavior(app_module, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        app_module,
+        "list_asset_transfer_records",
+        lambda: calls.append("transfers") or [{"transfer_id": 61, "asset_id": 1}],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "list_asset_records",
+        lambda: calls.append("assets") or [],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "list_people",
+        lambda: calls.append("people") or [],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "get_asset_transfer_project_rows",
+        lambda transfer_ids: calls.append(("projects", transfer_ids)) or {},
+    )
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: True)
+
+    result = app_module.backfill_audit_from_transfer_log()
+
+    assert result == {"created": 1, "updated": 0, "available": 1}
+    assert calls == ["transfers", "assets", "people", ("projects", [61])]
+
+    route_calls = []
+    monkeypatch.setattr(
+        app_module,
+        "backfill_audit_from_transfer_log",
+        lambda: route_calls.append("backfill") or {"created": 0, "updated": 0, "available": 0},
+    )
+    response = app_module.admin_audit_backfill_transfer_log(authenticated_request(TENANT_TWO))
+
+    assert response.status_code == 303
+    assert route_calls == ["backfill"]
 
 
 def test_dashboard_and_reports_forward_the_trusted_request(app_module, monkeypatch):
@@ -388,6 +463,21 @@ def test_numeric_id_allocation_uses_global_maximum(app_module, mixed_tenant_supa
 
     assert app_module.get_current_tenant_id(tenant_two_request) == TENANT_TWO
     assert app_module.get_next_numeric_id("projects", "project_id") == 8
+    assert mixed_tenant_supabase.operations[-1]["filters"] == []
+
+
+def test_person_id_allocation_uses_global_maximum(app_module, mixed_tenant_supabase):
+    mixed_tenant_supabase.rows["persons"] = [
+        {"person_id": 1, "tenant_id": TENANT_ONE},
+        {"person_id": 2, "tenant_id": TENANT_ONE},
+        {"person_id": 7, "tenant_id": TENANT_ONE},
+        {"person_id": 3, "tenant_id": TENANT_TWO},
+        {"person_id": 4, "tenant_id": TENANT_TWO},
+    ]
+    tenant_two_request = authenticated_request(TENANT_TWO)
+
+    assert app_module.get_current_tenant_id(tenant_two_request) == TENANT_TWO
+    assert app_module.get_next_person_id() == 8
     assert mixed_tenant_supabase.operations[-1]["filters"] == []
 
 
