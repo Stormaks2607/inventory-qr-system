@@ -94,8 +94,8 @@
         {% endif %}
 
         <div class="toolbar" style="margin-top: 16px;">
-            <a class="btn secondary" href="/view/{{ asset.asset_tag_number }}">Public card</a>
-            <a class="btn secondary" href="/asset/{{ asset.asset_tag_number }}">Raw JSON</a>
+            <a class="btn secondary" href="{{ public_asset_url }}">Public card</a>
+            <a class="btn secondary" href="{{ public_asset_json_url }}">Raw JSON</a>
         </div>
     </article>
 </section>

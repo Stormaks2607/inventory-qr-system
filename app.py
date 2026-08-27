@@ -10,7 +10,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -212,6 +212,54 @@ def add_tenant_id_to_many(payloads: list[dict], request: Optional[Request] = Non
 
 def tenant_filter(query, request: Optional[Request] = None):
     return query.eq("tenant_id", get_current_tenant_id(request))
+
+
+def tenant_read_filter(
+    query,
+    request: Optional[Request] = None,
+    tenant_id: Optional[str] = None,
+):
+    if tenant_id is not None:
+        return query.eq("tenant_id", normalize_tenant_uuid(tenant_id))
+    return tenant_filter(query, request=request)
+
+
+def resolve_public_tenant_id(tenant_public_id: str) -> Optional[str]:
+    try:
+        tenant_id = normalize_tenant_uuid(tenant_public_id)
+    except TenantContextError:
+        return None
+
+    try:
+        response = (
+            supabase.table("tenants")
+            .select("tenant_id,status")
+            .eq("tenant_id", tenant_id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+
+    if not response.data:
+        return None
+    try:
+        resolved_id = normalize_tenant_uuid(response.data[0].get("tenant_id"))
+    except TenantContextError:
+        return None
+    return resolved_id if resolved_id == tenant_id else None
+
+
+def build_tenant_public_asset_path(tenant_id: str, asset_tag: str, *, view: bool = True) -> str:
+    normalized_tenant_id = normalize_tenant_uuid(tenant_id)
+    endpoint = "view" if view else "asset"
+    encoded_tag = quote((asset_tag or "").strip(), safe="")
+    return f"/t/{normalized_tenant_id}/{endpoint}/{encoded_tag}"
+
+
+def build_tenant_public_asset_url(tenant_id: str, asset_tag: str, *, view: bool = True) -> str:
+    return f"{PUBLIC_BASE_URL}{build_tenant_public_asset_path(tenant_id, asset_tag, view=view)}"
 
 
 def assert_record_tenant(record: dict, request: Optional[Request] = None, label: str = "Record") -> None:
@@ -3620,9 +3668,18 @@ def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_
     }
 
 
-def get_current_assignment(asset_id: int, request: Optional[Request] = None) -> Optional[dict]:
+def get_current_assignment(
+    asset_id: int,
+    request: Optional[Request] = None,
+    *,
+    tenant_id: Optional[str] = None,
+) -> Optional[dict]:
     assignment_response = (
-        tenant_filter(supabase.table("asset_assignments").select("*"), request=request)
+        tenant_read_filter(
+            supabase.table("asset_assignments").select("*"),
+            request=request,
+            tenant_id=tenant_id,
+        )
         .eq("asset_id", asset_id)
         .is_("return_date", "null")
         .order("assignment_date", desc=True)
@@ -3640,7 +3697,11 @@ def get_current_assignment(asset_id: int, request: Optional[Request] = None) -> 
     person_id = assignment.get("person_id")
     if person_id:
         person_response = (
-            tenant_filter(supabase.table("persons").select("*"), request=request)
+            tenant_read_filter(
+                supabase.table("persons").select("*"),
+                request=request,
+                tenant_id=tenant_id,
+            )
             .eq("person_id", person_id)
             .limit(1)
             .execute()
@@ -3651,7 +3712,11 @@ def get_current_assignment(asset_id: int, request: Optional[Request] = None) -> 
     location_id = assignment.get("location_id")
     if location_id:
         location_response = (
-            tenant_filter(supabase.table("locations").select("*"), request=request)
+            tenant_read_filter(
+                supabase.table("locations").select("*"),
+                request=request,
+                tenant_id=tenant_id,
+            )
             .eq("location_id", location_id)
             .limit(1)
             .execute()
@@ -3747,9 +3812,18 @@ def enrich_assignment(assignment: dict, request: Optional[Request] = None) -> di
     }
 
 
-def get_asset_by_tag(asset_tag: str, request: Optional[Request] = None) -> Optional[dict]:
+def get_asset_by_tag(
+    asset_tag: str,
+    request: Optional[Request] = None,
+    *,
+    tenant_id: Optional[str] = None,
+) -> Optional[dict]:
     query = (
-        tenant_filter(supabase.table("assets").select("*"), request=request)
+        tenant_read_filter(
+            supabase.table("assets").select("*"),
+            request=request,
+            tenant_id=tenant_id,
+        )
         .eq("asset_tag_number", asset_tag)
         .limit(1)
     )
@@ -3760,7 +3834,11 @@ def get_asset_by_tag(asset_tag: str, request: Optional[Request] = None) -> Optio
     asset = response.data[0]
     asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
     asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
-    asset["current_assignment"] = get_current_assignment(asset["asset_id"], request=request)
+    asset["current_assignment"] = get_current_assignment(
+        asset["asset_id"],
+        request=request,
+        tenant_id=tenant_id,
+    )
     return asset
 
 
@@ -7102,6 +7180,34 @@ def view_asset(request: Request, asset_tag: str):
     )
 
 
+@app.get("/t/{tenant_public_id}/asset/{asset_tag}")
+def read_tenant_asset(tenant_public_id: str, asset_tag: str):
+    tenant_id = resolve_public_tenant_id(tenant_public_id)
+    if not tenant_id:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    asset = get_asset_by_tag(asset_tag.strip(), tenant_id=tenant_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return asset
+
+
+@app.get("/t/{tenant_public_id}/view/{asset_tag}", response_class=HTMLResponse)
+def view_tenant_asset(request: Request, tenant_public_id: str, asset_tag: str):
+    tenant_id = resolve_public_tenant_id(tenant_public_id)
+    if not tenant_id:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    asset = get_asset_by_tag(asset_tag.strip(), tenant_id=tenant_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="asset.html",
+        context={"asset": asset},
+    )
+
+
 @app.get("/miniapp", response_class=HTMLResponse)
 def miniapp(request: Request):
     return templates.TemplateResponse(
@@ -9498,6 +9604,7 @@ def admin_asset_detail(request: Request, asset_id: int):
     assert_record_tenant(asset, request=request, label="Asset")
 
     assignment_history = get_assignment_history(asset_id, request=request)
+    tenant_id = get_current_tenant_id(request)
 
     return templates.TemplateResponse(
         request=request,
@@ -9509,6 +9616,15 @@ def admin_asset_detail(request: Request, asset_id: int):
             "active_page": "assets",
             "page_title": f"Asset {asset.get('asset_tag_number')}",
             "admin_username": request.session.get("admin_username"),
+            "public_asset_url": build_tenant_public_asset_url(
+                tenant_id,
+                asset.get("asset_tag_number"),
+            ),
+            "public_asset_json_url": build_tenant_public_asset_url(
+                tenant_id,
+                asset.get("asset_tag_number"),
+                view=False,
+            ),
             "usage_type_options": ASSET_USAGE_TYPE_OPTIONS,
             **get_assignment_form_context(asset, request=request),
             **get_asset_project_form_context(asset_id, request=request),
