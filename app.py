@@ -49,6 +49,7 @@ def normalize_audit_limit(value, default: int = 5) -> int:
 SUPABASE_URL = clean_env_value("SUPABASE_URL")
 SUPABASE_KEY = clean_env_value("SUPABASE_KEY")
 BOT_TOKEN = clean_env_value("BOT_TOKEN")
+TELEGRAM_WEBHOOK_SECRET = clean_env_value("TELEGRAM_WEBHOOK_SECRET")
 PUBLIC_BASE_URL = get_public_base_url()
 DEFAULT_TENANT_ID = resolve_tenant_context().tenant_id
 TENANT_SESSION_KEY = "tenant_id"
@@ -3755,14 +3756,22 @@ def get_current_assignment(
     }
 
 
-def enrich_assignment(assignment: dict, request: Optional[Request] = None) -> dict:
+def enrich_assignment(
+    assignment: dict,
+    request: Optional[Request] = None,
+    tenant_id: Optional[str] = None,
+) -> dict:
     person = None
     location = None
 
     person_id = assignment.get("person_id")
     if person_id:
         person_response = (
-            tenant_filter(supabase.table("persons").select("*"), request=request)
+            tenant_read_filter(
+                supabase.table("persons").select("*"),
+                request=request,
+                tenant_id=tenant_id,
+            )
             .eq("person_id", person_id)
             .limit(1)
             .execute()
@@ -3773,7 +3782,11 @@ def enrich_assignment(assignment: dict, request: Optional[Request] = None) -> di
     location_id = assignment.get("location_id")
     if location_id:
         location_response = (
-            tenant_filter(supabase.table("locations").select("*"), request=request)
+            tenant_read_filter(
+                supabase.table("locations").select("*"),
+                request=request,
+                tenant_id=tenant_id,
+            )
             .eq("location_id", location_id)
             .limit(1)
             .execute()
@@ -4370,9 +4383,17 @@ def get_person_status_label(person: dict) -> str:
     return "Active" if is_person_active(person) else "Inactive"
 
 
-def get_person_by_id(person_id: int, request: Optional[Request] = None) -> Optional[dict]:
+def get_person_by_id(
+    person_id: int,
+    request: Optional[Request] = None,
+    tenant_id: Optional[str] = None,
+) -> Optional[dict]:
     response = (
-        tenant_filter(supabase.table("persons").select("*"), request=request)
+        tenant_read_filter(
+            supabase.table("persons").select("*"),
+            request=request,
+            tenant_id=tenant_id,
+        )
         .eq("person_id", person_id)
         .limit(1)
         .execute()
@@ -6201,9 +6222,14 @@ def search_people_with_assets(
 def get_assets_for_person(
     person_id: int,
     request: Optional[Request] = None,
+    tenant_id: Optional[str] = None,
 ) -> list[dict]:
     assignments_response = (
-        tenant_filter(supabase.table("asset_assignments").select("*"), request=request)
+        tenant_read_filter(
+            supabase.table("asset_assignments").select("*"),
+            request=request,
+            tenant_id=tenant_id,
+        )
         .eq("person_id", person_id)
         .is_("return_date", "null")
         .execute()
@@ -6219,7 +6245,11 @@ def get_assets_for_person(
     }
     asset_ids = list(assignments_by_asset_id.keys())
     assets_response = (
-        tenant_filter(supabase.table("assets").select("*"), request=request)
+        tenant_read_filter(
+            supabase.table("assets").select("*"),
+            request=request,
+            tenant_id=tenant_id,
+        )
         .in_("asset_id", asset_ids)
         .execute()
     )
@@ -6229,7 +6259,11 @@ def get_assets_for_person(
         asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
         asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
         assignment = assignments_by_asset_id.get(asset.get("asset_id")) or {}
-        asset["current_assignment"] = enrich_assignment(assignment, request=request)
+        asset["current_assignment"] = enrich_assignment(
+            assignment,
+            request=request,
+            tenant_id=tenant_id,
+        )
         asset["effective_status"] = get_effective_status(asset)
 
     assets.sort(key=lambda item: item.get("asset_tag_number") or "")
@@ -6419,17 +6453,49 @@ def get_person_phone_values(person: dict) -> list[str]:
     ]
 
 
+def get_person_tenant_id(person: Optional[dict], *, allow_legacy_default: bool = False) -> Optional[str]:
+    if not person:
+        return None
+    raw_tenant_id = person.get("tenant_id")
+    if not raw_tenant_id:
+        return DEFAULT_TENANT_ID if allow_legacy_default else None
+    try:
+        return normalize_tenant_uuid(raw_tenant_id)
+    except TenantContextError:
+        return None
+
+
+def get_active_telegram_person_tenant_id(
+    person: Optional[dict],
+    *,
+    allow_legacy_default: bool = False,
+) -> Optional[str]:
+    tenant_id = get_person_tenant_id(person, allow_legacy_default=allow_legacy_default)
+    if not tenant_id:
+        return None
+    return resolve_public_tenant_id(tenant_id)
+
+
 def find_person_by_phone(phone_number: str) -> Optional[dict]:
     normalized_phone = normalize_phone_number(phone_number)
     if not normalized_phone:
         return None
 
-    for person in list_people():
+    try:
+        response = supabase.table("persons").select("*").execute()
+    except Exception:
+        return None
+
+    matches = []
+    for person in response.data or []:
         for value in get_person_phone_values(person):
             candidate = normalize_phone_number(value)
             if candidate and candidate == normalized_phone:
-                return person
-    return None
+                matches.append(person)
+                break
+    if len(matches) != 1:
+        return None
+    return matches[0] if get_active_telegram_person_tenant_id(matches[0]) else None
 
 
 def find_person_by_telegram_user_id(telegram_user_id) -> Optional[dict]:
@@ -6438,18 +6504,27 @@ def find_person_by_telegram_user_id(telegram_user_id) -> Optional[dict]:
     telegram_user_id = str(telegram_user_id)
     try:
         response = (
-            tenant_filter(supabase.table("persons").select("*"))
+            supabase.table("persons").select("*")
             .eq("messenger_type", "telegram")
             .eq("messenger_id", telegram_user_id)
-            .limit(1)
+            .limit(2)
             .execute()
         )
     except Exception:
         return None
-    return (response.data or [None])[0]
+    rows = response.data or []
+    if len(rows) != 1:
+        return None
+    return rows[0] if get_active_telegram_person_tenant_id(rows[0]) else None
 
 
-def save_person_telegram_identity(person_id: int, telegram_user: dict, phone_number: Optional[str] = None) -> None:
+def save_person_telegram_identity(
+    person_id: int,
+    telegram_user: dict,
+    phone_number: Optional[str] = None,
+    *,
+    tenant_id: str,
+) -> bool:
     payload = {
         "messenger_type": "telegram",
         "messenger_id": str(telegram_user.get("id")),
@@ -6460,21 +6535,40 @@ def save_person_telegram_identity(person_id: int, telegram_user: dict, phone_num
     if phone_number:
         payload["mobile_phone"] = phone_number
     try:
-        tenant_filter(supabase.table("persons").update(payload)).eq("person_id", person_id).execute()
+        response = (
+            tenant_read_filter(
+                supabase.table("persons").update(payload),
+                tenant_id=tenant_id,
+            )
+            .eq("person_id", person_id)
+            .execute()
+        )
     except Exception:
-        return
+        return False
+    return bool(response.data)
 
 
-def get_authorized_telegram_person(message: dict) -> Optional[dict]:
+def get_authorized_telegram_person(
+    message: dict,
+    *,
+    trusted_transport: bool = False,
+) -> Optional[dict]:
     telegram_user = message.get("from") or {}
     person = find_person_by_telegram_user_id(telegram_user.get("id"))
-    if person and is_person_active(person):
+    tenant_id = get_active_telegram_person_tenant_id(person)
+    if (
+        person
+        and tenant_id
+        and is_person_active(person)
+        and (trusted_transport or tenant_id == DEFAULT_TENANT_ID)
+    ):
         return person
     return None
 
 
 def format_person_assets_message(person: dict) -> str:
-    assets = get_assets_for_person(person["person_id"])
+    tenant_id = get_active_telegram_person_tenant_id(person)
+    assets = get_assets_for_person(person["person_id"], tenant_id=tenant_id) if tenant_id else []
     display_name = get_person_display_name(person)
     if not assets:
         return f"{display_name}, no active assets are currently assigned to you."
@@ -6504,10 +6598,14 @@ def get_telegram_asset_list_serializer() -> URLSafeSerializer:
 
 
 def create_telegram_asset_list_token(person: dict) -> str:
+    tenant_id = get_active_telegram_person_tenant_id(person)
+    if not tenant_id:
+        raise ValueError("Telegram person has no active tenant mapping.")
     return get_telegram_asset_list_serializer().dumps(
         {
             "person_id": person.get("person_id"),
             "messenger_id": person.get("messenger_id"),
+            "tenant_id": tenant_id,
         }
     )
 
@@ -6520,8 +6618,21 @@ def load_telegram_asset_list_person(token: str) -> Optional[dict]:
     person_id = data.get("person_id")
     if not person_id:
         return None
-    person = get_person_by_id(int(person_id))
+    raw_tenant_id = data.get("tenant_id")
+    try:
+        tenant_id = normalize_tenant_uuid(raw_tenant_id or DEFAULT_TENANT_ID)
+    except TenantContextError:
+        return None
+    if resolve_public_tenant_id(tenant_id) != tenant_id:
+        return None
+    person = get_person_by_id(int(person_id), tenant_id=tenant_id)
     if not person or not is_person_active(person):
+        return None
+    person_tenant_id = get_person_tenant_id(
+        person,
+        allow_legacy_default=not raw_tenant_id,
+    )
+    if person_tenant_id != tenant_id:
         return None
     expected_messenger_id = data.get("messenger_id")
     if expected_messenger_id and str(person.get("messenger_id") or "") != str(expected_messenger_id):
@@ -6532,8 +6643,13 @@ def load_telegram_asset_list_person(token: str) -> Optional[dict]:
 def split_person_assets_by_usage(
     person: dict,
     request: Optional[Request] = None,
+    tenant_id: Optional[str] = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    assigned_assets = get_assets_for_person(person["person_id"], request=request)
+    assigned_assets = get_assets_for_person(
+        person["person_id"],
+        request=request,
+        tenant_id=tenant_id,
+    )
     assigned_standard_assets = [
         asset
         for asset in assigned_assets
@@ -7078,6 +7194,42 @@ def get_telegram_asset_list_url(person: dict) -> str:
     return f"{PUBLIC_BASE_URL}/telegram/assets/{token}"
 
 
+def resolve_telegram_branding(
+    request: Request,
+    tenant_id: str,
+) -> tuple[str, dict, str]:
+    if tenant_id == DEFAULT_TENANT_ID:
+        return resolve_branding_for_request(request)
+
+    try:
+        response = (
+            tenant_read_filter(
+                supabase.table(BRANDING_SUPABASE_TABLE).select("*"),
+                tenant_id=tenant_id,
+            )
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        response = None
+    rows = response.data if response is not None else []
+    if not rows:
+        return DEFAULT_BRANDING_TENANT_KEY, get_default_branding_settings(), "default"
+    row = rows[0]
+    return (
+        sanitize_tenant_key(row.get("tenant_key") or DEFAULT_BRANDING_TENANT_KEY),
+        normalize_branding_settings(row),
+        "supabase",
+    )
+
+
+def is_telegram_webhook_request_trusted(request: Request) -> bool:
+    if not TELEGRAM_WEBHOOK_SECRET:
+        return False
+    supplied_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") or ""
+    return secrets.compare_digest(supplied_secret, TELEGRAM_WEBHOOK_SECRET)
+
+
 def send_telegram_auth_prompt(chat_id: int) -> None:
     send_telegram_message(
         chat_id,
@@ -7222,12 +7374,18 @@ def telegram_person_asset_list(request: Request, token: str):
     person = load_telegram_asset_list_person(token)
     if not person:
         raise HTTPException(status_code=404, detail="Asset list not found")
+    tenant_id = get_active_telegram_person_tenant_id(
+        person,
+        allow_legacy_default=True,
+    )
+    if not tenant_id:
+        raise HTTPException(status_code=404, detail="Asset list not found")
 
     assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(
         person,
-        request=request,
+        tenant_id=tenant_id,
     )
-    _, branding, branding_storage = resolve_branding_for_request(request)
+    _, branding, branding_storage = resolve_telegram_branding(request, tenant_id)
 
     return templates.TemplateResponse(
         request=request,
@@ -7254,12 +7412,18 @@ def telegram_person_asset_list_pdf(request: Request, token: str):
     person = load_telegram_asset_list_person(token)
     if not person:
         raise HTTPException(status_code=404, detail="Asset list not found")
+    tenant_id = get_active_telegram_person_tenant_id(
+        person,
+        allow_legacy_default=True,
+    )
+    if not tenant_id:
+        raise HTTPException(status_code=404, detail="Asset list not found")
 
     assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(
         person,
-        request=request,
+        tenant_id=tenant_id,
     )
-    _, branding, _ = resolve_branding_for_request(request)
+    _, branding, _ = resolve_telegram_branding(request, tenant_id)
     pdf_bytes = build_telegram_asset_report_pdf(
         person,
         assigned_assets,
@@ -10498,8 +10662,12 @@ def admin_sync_export(request: Request):
 
 
 @app.post("/webhook")
-async def telegram_webhook(update: dict = Body(...)):
+async def telegram_webhook(request: Request, update: dict = Body(...)):
     try:
+        trusted_transport = is_telegram_webhook_request_trusted(request)
+        if TELEGRAM_WEBHOOK_SECRET and not trusted_transport:
+            raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
+
         print("UPDATE:", update)
 
         if "message" not in update:
@@ -10536,7 +10704,20 @@ async def telegram_webhook(update: dict = Body(...)):
                 )
                 return {"ok": True}
 
-            save_person_telegram_identity(person["person_id"], telegram_user, contact.get("phone_number"))
+            tenant_id = get_active_telegram_person_tenant_id(person)
+            if not tenant_id or (tenant_id != DEFAULT_TENANT_ID and not trusted_transport):
+                send_telegram_message(
+                    chat_id,
+                    "Telegram authorization is not available for this organization. Please contact the administrator.",
+                    reply_markup=AUTH_KEYBOARD,
+                )
+                return {"ok": True}
+            save_person_telegram_identity(
+                person["person_id"],
+                telegram_user,
+                contact.get("phone_number"),
+                tenant_id=tenant_id,
+            )
             send_telegram_message(
                 chat_id,
                 f"Authorization successful. Welcome, {get_person_display_name(person)}.",
@@ -10555,7 +10736,10 @@ async def telegram_webhook(update: dict = Body(...)):
             text = message["text"].strip()
 
         if text == "/start":
-            person = get_authorized_telegram_person(message)
+            person = get_authorized_telegram_person(
+                message,
+                trusted_transport=trusted_transport,
+            )
             if person:
                 send_telegram_message(
                     chat_id,
@@ -10570,7 +10754,10 @@ async def telegram_webhook(update: dict = Body(...)):
             send_telegram_auth_prompt(chat_id)
             return {"ok": True}
 
-        person = get_authorized_telegram_person(message)
+        person = get_authorized_telegram_person(
+            message,
+            trusted_transport=trusted_transport,
+        )
 
         if text == "Enter code":
             if not person:
@@ -10607,7 +10794,8 @@ async def telegram_webhook(update: dict = Body(...)):
             return {"ok": True}
 
         try:
-            asset = get_asset_by_tag(text)
+            tenant_id = get_active_telegram_person_tenant_id(person)
+            asset = get_asset_by_tag(text, tenant_id=tenant_id) if tenant_id else None
         except DatabaseConnectionError:
             send_telegram_message(
                 chat_id,
@@ -10620,7 +10808,7 @@ async def telegram_webhook(update: dict = Body(...)):
             return {"ok": True}
 
         message_text = format_asset_message(asset)
-        url = f"{PUBLIC_BASE_URL}/view/{text}"
+        url = build_tenant_public_asset_url(tenant_id, text)
 
         send_telegram_message(
             chat_id,
@@ -10634,6 +10822,8 @@ async def telegram_webhook(update: dict = Body(...)):
 
         return {"ok": True}
 
+    except HTTPException:
+        raise
     except Exception as exc:
         print("WEBHOOK ERROR:", exc)
         return {"ok": False, "error": str(exc)}

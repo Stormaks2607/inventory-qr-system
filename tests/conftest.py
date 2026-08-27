@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 os.environ["INVENTORY_TEST_MODE"] = "1"
 os.environ["SUPABASE_URL"] = ""
 os.environ["SUPABASE_KEY"] = ""
+os.environ["TELEGRAM_WEBHOOK_SECRET"] = ""
 os.environ.pop("PUBLIC_BASE_URL", None)
 os.environ.pop("INTERNAL_API_BASE_URL", None)
 
