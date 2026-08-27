@@ -400,18 +400,22 @@ def audit_log_field_changes(
     return logged
 
 
-def format_project_audit_value(field_name: str, value) -> str:
+def format_project_audit_value(
+    field_name: str,
+    value,
+    request: Optional[Request] = None,
+) -> str:
     if value in (None, ""):
         return "-"
     if field_name == "project_id":
         try:
-            project = get_project_by_id(int(value))
+            project = get_project_by_id(int(value), request=request)
         except (TypeError, ValueError):
             project = None
         return project.get("project_number") if project else "-"
     if field_name == "donor_id":
         try:
-            donor = get_donor_by_id(int(value))
+            donor = get_donor_by_id(int(value), request=request)
         except (TypeError, ValueError):
             donor = None
         return donor.get("donor_name") if donor else "-"
@@ -433,8 +437,8 @@ def audit_log_project_field_changes(
         new_value = new_record.get(field_name)
         if normalize_audit_compare_value(old_value) == normalize_audit_compare_value(new_value):
             continue
-        old_display = format_project_audit_value(field_name, old_value)
-        new_display = format_project_audit_value(field_name, new_value)
+        old_display = format_project_audit_value(field_name, old_value, request=request)
+        new_display = format_project_audit_value(field_name, new_value, request=request)
         audit_log_event(
             entity_type="Project",
             entity_id=entity_id,
@@ -483,18 +487,22 @@ def build_assignment_field_changes(old_assignment: dict, new_assignment: dict) -
     return changes
 
 
-def format_assignment_change_value(field_name: str, value) -> str:
+def format_assignment_change_value(
+    field_name: str,
+    value,
+    request: Optional[Request] = None,
+) -> str:
     if value in (None, ""):
         return "-"
     if field_name == "person_id":
         try:
-            person = get_person_by_id(int(value))
+            person = get_person_by_id(int(value), request=request)
         except (TypeError, ValueError):
             person = None
         return get_person_display_name(person) if person else "-"
     if field_name == "location_id":
         try:
-            location = get_location_by_id(int(value))
+            location = get_location_by_id(int(value), request=request)
         except (TypeError, ValueError):
             location = None
         if not location:
@@ -510,8 +518,16 @@ def log_assignment_field_changes(
     event_date: Optional[str] = None,
 ) -> None:
     for change in assignment_changes:
-        old_display = format_assignment_change_value(change["field_name"], change["old_value"])
-        new_display = format_assignment_change_value(change["field_name"], change["new_value"])
+        old_display = format_assignment_change_value(
+            change["field_name"],
+            change["old_value"],
+            request=request,
+        )
+        new_display = format_assignment_change_value(
+            change["field_name"],
+            change["new_value"],
+            request=request,
+        )
         audit_log_event(
             entity_type="Assignment",
             entity_id=asset.get("asset_id"),
@@ -577,12 +593,11 @@ def merge_audit_candidate_rows(*batches: list[dict]) -> list[dict]:
     return merged
 
 
-def list_recent_audit_events(limit: int = 5) -> list[dict]:
+def list_recent_audit_events(limit: int = 5, request: Optional[Request] = None) -> list[dict]:
     limit = normalize_audit_limit(limit)
     try:
         event_date_response = (
-            supabase.table("audit_log")
-            .select("*")
+            tenant_filter(supabase.table("audit_log").select("*"), request=request)
             .not_.is_("event_date", "null")
             .order("event_date", desc=True, nullsfirst=False)
             .order("created_at", desc=True)
@@ -591,28 +606,30 @@ def list_recent_audit_events(limit: int = 5) -> list[dict]:
             .execute()
         )
         created_at_response = (
-            supabase.table("audit_log")
-            .select("*")
+            tenant_filter(supabase.table("audit_log").select("*"), request=request)
             .is_("event_date", "null")
             .order("created_at", desc=True)
             .order("audit_id", desc=True)
             .limit(limit)
             .execute()
         )
+    except TenantContextError:
+        raise
     except Exception as error:
         if isinstance(error, APIError):
             combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
             if "event_date" in combined:
                 try:
                     response = (
-                        supabase.table("audit_log")
-                        .select("*")
+                        tenant_filter(supabase.table("audit_log").select("*"), request=request)
                         .order("created_at", desc=True)
                         .limit(limit)
                         .execute()
                     )
                     rows = sorted(response.data or [], key=audit_event_sort_key, reverse=True)
                     return enrich_audit_rows(rows[:limit])
+                except TenantContextError:
+                    raise
                 except Exception:
                     return []
             else:
@@ -685,12 +702,18 @@ def audit_row_matches_query(row: dict, query: str) -> bool:
     return normalized_query in haystack
 
 
-def fetch_audit_log_candidates(entity_type: str = "", source: str = "", *, use_event_date: bool = True) -> list[dict]:
+def fetch_audit_log_candidates(
+    entity_type: str = "",
+    source: str = "",
+    *,
+    use_event_date: bool = True,
+    request: Optional[Request] = None,
+) -> list[dict]:
     rows: list[dict] = []
     offset = 0
 
     while len(rows) < AUDIT_LOG_MAX_ROWS:
-        query = supabase.table("audit_log").select("*")
+        query = tenant_filter(supabase.table("audit_log").select("*"), request=request)
         if entity_type:
             query = query.eq("entity_type", entity_type)
         if source:
@@ -717,18 +740,28 @@ def list_audit_log_events(
     source: str = "",
     page: int = 1,
     page_size: int = 100,
+    request: Optional[Request] = None,
 ) -> dict:
     page = max(page, 1)
     page_size = normalize_audit_page_size(page_size)
 
     try:
-        candidate_rows = fetch_audit_log_candidates(entity_type, source)
+        candidate_rows = fetch_audit_log_candidates(entity_type, source, request=request)
+    except TenantContextError:
+        raise
     except Exception as error:
         if isinstance(error, APIError):
             combined = " ".join(part for part in [error.message or "", error.details or ""] if part).lower()
             if "event_date" in combined:
                 try:
-                    candidate_rows = fetch_audit_log_candidates(entity_type, source, use_event_date=False)
+                    candidate_rows = fetch_audit_log_candidates(
+                        entity_type,
+                        source,
+                        use_event_date=False,
+                        request=request,
+                    )
+                except TenantContextError:
+                    raise
                 except Exception:
                     return {"rows": [], "page": page, "page_size": page_size, "has_next": False, "total_matches": 0, "page_count": 1}
             else:
@@ -759,14 +792,15 @@ def list_audit_log_events(
     }
 
 
-def list_audit_filter_values(field_name: str) -> list[str]:
+def list_audit_filter_values(field_name: str, request: Optional[Request] = None) -> list[str]:
     try:
         response = (
-            supabase.table("audit_log")
-            .select(field_name)
+            tenant_filter(supabase.table("audit_log").select(field_name), request=request)
             .limit(1000)
             .execute()
         )
+    except TenantContextError:
+        raise
     except Exception:
         return []
     values = {
@@ -806,15 +840,15 @@ def build_transfer_audit_summary(transfer: dict, project_rows: Optional[list[dic
     return f"{asset_label} transfer log update: holder/project unchanged"
 
 
-def backfill_audit_from_transfer_log() -> dict:
-    transfers = list_asset_transfer_records()
+def backfill_audit_from_transfer_log(request: Optional[Request] = None) -> dict:
+    transfers = list_asset_transfer_records(request=request)
     if not transfers:
         return {"created": 0, "available": 0}
 
-    assets_by_id = {row.get("asset_id"): row for row in list_asset_records()}
-    people_by_id = {row.get("person_id"): row for row in list_people()}
+    assets_by_id = {row.get("asset_id"): row for row in list_asset_records(request=request)}
+    people_by_id = {row.get("person_id"): row for row in list_people(request=request)}
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
-    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
+    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids, request=request)
     created = 0
     updated = 0
 
@@ -921,15 +955,22 @@ def ensure_branding_storage() -> None:
     os.makedirs(BRANDING_UPLOAD_DIR, exist_ok=True)
 
 
-def load_branding_settings_from_supabase(tenant_key: str) -> Optional[dict]:
+def load_branding_settings_from_supabase(
+    tenant_key: str,
+    request: Optional[Request] = None,
+) -> Optional[dict]:
     try:
         response = (
-            supabase.table(BRANDING_SUPABASE_TABLE)
-            .select("*")
+            tenant_filter(
+                supabase.table(BRANDING_SUPABASE_TABLE).select("*"),
+                request=request,
+            )
             .eq("tenant_key", tenant_key)
             .limit(1)
             .execute()
         )
+    except TenantContextError:
+        raise
     except Exception:
         return None
 
@@ -954,10 +995,15 @@ def load_branding_settings_from_file(tenant_key: str) -> dict:
     return normalize_branding_settings(settings)
 
 
-def load_branding_settings(tenant_key: str) -> tuple[dict, str]:
-    settings = load_branding_settings_from_supabase(tenant_key)
+def load_branding_settings(
+    tenant_key: str,
+    request: Optional[Request] = None,
+) -> tuple[dict, str]:
+    settings = load_branding_settings_from_supabase(tenant_key, request=request)
     if settings is not None:
         return settings, "supabase"
+    if request is not None and get_current_tenant_id(request) != DEFAULT_TENANT_ID:
+        return get_default_branding_settings(), "default"
     return load_branding_settings_from_file(tenant_key), "local"
 
 
@@ -968,7 +1014,7 @@ def branding_matches_defaults(settings: dict) -> bool:
 
 def resolve_branding_for_request(request: Request) -> tuple[str, dict, str]:
     tenant_key = get_current_tenant_key(request)
-    branding, branding_storage = load_branding_settings(tenant_key)
+    branding, branding_storage = load_branding_settings(tenant_key, request=request)
     if not branding_matches_defaults(branding):
         if branding_storage == "local" and save_branding_settings_to_supabase(tenant_key, branding):
             branding_storage = "supabase"
@@ -976,7 +1022,7 @@ def resolve_branding_for_request(request: Request) -> tuple[str, dict, str]:
 
     legacy_tenant_key = get_legacy_tenant_key(request)
     if legacy_tenant_key != tenant_key:
-        legacy_branding, legacy_storage = load_branding_settings(legacy_tenant_key)
+        legacy_branding, legacy_storage = load_branding_settings(legacy_tenant_key, request=request)
         if not branding_matches_defaults(legacy_branding):
             if save_branding_settings_to_supabase(tenant_key, legacy_branding):
                 legacy_storage = "supabase"
@@ -1862,12 +1908,12 @@ def load_excel_transfer_log_rows(file_path: str) -> list[dict]:
     return records
 
 
-def list_asset_records(batch_size: int = 1000) -> list[dict]:
+def list_asset_records(batch_size: int = 1000, request: Optional[Request] = None) -> list[dict]:
     rows: list[dict] = []
     start = 0
     while True:
         response = (
-            tenant_filter(supabase.table("assets").select("*"))
+            tenant_filter(supabase.table("assets").select("*"), request=request)
             .order("asset_tag_number")
             .range(start, start + batch_size - 1)
             .execute()
@@ -1880,12 +1926,12 @@ def list_asset_records(batch_size: int = 1000) -> list[dict]:
     return rows
 
 
-def list_current_assignment_records(batch_size: int = 1000) -> list[dict]:
+def list_current_assignment_records(batch_size: int = 1000, request: Optional[Request] = None) -> list[dict]:
     rows: list[dict] = []
     start = 0
     while True:
         response = (
-            tenant_filter(supabase.table("asset_assignments").select("*"))
+            tenant_filter(supabase.table("asset_assignments").select("*"), request=request)
             .is_("return_date", "null")
             .order("assignment_date", desc=True)
             .range(start, start + batch_size - 1)
@@ -1899,12 +1945,12 @@ def list_current_assignment_records(batch_size: int = 1000) -> list[dict]:
     return rows
 
 
-def list_asset_project_records(batch_size: int = 1000) -> list[dict]:
+def list_asset_project_records(batch_size: int = 1000, request: Optional[Request] = None) -> list[dict]:
     rows: list[dict] = []
     start = 0
     while True:
         response = (
-            tenant_filter(supabase.table("asset_projects").select("*"))
+            tenant_filter(supabase.table("asset_projects").select("*"), request=request)
             .order("is_primary", desc=True)
             .order("asset_project_id")
             .range(start, start + batch_size - 1)
@@ -1918,12 +1964,12 @@ def list_asset_project_records(batch_size: int = 1000) -> list[dict]:
     return rows
 
 
-def list_asset_payment_records(batch_size: int = 1000) -> list[dict]:
+def list_asset_payment_records(batch_size: int = 1000, request: Optional[Request] = None) -> list[dict]:
     rows: list[dict] = []
     start = 0
     while True:
         response = (
-            tenant_filter(supabase.table("asset_payments").select("*"))
+            tenant_filter(supabase.table("asset_payments").select("*"), request=request)
             .order("asset_id")
             .order("payment_date")
             .range(start, start + batch_size - 1)
@@ -1937,12 +1983,12 @@ def list_asset_payment_records(batch_size: int = 1000) -> list[dict]:
     return rows
 
 
-def list_asset_transfer_records(batch_size: int = 1000) -> list[dict]:
+def list_asset_transfer_records(batch_size: int = 1000, request: Optional[Request] = None) -> list[dict]:
     rows: list[dict] = []
     start = 0
     while True:
         response = (
-            tenant_filter(supabase.table("asset_transfers").select("*"))
+            tenant_filter(supabase.table("asset_transfers").select("*"), request=request)
             .order("asset_id")
             .order("transfer_date")
             .range(start, start + batch_size - 1)
@@ -2254,15 +2300,15 @@ def select_current_project(asset_projects: list[dict]) -> Optional[dict]:
     return asset_projects[0] if asset_projects else None
 
 
-def build_sync_context() -> dict:
-    people = list_people()
-    locations = list_locations()
-    projects = list_projects()
-    donors = list_donors()
-    assignments = list_current_assignment_records()
-    asset_projects = list_asset_project_records()
-    asset_payments = list_asset_payment_records()
-    asset_transfers = list_asset_transfer_records()
+def build_sync_context(request: Optional[Request] = None) -> dict:
+    people = list_people(request=request)
+    locations = list_locations(request=request)
+    projects = list_projects(request=request)
+    donors = list_donors(request=request)
+    assignments = list_current_assignment_records(request=request)
+    asset_projects = list_asset_project_records(request=request)
+    asset_payments = list_asset_payment_records(request=request)
+    asset_transfers = list_asset_transfer_records(request=request)
 
     people_by_id = {row.get("person_id"): row for row in people}
     locations_by_id = {row.get("location_id"): row for row in locations}
@@ -2408,8 +2454,13 @@ def build_transfer_log_preview(transfer_records: list[dict], current_by_tag: dic
     }
 
 
-def build_sync_preview(excel_records: list[dict], current_assets: list[dict], transfer_records: Optional[list[dict]] = None) -> dict:
-    sync_context = build_sync_context()
+def build_sync_preview(
+    excel_records: list[dict],
+    current_assets: list[dict],
+    transfer_records: Optional[list[dict]] = None,
+    request: Optional[Request] = None,
+) -> dict:
+    sync_context = build_sync_context(request=request)
     current_by_tag = {
         normalize_asset_tag(asset.get("asset_tag_number") or ""): asset
         for asset in current_assets
@@ -2553,14 +2604,19 @@ def build_sync_preview(excel_records: list[dict], current_assets: list[dict], tr
     }
 
 
-def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> int:
-    ensure_parent_tenant("assets", "asset_id", asset_id)
+def apply_sync_assignment(
+    asset_id: int,
+    record: dict,
+    sync_context: dict,
+    request: Optional[Request] = None,
+) -> int:
+    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
     excel_recipient = normalize_sync_string(record.get("recipient_name"))
     assignment_date = record.get("last_transfer_date") or datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
     actor = "Excel import"
 
     if not excel_recipient:
-        close_current_assignments(asset_id, assignment_date, actor)
+        close_current_assignments(asset_id, assignment_date, actor, request=request)
         return 1
 
     person = resolve_excel_person(record, sync_context["person_lookup"])
@@ -2570,7 +2626,11 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     location = resolve_excel_location(record, person, sync_context["location_lookup"])
     if not location:
         return 0
-    validate_assignment_parent_tenants(person.get("person_id"), location.get("location_id"))
+    validate_assignment_parent_tenants(
+        person.get("person_id"),
+        location.get("location_id"),
+        request=request,
+    )
     assignment_department = normalize_sync_string(record.get("department_name") or person.get("department"))
 
     existing = sync_context.get("assignment_by_asset_id", {}).get(asset_id) or {}
@@ -2589,7 +2649,7 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     if record.get("remarks"):
         notes_parts.append(f"Remarks: {record.get('remarks')}")
 
-    close_current_assignments(asset_id, assignment_date, actor)
+    close_current_assignments(asset_id, assignment_date, actor, request=request)
     supabase.table("asset_assignments").insert(
         add_tenant_id(
             add_assignment_actor_fields(
@@ -2606,14 +2666,20 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
                     assignment_department,
                 ),
                 actor,
-            )
+            ),
+            request=request,
         )
     ).execute()
     return 1
 
 
-def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
-    ensure_parent_tenant("assets", "asset_id", asset_id)
+def apply_sync_project(
+    asset_id: int,
+    record: dict,
+    sync_context: dict,
+    request: Optional[Request] = None,
+) -> int:
+    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
     purchased_allocations = get_excel_purchased_project_allocations(record)
     transferred_allocations = get_excel_transferred_project_allocations(record)
     if not purchased_allocations and not transferred_allocations:
@@ -2662,7 +2728,10 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
     reset_payload = {"is_current": False, "is_primary": False}
     if supports_purchase_origin:
         reset_payload["is_purchase_origin"] = False
-    tenant_filter(supabase.table("asset_projects").update(reset_payload)).eq("asset_id", asset_id).execute()
+    tenant_filter(
+        supabase.table("asset_projects").update(reset_payload),
+        request=request,
+    ).eq("asset_id", asset_id).execute()
 
     applied = 0
     has_transferred_project = bool(resolved_transferred)
@@ -2732,21 +2801,33 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
         existing = existing_by_key.get(payload_key)
 
         if existing:
-            tenant_filter(supabase.table("asset_projects").update(payload)).eq("asset_project_id", existing["asset_project_id"]).execute()
+            tenant_filter(
+                supabase.table("asset_projects").update(payload),
+                request=request,
+            ).eq("asset_project_id", existing["asset_project_id"]).execute()
         else:
-            supabase.table("asset_projects").insert(add_tenant_id({"asset_id": asset_id, **payload})).execute()
+            supabase.table("asset_projects").insert(
+                add_tenant_id({"asset_id": asset_id, **payload}, request=request)
+            ).execute()
         applied += 1
 
     return applied
 
 
-def apply_sync_payments(asset_id: int, record: dict) -> int:
+def apply_sync_payments(
+    asset_id: int,
+    record: dict,
+    request: Optional[Request] = None,
+) -> int:
     payments = get_excel_payment_records(record)
     if not payments:
         return 0
-    ensure_parent_tenant("assets", "asset_id", asset_id)
+    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
 
-    tenant_filter(supabase.table("asset_payments").delete()).eq("asset_id", asset_id).execute()
+    tenant_filter(
+        supabase.table("asset_payments").delete(),
+        request=request,
+    ).eq("asset_id", asset_id).execute()
     payloads = []
     for index, payment in enumerate(payments, start=1):
         payloads.append(
@@ -2761,11 +2842,18 @@ def apply_sync_payments(asset_id: int, record: dict) -> int:
             }
         )
 
-    supabase.table("asset_payments").insert(add_tenant_id_to_many(payloads)).execute()
+    supabase.table("asset_payments").insert(
+        add_tenant_id_to_many(payloads, request=request)
+    ).execute()
     return len(payloads)
 
 
-def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: dict) -> int:
+def apply_transfer_project_rows(
+    transfer_id: int,
+    record: dict,
+    sync_context: dict,
+    request: Optional[Request] = None,
+) -> int:
     payloads = []
     for direction, field_name in [("from", "from_project_raw"), ("to", "to_project_raw")]:
         for allocation in transfer_project_allocations(record.get(field_name)):
@@ -2784,17 +2872,30 @@ def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: di
     if not payloads:
         return 0
 
-    tenant_filter(supabase.table("asset_transfer_projects").delete()).eq("transfer_id", transfer_id).execute()
-    supabase.table("asset_transfer_projects").insert(add_tenant_id_to_many(payloads)).execute()
+    tenant_filter(
+        supabase.table("asset_transfer_projects").delete(),
+        request=request,
+    ).eq("transfer_id", transfer_id).execute()
+    supabase.table("asset_transfer_projects").insert(
+        add_tenant_id_to_many(payloads, request=request)
+    ).execute()
     return len(payloads)
 
 
-def apply_sync_transfer(record: dict, sync_context: dict) -> int:
+def apply_sync_transfer(
+    record: dict,
+    sync_context: dict,
+    request: Optional[Request] = None,
+) -> int:
     asset_id = record.get("asset_id")
     if not asset_id:
         return 0
-    ensure_parent_tenant("assets", "asset_id", asset_id)
-    validate_transfer_person_tenants(record.get("from_person_id"), record.get("to_person_id"))
+    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
+    validate_transfer_person_tenants(
+        record.get("from_person_id"),
+        record.get("to_person_id"),
+        request=request,
+    )
 
     payload = add_tenant_id({
         "asset_id": asset_id,
@@ -2813,7 +2914,7 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
         "to_project_raw": record.get("to_project_raw"),
         "asset_status": record.get("asset_status"),
         "asset_condition_description": record.get("asset_condition_description"),
-    })
+    }, request=request)
 
     signature = make_transfer_signature(asset_id, record)
     if signature in sync_context.get("transfer_signatures", set()):
@@ -2823,7 +2924,7 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
     transfer = (response.data or [{}])[0]
     transfer_id = transfer.get("transfer_id")
     if transfer_id:
-        apply_transfer_project_rows(transfer_id, record, sync_context)
+        apply_transfer_project_rows(transfer_id, record, sync_context, request=request)
         sync_context.setdefault("transfer_signatures", set()).add(signature)
         audit_log_event(
             entity_type="Transfer",
@@ -2838,11 +2939,12 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
             actor="Excel Transfer log",
             event_date=record.get("transfer_date"),
             event_key=f"asset_transfer:{transfer_id}",
+            request=request,
         )
     return 1
 
 
-def apply_sync_preview(preview: dict) -> dict:
+def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict:
     inserted = 0
     updated = 0
     assignment_updated = 0
@@ -2850,7 +2952,7 @@ def apply_sync_preview(preview: dict) -> dict:
     payment_updated = 0
     transfer_updated = 0
     skipped_relationships = 0
-    sync_context = build_sync_context()
+    sync_context = build_sync_context(request=request)
     asset_fields = {
         "usage_type",
         "asset_classification",
@@ -2870,7 +2972,7 @@ def apply_sync_preview(preview: dict) -> dict:
         insert_record = {field_name: record.get(field_name) for field_name in asset_fields}
         insert_record["asset_tag_number"] = record.get("asset_tag_number")
         insert_record["inventory_code"] = insert_record.get("asset_tag_number")
-        insert_record = add_tenant_id(insert_record)
+        insert_record = add_tenant_id(insert_record, request=request)
         insert_response = supabase.table("assets").insert(insert_record).execute()
         inserted_asset = (insert_response.data or [{}])[0]
         asset_id = inserted_asset.get("asset_id")
@@ -2883,15 +2985,26 @@ def apply_sync_preview(preview: dict) -> dict:
             summary=f"Created asset from Excel: {record.get('asset_tag_number')}",
             source="Excel import",
             actor="Excel import",
+            request=request,
         )
         if asset_id:
             if record.get("_has_recipient_column") and normalize_sync_string(record.get("recipient_name")):
-                assignment_updated += apply_sync_assignment(asset_id, record, sync_context)
+                assignment_updated += apply_sync_assignment(
+                    asset_id,
+                    record,
+                    sync_context,
+                    request=request,
+                )
             if record.get("_has_project_column") and (
                 get_excel_purchased_project_allocations(record) or get_excel_transferred_project_allocations(record)
             ):
-                project_updated += apply_sync_project(asset_id, record, sync_context)
-            payment_updated += apply_sync_payments(asset_id, record)
+                project_updated += apply_sync_project(
+                    asset_id,
+                    record,
+                    sync_context,
+                    request=request,
+                )
+            payment_updated += apply_sync_payments(asset_id, record, request=request)
 
     for item in preview.get("changed_records", []):
         asset_id = item.get("asset_id")
@@ -2904,8 +3017,11 @@ def apply_sync_preview(preview: dict) -> dict:
             if field_name in asset_fields
         }
         if update_data:
-            ensure_parent_tenant("assets", "asset_id", asset_id)
-            tenant_filter(supabase.table("assets").update(update_data)).eq("asset_id", asset_id).execute()
+            ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
+            tenant_filter(
+                supabase.table("assets").update(update_data),
+                request=request,
+            ).eq("asset_id", asset_id).execute()
             updated += 1
             audit_log_event(
                 entity_type="Asset",
@@ -2915,22 +3031,23 @@ def apply_sync_preview(preview: dict) -> dict:
                 summary=f"Excel updated fields: {', '.join(update_data.keys())}",
                 source="Excel import",
                 actor="Excel import",
+                request=request,
             )
         if "responsible_person" in item.get("changed_fields", []):
-            applied = apply_sync_assignment(asset_id, record, sync_context)
+            applied = apply_sync_assignment(asset_id, record, sync_context, request=request)
             assignment_updated += applied
             skipped_relationships += 0 if applied else 1
         if any(field_name in item.get("changed_fields", []) for field_name in ["project_number", "purchased_project_number", "transferred_project_number"]):
-            applied = apply_sync_project(asset_id, record, sync_context)
+            applied = apply_sync_project(asset_id, record, sync_context, request=request)
             project_updated += applied
             skipped_relationships += 0 if applied else 1
         if "purchase_date_raw" in item.get("changed_fields", []) or "remarks" in item.get("changed_fields", []):
-            applied = apply_sync_payments(asset_id, record)
+            applied = apply_sync_payments(asset_id, record, request=request)
             payment_updated += applied
             skipped_relationships += 0 if applied else 1
 
     for record in preview.get("transfer_log", {}).get("new_records", []):
-        applied = apply_sync_transfer(record, sync_context)
+        applied = apply_sync_transfer(record, sync_context, request=request)
         transfer_updated += applied
         skipped_relationships += 0 if applied else 1
 
@@ -3060,9 +3177,12 @@ def get_export_transfer_date(asset_projects: list[dict]) -> Optional[str]:
     return max(dates) if dates else None
 
 
-def build_database_excel_records(usage_type: Optional[str] = None) -> list[dict]:
-    assets = list_asset_records()
-    sync_context = build_sync_context()
+def build_database_excel_records(
+    usage_type: Optional[str] = None,
+    request: Optional[Request] = None,
+) -> list[dict]:
+    assets = list_asset_records(request=request)
+    sync_context = build_sync_context(request=request)
     records = []
 
     for asset in assets:
@@ -3206,15 +3326,15 @@ def build_asset_registration_transfer_records(
     return records
 
 
-def build_database_transfer_log_records() -> list[dict]:
-    transfers = list_asset_transfer_records()
-    assets_by_id = {row.get("asset_id"): row for row in list_asset_records()}
-    people = list_people()
-    projects = list_projects()
-    donors = list_donors()
-    assignments = list_current_assignment_records()
-    asset_projects = list_asset_project_records()
-    asset_payments = list_asset_payment_records()
+def build_database_transfer_log_records(request: Optional[Request] = None) -> list[dict]:
+    transfers = list_asset_transfer_records(request=request)
+    assets_by_id = {row.get("asset_id"): row for row in list_asset_records(request=request)}
+    people = list_people(request=request)
+    projects = list_projects(request=request)
+    donors = list_donors(request=request)
+    assignments = list_current_assignment_records(request=request)
+    asset_projects = list_asset_project_records(request=request)
+    asset_payments = list_asset_payment_records(request=request)
 
     people_by_id = {row.get("person_id"): row for row in people}
     projects_by_id = {row.get("project_id"): row for row in projects}
@@ -3461,7 +3581,7 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
     }
 
 
-def export_supabase_to_excel() -> dict:
+def export_supabase_to_excel(request: Optional[Request] = None) -> dict:
     ensure_sync_workbook_template()
 
     try:
@@ -3475,7 +3595,7 @@ def export_supabase_to_excel() -> dict:
 
     standard_result = write_database_records_to_excel_sheet(
         workbook[EXCEL_SYNC_SHEET_NAME],
-        build_database_excel_records("standard"),
+        build_database_excel_records("standard", request=request),
     )
     low_cost_result = {
         "updated_rows": 0,
@@ -3486,7 +3606,7 @@ def export_supabase_to_excel() -> dict:
     if EXCEL_LOW_COST_SHEET_NAME in workbook.sheetnames:
         low_cost_result = write_database_records_to_excel_sheet(
             workbook[EXCEL_LOW_COST_SHEET_NAME],
-            build_database_excel_records("low_cost"),
+            build_database_excel_records("low_cost", request=request),
         )
     transfer_result = {
         "updated_rows": 0,
@@ -3497,7 +3617,7 @@ def export_supabase_to_excel() -> dict:
     if EXCEL_TRANSFER_LOG_SHEET_NAME in workbook.sheetnames:
         transfer_result = write_transfer_log_records_to_excel_sheet(
             workbook[EXCEL_TRANSFER_LOG_SHEET_NAME],
-            build_database_transfer_log_records(),
+            build_database_transfer_log_records(request=request),
         )
 
     ensure_sync_storage()
@@ -3564,9 +3684,9 @@ def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_
     }
 
 
-def get_current_assignment(asset_id: int) -> Optional[dict]:
+def get_current_assignment(asset_id: int, request: Optional[Request] = None) -> Optional[dict]:
     assignment_response = (
-        tenant_filter(supabase.table("asset_assignments").select("*"))
+        tenant_filter(supabase.table("asset_assignments").select("*"), request=request)
         .eq("asset_id", asset_id)
         .is_("return_date", "null")
         .order("assignment_date", desc=True)
@@ -3584,7 +3704,7 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
     person_id = assignment.get("person_id")
     if person_id:
         person_response = (
-            tenant_filter(supabase.table("persons").select("*"))
+            tenant_filter(supabase.table("persons").select("*"), request=request)
             .eq("person_id", person_id)
             .limit(1)
             .execute()
@@ -3595,7 +3715,7 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
     location_id = assignment.get("location_id")
     if location_id:
         location_response = (
-            tenant_filter(supabase.table("locations").select("*"))
+            tenant_filter(supabase.table("locations").select("*"), request=request)
             .eq("location_id", location_id)
             .limit(1)
             .execute()
@@ -3634,14 +3754,14 @@ def get_current_assignment(asset_id: int) -> Optional[dict]:
     }
 
 
-def enrich_assignment(assignment: dict) -> dict:
+def enrich_assignment(assignment: dict, request: Optional[Request] = None) -> dict:
     person = None
     location = None
 
     person_id = assignment.get("person_id")
     if person_id:
         person_response = (
-            tenant_filter(supabase.table("persons").select("*"))
+            tenant_filter(supabase.table("persons").select("*"), request=request)
             .eq("person_id", person_id)
             .limit(1)
             .execute()
@@ -3652,7 +3772,7 @@ def enrich_assignment(assignment: dict) -> dict:
     location_id = assignment.get("location_id")
     if location_id:
         location_response = (
-            tenant_filter(supabase.table("locations").select("*"))
+            tenant_filter(supabase.table("locations").select("*"), request=request)
             .eq("location_id", location_id)
             .limit(1)
             .execute()
@@ -3691,9 +3811,9 @@ def enrich_assignment(assignment: dict) -> dict:
     }
 
 
-def get_asset_by_tag(asset_tag: str) -> Optional[dict]:
+def get_asset_by_tag(asset_tag: str, request: Optional[Request] = None) -> Optional[dict]:
     query = (
-        tenant_filter(supabase.table("assets").select("*"))
+        tenant_filter(supabase.table("assets").select("*"), request=request)
         .eq("asset_tag_number", asset_tag)
         .limit(1)
     )
@@ -3704,13 +3824,13 @@ def get_asset_by_tag(asset_tag: str) -> Optional[dict]:
     asset = response.data[0]
     asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
     asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
-    asset["current_assignment"] = get_current_assignment(asset["asset_id"])
+    asset["current_assignment"] = get_current_assignment(asset["asset_id"], request=request)
     return asset
 
 
-def get_asset_by_id(asset_id: int) -> Optional[dict]:
+def get_asset_by_id(asset_id: int, request: Optional[Request] = None) -> Optional[dict]:
     response = (
-        tenant_filter(supabase.table("assets").select("*"))
+        tenant_filter(supabase.table("assets").select("*"), request=request)
         .eq("asset_id", asset_id)
         .limit(1)
         .execute()
@@ -3721,14 +3841,18 @@ def get_asset_by_id(asset_id: int) -> Optional[dict]:
     asset = response.data[0]
     asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
     asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
-    asset["current_assignment"] = get_current_assignment(asset["asset_id"])
+    asset["current_assignment"] = get_current_assignment(asset["asset_id"], request=request)
     asset["effective_status"] = get_effective_status(asset)
     return asset
 
 
-def get_assignment_history(asset_id: int, limit: int = 20) -> list[dict]:
+def get_assignment_history(
+    asset_id: int,
+    limit: int = 20,
+    request: Optional[Request] = None,
+) -> list[dict]:
     response = (
-        tenant_filter(supabase.table("asset_assignments").select("*"))
+        tenant_filter(supabase.table("asset_assignments").select("*"), request=request)
         .eq("asset_id", asset_id)
         .order("assignment_date", desc=True)
         .limit(limit)
@@ -3736,39 +3860,43 @@ def get_assignment_history(asset_id: int, limit: int = 20) -> list[dict]:
     )
 
     assignments = response.data or []
-    return [enrich_assignment(assignment) for assignment in assignments]
+    return [enrich_assignment(assignment, request=request) for assignment in assignments]
 
 
-def list_people() -> list[dict]:
+def list_people(request: Optional[Request] = None) -> list[dict]:
     response = (
-        tenant_filter(supabase.table("persons").select("*"))
+        tenant_filter(supabase.table("persons").select("*"), request=request)
         .order("name_eng")
         .execute()
     )
     return response.data or []
 
 
-def list_projects() -> list[dict]:
+def list_projects(request: Optional[Request] = None) -> list[dict]:
     response = (
-        tenant_filter(supabase.table("projects").select("*"))
+        tenant_filter(supabase.table("projects").select("*"), request=request)
         .order("project_number")
         .execute()
     )
     return response.data or []
 
 
-def list_donors() -> list[dict]:
+def list_donors(request: Optional[Request] = None) -> list[dict]:
     response = (
-        tenant_filter(supabase.table("donors").select("*"))
+        tenant_filter(supabase.table("donors").select("*"), request=request)
         .order("donor_name")
         .execute()
     )
     return response.data or []
 
 
-def get_next_numeric_id(table_name: str, id_column: str) -> int:
+def get_next_numeric_id(
+    table_name: str,
+    id_column: str,
+    request: Optional[Request] = None,
+) -> int:
     response = (
-        tenant_filter(supabase.table(table_name).select(id_column))
+        tenant_filter(supabase.table(table_name).select(id_column), request=request)
         .order(id_column, desc=True)
         .limit(1)
         .execute()
@@ -3779,9 +3907,9 @@ def get_next_numeric_id(table_name: str, id_column: str) -> int:
     return int(current_max) + 1
 
 
-def get_project_by_id(project_id: int) -> Optional[dict]:
+def get_project_by_id(project_id: int, request: Optional[Request] = None) -> Optional[dict]:
     response = (
-        tenant_filter(supabase.table("projects").select("*"))
+        tenant_filter(supabase.table("projects").select("*"), request=request)
         .eq("project_id", project_id)
         .limit(1)
         .execute()
@@ -3791,9 +3919,9 @@ def get_project_by_id(project_id: int) -> Optional[dict]:
     return response.data[0]
 
 
-def get_donor_by_id(donor_id: int) -> Optional[dict]:
+def get_donor_by_id(donor_id: int, request: Optional[Request] = None) -> Optional[dict]:
     response = (
-        tenant_filter(supabase.table("donors").select("*"))
+        tenant_filter(supabase.table("donors").select("*"), request=request)
         .eq("donor_id", donor_id)
         .limit(1)
         .execute()
@@ -3803,9 +3931,9 @@ def get_donor_by_id(donor_id: int) -> Optional[dict]:
     return response.data[0]
 
 
-def get_location_by_id(location_id: int) -> Optional[dict]:
+def get_location_by_id(location_id: int, request: Optional[Request] = None) -> Optional[dict]:
     response = (
-        tenant_filter(supabase.table("locations").select("*"))
+        tenant_filter(supabase.table("locations").select("*"), request=request)
         .eq("location_id", location_id)
         .limit(1)
         .execute()
@@ -3901,17 +4029,17 @@ def describe_asset_project_error(error: Exception) -> str:
     return f"Project funding could not be saved: {message}"
 
 
-def get_asset_projects(asset_id: int) -> list[dict]:
+def get_asset_projects(asset_id: int, request: Optional[Request] = None) -> list[dict]:
     response = (
-        tenant_filter(supabase.table("asset_projects").select("*"))
+        tenant_filter(supabase.table("asset_projects").select("*"), request=request)
         .eq("asset_id", asset_id)
         .order("is_primary", desc=True)
         .order("asset_project_id")
         .execute()
     )
     rows = response.data or []
-    projects_by_id = {row.get("project_id"): row for row in list_projects()}
-    donors_by_id = {row.get("donor_id"): row for row in list_donors()}
+    projects_by_id = {row.get("project_id"): row for row in list_projects(request=request)}
+    donors_by_id = {row.get("donor_id"): row for row in list_donors(request=request)}
 
     enriched = []
     for row in rows:
@@ -3928,9 +4056,13 @@ def get_asset_projects(asset_id: int) -> list[dict]:
     return enriched
 
 
-def get_asset_project_total_percent(asset_id: int, exclude_asset_project_id: Optional[int] = None) -> float:
+def get_asset_project_total_percent(
+    asset_id: int,
+    exclude_asset_project_id: Optional[int] = None,
+    request: Optional[Request] = None,
+) -> float:
     total = 0.0
-    for row in get_asset_projects(asset_id):
+    for row in get_asset_projects(asset_id, request=request):
         if exclude_asset_project_id is not None and row.get("asset_project_id") == exclude_asset_project_id:
             continue
         if row.get("is_current") is False and row.get("is_purchase_origin") is True:
@@ -3944,9 +4076,12 @@ def get_asset_project_total_percent(asset_id: int, exclude_asset_project_id: Opt
     return total
 
 
-def describe_project_funding_payload(payload: dict) -> str:
-    project = get_project_by_id(payload.get("project_id")) if payload.get("project_id") else None
-    donor = get_donor_by_id(payload.get("donor_id")) if payload.get("donor_id") else None
+def describe_project_funding_payload(
+    payload: dict,
+    request: Optional[Request] = None,
+) -> str:
+    project = get_project_by_id(payload.get("project_id"), request=request) if payload.get("project_id") else None
+    donor = get_donor_by_id(payload.get("donor_id"), request=request) if payload.get("donor_id") else None
     project_label = project.get("project_number") if project else f"Project #{payload.get('project_id') or '-'}"
     parts = [project_label]
     if donor:
@@ -3960,15 +4095,15 @@ def describe_project_funding_payload(payload: dict) -> str:
     return " | ".join(str(part) for part in parts if part)
 
 
-def get_asset_project_form_context(asset_id: int) -> dict:
-    asset_projects = get_asset_projects(asset_id)
+def get_asset_project_form_context(asset_id: int, request: Optional[Request] = None) -> dict:
+    asset_projects = get_asset_projects(asset_id, request=request)
     current_project_rows = get_current_project_rows(asset_projects)
     purchased_project_rows = get_purchased_project_rows(asset_projects)
     allocated_percent = sum(float(row.get("allocation_percent") or 0) for row in current_project_rows)
     return {
         "asset_projects": asset_projects,
-        "projects": list_projects(),
-        "donors": list_donors(),
+        "projects": list_projects(request=request),
+        "donors": list_donors(request=request),
         "asset_project_summary": {
             "allocation_count": len(asset_projects),
             "purchase_origin_count": len(purchased_project_rows),
@@ -3983,22 +4118,30 @@ def get_asset_project_form_context(asset_id: int) -> dict:
     }
 
 
-def get_asset_transfer_project_rows(transfer_ids: list[int]) -> dict[int, list[dict]]:
+def get_asset_transfer_project_rows(
+    transfer_ids: list[int],
+    request: Optional[Request] = None,
+) -> dict[int, list[dict]]:
     if not transfer_ids:
         return {}
 
     try:
         response = (
-            tenant_filter(supabase.table("asset_transfer_projects").select("*"))
+            tenant_filter(
+                supabase.table("asset_transfer_projects").select("*"),
+                request=request,
+            )
             .in_("transfer_id", transfer_ids)
             .order("direction")
             .order("transfer_project_id")
             .execute()
         )
+    except TenantContextError:
+        raise
     except Exception:
         return {}
     rows = response.data or []
-    projects_by_id = {row.get("project_id"): row for row in list_projects()}
+    projects_by_id = {row.get("project_id"): row for row in list_projects(request=request)}
     grouped: dict[int, list[dict]] = {}
     for row in rows:
         project = projects_by_id.get(row.get("project_id")) or {}
@@ -4040,25 +4183,26 @@ def create_asset_transfer_from_assignment_change(
     status: Optional[str] = None,
     condition: Optional[str] = None,
     to_location_id: Optional[int] = None,
+    request: Optional[Request] = None,
 ) -> Optional[int]:
     asset_id = asset.get("asset_id")
     if not asset_id or not transfer_date:
         return None
-    assert_record_tenant(asset, label="Asset")
+    assert_record_tenant(asset, request=request, label="Asset")
 
     from_assignment = from_assignment or {}
     from_person_id = from_assignment.get("person_id")
     from_location_id = from_assignment.get("location_id")
-    validate_transfer_person_tenants(from_person_id, to_person_id)
+    validate_transfer_person_tenants(from_person_id, to_person_id, request=request)
     from_holder_name = from_assignment.get("responsible_person")
     if not from_holder_name and from_assignment.get("location_id"):
         from_holder_name = "Warehouse"
 
-    to_person = get_person_by_id(to_person_id) if to_person_id else None
+    to_person = get_person_by_id(to_person_id, request=request) if to_person_id else None
     if to_person_id is not None and not to_person:
         raise TenantContextError("persons.person_id does not belong to the current tenant.")
     to_holder_name = get_person_display_name(to_person) if to_person else "Warehouse"
-    current_project_rows = get_current_project_rows(get_asset_projects(asset_id))
+    current_project_rows = get_current_project_rows(get_asset_projects(asset_id, request=request))
     current_project_raw = format_project_allocations(get_project_allocations_from_rows(current_project_rows))
 
     payload = add_tenant_id({
@@ -4078,7 +4222,7 @@ def create_asset_transfer_from_assignment_change(
         "to_project_raw": current_project_raw,
         "asset_status": status or from_assignment.get("status") or asset.get("current_status"),
         "asset_condition_description": condition or from_assignment.get("handover_condition"),
-    })
+    }, request=request)
 
     try:
         response = supabase.table("asset_transfers").insert(payload).execute()
@@ -4101,30 +4245,38 @@ def create_asset_transfer_from_assignment_change(
                     }
                 )
         try:
-            supabase.table("asset_transfer_projects").insert(add_tenant_id_to_many(project_payloads)).execute()
+            supabase.table("asset_transfer_projects").insert(
+                add_tenant_id_to_many(project_payloads, request=request)
+            ).execute()
         except Exception as exc:
             raise RuntimeError(f"Asset transfer project history could not be created: {exc}") from exc
 
     return transfer_id
 
 
-def get_asset_transfer_history(asset_id: int, limit: int = 50) -> list[dict]:
+def get_asset_transfer_history(
+    asset_id: int,
+    limit: int = 50,
+    request: Optional[Request] = None,
+) -> list[dict]:
     try:
         response = (
-            tenant_filter(supabase.table("asset_transfers").select("*"))
+            tenant_filter(supabase.table("asset_transfers").select("*"), request=request)
             .eq("asset_id", asset_id)
             .order("transfer_date", desc=True)
             .order("transfer_id", desc=True)
             .limit(limit)
             .execute()
         )
+    except TenantContextError:
+        raise
     except Exception:
         return []
     transfers = response.data or []
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
-    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
+    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids, request=request)
 
-    people_by_id = {row.get("person_id"): row for row in list_people()}
+    people_by_id = {row.get("person_id"): row for row in list_people(request=request)}
     for transfer in transfers:
         from_person = people_by_id.get(transfer.get("from_person_id")) or {}
         to_person = people_by_id.get(transfer.get("to_person_id")) or {}
@@ -4144,8 +4296,8 @@ def get_asset_transfer_history(asset_id: int, limit: int = 50) -> list[dict]:
     return transfers
 
 
-def get_asset_transfer_context(asset_id: int) -> dict:
-    transfers = get_asset_transfer_history(asset_id)
+def get_asset_transfer_context(asset_id: int, request: Optional[Request] = None) -> dict:
+    transfers = get_asset_transfer_history(asset_id, request=request)
     return {
         "asset_transfers": transfers,
         "asset_transfer_summary": {
@@ -4155,9 +4307,9 @@ def get_asset_transfer_context(asset_id: int) -> dict:
     }
 
 
-def get_asset_payments(asset_id: int) -> list[dict]:
+def get_asset_payments(asset_id: int, request: Optional[Request] = None) -> list[dict]:
     response = (
-        tenant_filter(supabase.table("asset_payments").select("*"))
+        tenant_filter(supabase.table("asset_payments").select("*"), request=request)
         .eq("asset_id", asset_id)
         .order("payment_date")
         .order("payment_number")
@@ -4169,8 +4321,8 @@ def get_asset_payments(asset_id: int) -> list[dict]:
     return rows
 
 
-def get_asset_payment_context(asset_id: int) -> dict:
-    payments = get_asset_payments(asset_id)
+def get_asset_payment_context(asset_id: int, request: Optional[Request] = None) -> dict:
+    payments = get_asset_payments(asset_id, request=request)
     return {
         "asset_payments": payments,
         "asset_payment_summary": {
@@ -4266,8 +4418,11 @@ def get_account_person(request: Request) -> Optional[dict]:
     return person
 
 
-def find_warehouse_person(people: Optional[list[dict]] = None) -> Optional[dict]:
-    people = people if people is not None else list_people()
+def find_warehouse_person(
+    people: Optional[list[dict]] = None,
+    request: Optional[Request] = None,
+) -> Optional[dict]:
+    people = people if people is not None else list_people(request=request)
     for person in people:
         names = [
             person.get("name"),
@@ -4307,8 +4462,11 @@ def get_default_offboarding_location_id(asset: dict, locations: list[dict]) -> O
     return locations[0].get("location_id") if locations else None
 
 
-def get_offboarding_target_people(person_id: int) -> list[dict]:
-    people = list_people()
+def get_offboarding_target_people(
+    person_id: int,
+    request: Optional[Request] = None,
+) -> list[dict]:
+    people = list_people(request=request)
     return [
         {
             **person,
@@ -4320,14 +4478,17 @@ def get_offboarding_target_people(person_id: int) -> list[dict]:
     ]
 
 
-def build_person_offboarding_context(person: dict) -> dict:
-    assigned_assets = get_assets_for_person(person["person_id"])
+def build_person_offboarding_context(
+    person: dict,
+    request: Optional[Request] = None,
+) -> dict:
+    assigned_assets = get_assets_for_person(person["person_id"], request=request)
     locations = [
         {**location, "display_name": get_location_display_name(location)}
-        for location in list_locations()
+        for location in list_locations(request=request)
     ]
-    people = get_offboarding_target_people(person["person_id"])
-    warehouse_person = find_warehouse_person(people)
+    people = get_offboarding_target_people(person["person_id"], request=request)
+    warehouse_person = find_warehouse_person(people, request=request)
     warehouse_person_id = warehouse_person.get("person_id") if warehouse_person else None
 
     rows = []
@@ -4370,14 +4531,18 @@ def update_person_inactive(person_id: int, offboarding_date: str, note: str) -> 
         raise
 
 
-def apply_person_offboarding(person: dict, form) -> dict:
+def apply_person_offboarding(
+    person: dict,
+    form,
+    request: Optional[Request] = None,
+) -> dict:
     person_id = person["person_id"]
     offboarding_date = str(form.get("offboarding_date") or "").strip()
     offboarding_note = str(form.get("offboarding_note") or "").strip()
     if not offboarding_date:
         raise ValueError("Offboarding date is required.")
 
-    assigned_assets = get_assets_for_person(person_id)
+    assigned_assets = get_assets_for_person(person_id, request=request)
     selected_asset_ids = {
         int(value)
         for value in form.getlist("asset_id")
@@ -4386,8 +4551,14 @@ def apply_person_offboarding(person: dict, form) -> dict:
     if not selected_asset_ids:
         selected_asset_ids = {asset["asset_id"] for asset in assigned_assets}
 
-    target_people = {person["person_id"]: person for person in get_offboarding_target_people(person_id)}
-    locations = {location["location_id"]: location for location in list_locations()}
+    target_people = {
+        person["person_id"]: person
+        for person in get_offboarding_target_people(person_id, request=request)
+    }
+    locations = {
+        location["location_id"]: location
+        for location in list_locations(request=request)
+    }
     reassigned = 0
     skipped = 0
 
@@ -4411,7 +4582,12 @@ def apply_person_offboarding(person: dict, form) -> dict:
         if target_person_id and not target_location_id:
             raise ValueError("Location is required when a responsible person is selected.")
 
-        close_current_assignments(asset_id, offboarding_date, "Offboarding")
+        close_current_assignments(
+            asset_id,
+            offboarding_date,
+            "Offboarding",
+            request=request,
+        )
 
         if target_person_id or target_location_id:
             current_assignment = asset.get("current_assignment") or {}
@@ -4448,6 +4624,7 @@ def apply_person_offboarding(person: dict, form) -> dict:
                 status=(asset.get("current_assignment") or {}).get("status") or asset.get("current_status"),
                 condition=(asset.get("current_assignment") or {}).get("handover_condition"),
                 to_location_id=target_location_id,
+                request=request,
             )
             target_person = target_people.get(target_person_id) if target_person_id else None
             target_label = get_person_display_name(target_person) if target_person else "No responsible person"
@@ -4641,7 +4818,10 @@ def get_person_form_values(values: Optional[dict] = None) -> dict:
     }
 
 
-def find_existing_person(person_form: dict) -> Optional[dict]:
+def find_existing_person(
+    person_form: dict,
+    request: Optional[Request] = None,
+) -> Optional[dict]:
     local_name = (person_form.get("name") or "").strip()
     english_name = (person_form.get("name_eng") or "").strip()
 
@@ -4658,12 +4838,13 @@ def find_existing_person(person_form: dict) -> Optional[dict]:
     for field_name, value in candidates:
         try:
             response = (
-                supabase.table("persons")
-                .select("*")
+                tenant_filter(supabase.table("persons").select("*"), request=request)
                 .eq(field_name, value)
                 .limit(1)
                 .execute()
             )
+        except TenantContextError:
+            raise
         except Exception:
             continue
         if response.data:
@@ -4677,7 +4858,7 @@ def find_existing_person(person_form: dict) -> Optional[dict]:
 
     if normalized_candidates:
         try:
-            for person in list_people():
+            for person in list_people(request=request):
                 person_names = [
                     normalize_person_lookup(person.get("name")),
                     normalize_person_lookup(person.get("name_eng")),
@@ -4685,15 +4866,17 @@ def find_existing_person(person_form: dict) -> Optional[dict]:
                 ]
                 if any(candidate and candidate in person_names for candidate in normalized_candidates):
                     return person
+        except TenantContextError:
+            raise
         except Exception:
             pass
 
     return None
 
 
-def get_next_person_id() -> int:
+def get_next_person_id(request: Optional[Request] = None) -> int:
     response = (
-        tenant_filter(supabase.table("persons").select("person_id"))
+        tenant_filter(supabase.table("persons").select("person_id"), request=request)
         .order("person_id", desc=True)
         .limit(1)
         .execute()
@@ -4733,19 +4916,22 @@ def describe_person_create_error(error: Exception) -> str:
     return f"Employee could not be created: {message}"
 
 
-def list_locations() -> list[dict]:
+def list_locations(request: Optional[Request] = None) -> list[dict]:
     response = (
-        tenant_filter(supabase.table("locations").select("*"))
+        tenant_filter(supabase.table("locations").select("*"), request=request)
         .order("city")
         .execute()
     )
     return response.data or []
 
 
-def list_assignment_location_options(selected_location_id: Optional[int] = None) -> list[dict]:
+def list_assignment_location_options(
+    selected_location_id: Optional[int] = None,
+    request: Optional[Request] = None,
+) -> list[dict]:
     options = []
     seen: set[tuple[str, str]] = set()
-    for location in list_locations():
+    for location in list_locations(request=request):
         location_id = location.get("location_id")
         city = str(location.get("city") or "").strip()
         office = str(location.get("name") or location.get("office") or location.get("building") or location.get("room") or "").strip()
@@ -4765,23 +4951,23 @@ def list_assignment_location_options(selected_location_id: Optional[int] = None)
     return options
 
 
-def list_assignment_department_options() -> list[str]:
+def list_assignment_department_options(request: Optional[Request] = None) -> list[str]:
     values = set()
-    for person in list_people():
+    for person in list_people(request=request):
         department = str(person.get("department") or "").strip()
         if department:
             values.add(department)
-    for location in list_locations():
+    for location in list_locations(request=request):
         department = str(location.get("department") or "").strip()
         if department:
             values.add(department)
     return sorted(values, key=lambda value: value.casefold())
 
 
-def list_assignment_city_options() -> list[str]:
+def list_assignment_city_options(request: Optional[Request] = None) -> list[str]:
     values = {
         str(location.get("city") or "").strip()
-        for location in list_locations()
+        for location in list_locations(request=request)
         if str(location.get("city") or "").strip()
     }
     return sorted(values, key=lambda value: value.casefold())
@@ -4821,10 +5007,17 @@ def enrich_responsibility_scope(scope: dict, locations_by_id: Optional[dict[int,
     return enriched
 
 
-def list_person_responsibility_scopes(person_id: int, active_only: bool = False) -> list[dict]:
+def list_person_responsibility_scopes(
+    person_id: int,
+    active_only: bool = False,
+    request: Optional[Request] = None,
+) -> list[dict]:
     try:
         query = (
-            tenant_filter(supabase.table("person_responsibility_scopes").select("*"))
+            tenant_filter(
+                supabase.table("person_responsibility_scopes").select("*"),
+                request=request,
+            )
             .eq("person_id", person_id)
             .order("scope_type")
             .order("department")
@@ -4833,10 +5026,15 @@ def list_person_responsibility_scopes(person_id: int, active_only: bool = False)
         if active_only:
             query = query.eq("is_active", True)
         response = query.execute()
+    except TenantContextError:
+        raise
     except Exception:
         return []
 
-    locations_by_id = {location.get("location_id"): location for location in list_locations()}
+    locations_by_id = {
+        location.get("location_id"): location
+        for location in list_locations(request=request)
+    }
     return [enrich_responsibility_scope(scope, locations_by_id) for scope in response.data or []]
 
 
@@ -4861,12 +5059,12 @@ def scope_matches_person(scope: dict, person: dict) -> bool:
     return False
 
 
-def get_responsibility_scope_form_options() -> dict:
+def get_responsibility_scope_form_options(request: Optional[Request] = None) -> dict:
     locations = [
         {**location, "display_name": get_location_display_name(location)}
-        for location in list_locations()
+        for location in list_locations(request=request)
     ]
-    assets = list_assets()
+    assets = list_assets(request=request)
     departments = sorted(
         {
             str((asset.get("current_assignment") or {}).get("department") or "").strip()
@@ -4892,9 +5090,17 @@ def get_responsibility_scope_form_options() -> dict:
     }
 
 
-def close_current_assignments(asset_id: int, return_date: Optional[str], actor: Optional[str] = None) -> None:
+def close_current_assignments(
+    asset_id: int,
+    return_date: Optional[str],
+    actor: Optional[str] = None,
+    request: Optional[Request] = None,
+) -> None:
     current_assignments = (
-        tenant_filter(supabase.table("asset_assignments").select("assignment_id"))
+        tenant_filter(
+            supabase.table("asset_assignments").select("assignment_id"),
+            request=request,
+        )
         .eq("asset_id", asset_id)
         .is_("return_date", "null")
         .execute()
@@ -4905,27 +5111,33 @@ def close_current_assignments(asset_id: int, return_date: Optional[str], actor: 
         if actor:
             update_payload = add_assignment_actor_fields(update_payload, actor, created=False)
         (
-            tenant_filter(supabase.table("asset_assignments").update(update_payload))
+            tenant_filter(
+                supabase.table("asset_assignments").update(update_payload),
+                request=request,
+            )
             .eq("assignment_id", row["assignment_id"])
             .execute()
         )
 
 
-def get_assignment_form_context(asset: dict) -> dict:
+def get_assignment_form_context(asset: dict, request: Optional[Request] = None) -> dict:
     current_assignment = asset.get("current_assignment") or {}
-    department_options = list_assignment_department_options()
+    department_options = list_assignment_department_options(request=request)
     current_department = current_assignment.get("assignment_department") or current_assignment.get("department") or ""
     if current_department and current_department not in department_options:
         department_options.append(current_department)
         department_options.sort(key=lambda value: value.casefold())
-    city_options = list_assignment_city_options()
+    city_options = list_assignment_city_options(request=request)
     current_city = current_assignment.get("city") or ""
     if current_city and current_city not in city_options:
         city_options.append(current_city)
         city_options.sort(key=lambda value: value.casefold())
     return {
-        "people": list_people(),
-        "locations": list_assignment_location_options(current_assignment.get("location_id")),
+        "people": list_people(request=request),
+        "locations": list_assignment_location_options(
+            current_assignment.get("location_id"),
+            request=request,
+        ),
         "department_options": department_options,
         "city_options": city_options,
         "assignment_form": {
@@ -4996,7 +5208,10 @@ def apply_asset_assignment_change(
     validate_assignment_parent_tenants(parsed_person_id, parsed_location_id, request=request)
 
     actor = get_admin_actor(request)
-    current_assignment = asset.get("current_assignment") or get_current_assignment(asset_id)
+    current_assignment = asset.get("current_assignment") or get_current_assignment(
+        asset_id,
+        request=request,
+    )
     if current_assignment:
         validate_transfer_person_tenants(current_assignment.get("person_id"), parsed_person_id, request=request)
         validate_assignment_date_not_earlier(current_assignment, assignment_date)
@@ -5005,7 +5220,7 @@ def apply_asset_assignment_change(
     if not parsed_person_id and not parsed_location_id:
         if current_assignment:
             try:
-                close_current_assignments(asset_id, assignment_date, actor)
+                close_current_assignments(asset_id, assignment_date, actor, request=request)
                 if status:
                     tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
                 transfer_id = create_asset_transfer_from_assignment_change(
@@ -5017,6 +5232,7 @@ def apply_asset_assignment_change(
                     status=status or current_assignment.get("status") or asset.get("current_status"),
                     condition=handover_condition or current_assignment.get("handover_condition"),
                     to_location_id=None,
+                    request=request,
                 )
             except Exception as exc:
                 set_flash(request, "error", describe_assignment_update_error(exc))
@@ -5061,19 +5277,19 @@ def apply_asset_assignment_change(
         and current_assignment.get("person_id") == parsed_person_id
         and current_assignment.get("location_id") == parsed_location_id
     ):
-        close_current_assignments(asset_id, assignment_date, actor)
+        close_current_assignments(asset_id, assignment_date, actor, request=request)
         supabase.table("asset_assignments").insert(add_tenant_id(add_assignment_actor_fields(new_assignment, actor), request=request)).execute()
         if status:
             tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
         log_assignment_field_changes(asset, assignment_changes, request)
         return {"changed": True, "message": "Assignment updated."}
 
-    close_current_assignments(asset_id, assignment_date, actor)
+    close_current_assignments(asset_id, assignment_date, actor, request=request)
     supabase.table("asset_assignments").insert(add_tenant_id(add_assignment_actor_fields(new_assignment, actor), request=request)).execute()
     if status:
         tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
 
-    target_person = get_person_by_id(parsed_person_id) if parsed_person_id else None
+    target_person = get_person_by_id(parsed_person_id, request=request) if parsed_person_id else None
     new_responsible = get_person_display_name(target_person) if target_person else "Warehouse"
     transfer_id = create_asset_transfer_from_assignment_change(
         asset=asset,
@@ -5084,6 +5300,7 @@ def apply_asset_assignment_change(
         status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
         condition=handover_condition or (current_assignment or {}).get("handover_condition"),
         to_location_id=parsed_location_id,
+        request=request,
     )
     audit_log_event(
         entity_type="Transfer",
@@ -5110,12 +5327,15 @@ def get_asset_serial_value(asset: dict) -> str:
     return asset.get("serial_chassis_number") or asset.get("serial_number") or ""
 
 
-def get_asset_form_values(asset: Optional[dict] = None) -> dict:
+def get_asset_form_values(
+    asset: Optional[dict] = None,
+    request: Optional[Request] = None,
+) -> dict:
     asset = asset or {}
     current_status = asset.get("current_status") or ""
     standard_status_values = {value for value, _ in ASSET_STATUS_SELECT_OPTIONS}
     return {
-        "asset_tag_number": asset.get("asset_tag_number") or suggest_next_asset_tag(),
+        "asset_tag_number": asset.get("asset_tag_number") or suggest_next_asset_tag(request=request),
         "usage_type": normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number")),
         "item_description": asset.get("item_description") or "",
         "brand_make": asset.get("brand_make") or "",
@@ -5185,10 +5405,15 @@ def parse_payment_date_field(value: str) -> Optional[str]:
     raise ValueError("Payment date must be a valid date.")
 
 
-def get_next_payment_number(asset_id: int) -> int:
+def get_next_payment_number(
+    asset_id: int,
+    request: Optional[Request] = None,
+) -> int:
     response = (
-        supabase.table("asset_payments")
-        .select("payment_number")
+        tenant_filter(
+            supabase.table("asset_payments").select("payment_number"),
+            request=request,
+        )
         .eq("asset_id", asset_id)
         .order("payment_number", desc=True)
         .limit(1)
@@ -5209,6 +5434,7 @@ def build_asset_payment_payload(
     notes: str,
     fallback_amount: Optional[float] = None,
     eur_equivalent_amount: str = "",
+    request: Optional[Request] = None,
 ) -> dict:
     parsed_date = parse_payment_date_field(payment_date)
     parsed_amount = parse_float_field(payment_amount)
@@ -5222,7 +5448,10 @@ def build_asset_payment_payload(
 
     payload = {
         "asset_id": asset_id,
-        "payment_number": payment_number if payment_number is not None else get_next_payment_number(asset_id),
+        "payment_number": payment_number if payment_number is not None else get_next_payment_number(
+            asset_id,
+            request=request,
+        ),
         "payment_date": parsed_date,
         "payment_amount": parsed_amount,
         "currency": currency.strip() or "EUR",
@@ -5431,15 +5660,21 @@ def describe_asset_payment_error(error: Exception) -> str:
     return f"Payment could not be saved: {error.message or 'Database error'}"
 
 
-def list_lookup_values(table_name: str, column_name: str, fallback: Optional[list[str]] = None) -> list[str]:
+def list_lookup_values(
+    table_name: str,
+    column_name: str,
+    fallback: Optional[list[str]] = None,
+    request: Optional[Request] = None,
+) -> list[str]:
     fallback = fallback or []
     try:
         response = (
-            supabase.table(table_name)
-            .select(column_name)
+            tenant_filter(supabase.table(table_name).select(column_name), request=request)
             .order(column_name)
             .execute()
         )
+    except TenantContextError:
+        raise
     except Exception:
         return fallback
 
@@ -5451,9 +5686,17 @@ def list_lookup_values(table_name: str, column_name: str, fallback: Optional[lis
     return values or fallback
 
 
-def list_distinct_asset_field_values(field_name: str) -> list[str]:
+def list_distinct_asset_field_values(
+    field_name: str,
+    request: Optional[Request] = None,
+) -> list[str]:
     try:
-        response = supabase.table("assets").select(field_name).execute()
+        response = tenant_filter(
+            supabase.table("assets").select(field_name),
+            request=request,
+        ).execute()
+    except TenantContextError:
+        raise
     except Exception:
         return []
 
@@ -5496,15 +5739,29 @@ def merge_preferred_options(primary: list[str], secondary: list[str]) -> list[st
     return sorted(merged.values())
 
 
-def get_asset_create_options() -> dict:
-    asset_classifications = list_distinct_asset_field_values("asset_classification")
-    asset_sub_classifications = list_distinct_asset_field_values("asset_sub_classification")
+def get_asset_create_options(request: Optional[Request] = None) -> dict:
+    asset_classifications = list_distinct_asset_field_values(
+        "asset_classification",
+        request=request,
+    )
+    asset_sub_classifications = list_distinct_asset_field_values(
+        "asset_sub_classification",
+        request=request,
+    )
     classifications = merge_preferred_options(
-        list_lookup_values("asset_classifications", "classification_name"),
+        list_lookup_values(
+            "asset_classifications",
+            "classification_name",
+            request=request,
+        ),
         asset_classifications,
     )
     sub_classifications = merge_preferred_options(
-        list_lookup_values("asset_sub_classifications", "sub_classification_name"),
+        list_lookup_values(
+            "asset_sub_classifications",
+            "sub_classification_name",
+            request=request,
+        ),
         asset_sub_classifications,
     )
 
@@ -5517,12 +5774,12 @@ def get_asset_create_options() -> dict:
         ("currency", "currency_code"),
         ("currency", "code"),
     ]:
-        currencies = list_lookup_values(table_name, column_name)
+        currencies = list_lookup_values(table_name, column_name, request=request)
         if currencies:
             break
 
     if not currencies:
-        currencies = list_distinct_asset_field_values("currency")
+        currencies = list_distinct_asset_field_values("currency", request=request)
     currencies = merge_preferred_options(["EUR", "UAH", "USD"], currencies)
 
     return {
@@ -5531,24 +5788,25 @@ def get_asset_create_options() -> dict:
         "classification_options": classifications,
         "sub_classification_options": sub_classifications,
         "currency_options": currencies,
-        "projects": list_projects(),
-        "donors": list_donors(),
-        "people": list_people(),
-        "locations": list_assignment_location_options(),
-        "department_options": list_assignment_department_options(),
-        "city_options": list_assignment_city_options(),
+        "projects": list_projects(request=request),
+        "donors": list_donors(request=request),
+        "people": list_people(request=request),
+        "locations": list_assignment_location_options(request=request),
+        "department_options": list_assignment_department_options(request=request),
+        "city_options": list_assignment_city_options(request=request),
     }
 
 
-def asset_tag_exists(asset_tag_number: str) -> bool:
+def asset_tag_exists(asset_tag_number: str, request: Optional[Request] = None) -> bool:
     try:
         response = (
-            supabase.table("assets")
-            .select("asset_id")
+            tenant_filter(supabase.table("assets").select("asset_id"), request=request)
             .eq("asset_tag_number", asset_tag_number)
             .limit(1)
             .execute()
         )
+    except TenantContextError:
+        raise
     except Exception:
         return False
 
@@ -5592,12 +5850,15 @@ def generate_asset_tag_range(start_tag: str, end_tag: str) -> list[str]:
     return generate_sequential_asset_tags(normalized_start, count)
 
 
-def get_assets_by_tags(asset_tags: list[str]) -> list[dict]:
+def get_assets_by_tags(
+    asset_tags: list[str],
+    request: Optional[Request] = None,
+) -> list[dict]:
     normalized_tags = [normalize_asset_tag(tag) for tag in asset_tags if normalize_asset_tag(tag)]
     if not normalized_tags:
         return []
     response = (
-        tenant_filter(supabase.table("assets").select("*"))
+        tenant_filter(supabase.table("assets").select("*"), request=request)
         .in_("asset_tag_number", normalized_tags)
         .execute()
     )
@@ -5607,26 +5868,42 @@ def get_assets_by_tags(asset_tags: list[str]) -> list[dict]:
     return rows
 
 
-def fetch_rows_by_asset_ids(table_name: str, asset_ids: list[int], select_columns: str = "*") -> list[dict]:
+def fetch_rows_by_asset_ids(
+    table_name: str,
+    asset_ids: list[int],
+    select_columns: str = "*",
+    request: Optional[Request] = None,
+) -> list[dict]:
     if not asset_ids:
         return []
     response = (
-        tenant_filter(supabase.table(table_name).select(select_columns))
+        tenant_filter(supabase.table(table_name).select(select_columns), request=request)
         .in_("asset_id", asset_ids)
         .execute()
     )
     return response.data or []
 
 
-def get_asset_delete_preview(asset_tags: list[str]) -> dict:
-    assets = get_assets_by_tags(asset_tags)
+def get_asset_delete_preview(
+    asset_tags: list[str],
+    request: Optional[Request] = None,
+) -> dict:
+    assets = get_assets_by_tags(asset_tags, request=request)
     asset_ids = [asset.get("asset_id") for asset in assets if asset.get("asset_id")]
-    transfers = fetch_rows_by_asset_ids("asset_transfers", asset_ids, "transfer_id,asset_id")
+    transfers = fetch_rows_by_asset_ids(
+        "asset_transfers",
+        asset_ids,
+        "transfer_id,asset_id",
+        request=request,
+    )
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
     transfer_project_count = 0
     if transfer_ids:
         transfer_project_response = (
-            tenant_filter(supabase.table("asset_transfer_projects").select("transfer_project_id"))
+            tenant_filter(
+                supabase.table("asset_transfer_projects").select("transfer_project_id"),
+                request=request,
+            )
             .in_("transfer_id", transfer_ids)
             .execute()
         )
@@ -5638,9 +5915,9 @@ def get_asset_delete_preview(asset_tags: list[str]) -> dict:
         "missing_tags": [tag for tag in asset_tags if tag not in {normalize_asset_tag(asset.get("asset_tag_number") or "") for asset in assets}],
         "counts": {
             "assets": len(assets),
-            "payments": len(fetch_rows_by_asset_ids("asset_payments", asset_ids, "payment_id")),
-            "projects": len(fetch_rows_by_asset_ids("asset_projects", asset_ids, "asset_project_id")),
-            "assignments": len(fetch_rows_by_asset_ids("asset_assignments", asset_ids, "assignment_id")),
+            "payments": len(fetch_rows_by_asset_ids("asset_payments", asset_ids, "payment_id", request=request)),
+            "projects": len(fetch_rows_by_asset_ids("asset_projects", asset_ids, "asset_project_id", request=request)),
+            "assignments": len(fetch_rows_by_asset_ids("asset_assignments", asset_ids, "assignment_id", request=request)),
             "transfers": len(transfers),
             "transfer_projects": transfer_project_count,
         },
@@ -5688,13 +5965,18 @@ def describe_asset_create_error(error: Exception) -> str:
     return f"Asset could not be created: {message}"
 
 
-def list_asset_tag_rows(batch_size: int = 1000) -> list[dict]:
+def list_asset_tag_rows(
+    batch_size: int = 1000,
+    request: Optional[Request] = None,
+) -> list[dict]:
     rows: list[dict] = []
     start = 0
     while True:
         response = (
-            supabase.table("assets")
-            .select("asset_tag_number")
+            tenant_filter(
+                supabase.table("assets").select("asset_tag_number"),
+                request=request,
+            )
             .order("asset_tag_number")
             .range(start, start + batch_size - 1)
             .execute()
@@ -5707,9 +5989,15 @@ def list_asset_tag_rows(batch_size: int = 1000) -> list[dict]:
     return rows
 
 
-def get_asset_tag_standard(usage_type: Optional[str] = None, asset_tag_rows: Optional[list[dict]] = None) -> dict:
+def get_asset_tag_standard(
+    usage_type: Optional[str] = None,
+    asset_tag_rows: Optional[list[dict]] = None,
+    request: Optional[Request] = None,
+) -> dict:
     try:
-        rows = asset_tag_rows if asset_tag_rows is not None else list_asset_tag_rows()
+        rows = asset_tag_rows if asset_tag_rows is not None else list_asset_tag_rows(request=request)
+    except TenantContextError:
+        raise
     except Exception:
         return {"prefix": "", "width": 0, "example": "", "suggested_next": ""}
 
@@ -5749,9 +6037,11 @@ def get_asset_tag_standard(usage_type: Optional[str] = None, asset_tag_rows: Opt
     }
 
 
-def get_asset_tag_standards() -> dict:
+def get_asset_tag_standards(request: Optional[Request] = None) -> dict:
     try:
-        asset_tag_rows = list_asset_tag_rows()
+        asset_tag_rows = list_asset_tag_rows(request=request)
+    except TenantContextError:
+        raise
     except Exception:
         asset_tag_rows = []
     return {
@@ -5760,8 +6050,11 @@ def get_asset_tag_standards() -> dict:
     }
 
 
-def suggest_next_asset_tag(usage_type: str = "standard") -> str:
-    return get_asset_tag_standard(usage_type).get("suggested_next") or ""
+def suggest_next_asset_tag(
+    usage_type: str = "standard",
+    request: Optional[Request] = None,
+) -> str:
+    return get_asset_tag_standard(usage_type, request=request).get("suggested_next") or ""
 
 
 def get_asset_tag_warning(asset_tag_number: str, standard: Optional[dict] = None) -> str:
@@ -5790,14 +6083,17 @@ def get_effective_status(asset: dict) -> str:
     return assignment.get("status") or asset.get("current_status") or "-"
 
 
-def list_assets(limit: Optional[int] = None, batch_size: int = 500) -> list[dict]:
+def list_assets(
+    limit: Optional[int] = None,
+    batch_size: int = 500,
+    request: Optional[Request] = None,
+) -> list[dict]:
     assets: list[dict] = []
     start = 0
 
     while True:
         query = (
-            supabase.table("assets")
-            .select("*")
+            tenant_filter(supabase.table("assets").select("*"), request=request)
             .order("asset_tag_number")
             .range(start, start + batch_size - 1)
         )
@@ -5826,14 +6122,19 @@ def list_assets(limit: Optional[int] = None, batch_size: int = 500) -> list[dict
     for asset in assets:
         asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
         asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
-        asset["current_assignment"] = get_current_assignment(asset["asset_id"])
+        asset["current_assignment"] = get_current_assignment(asset["asset_id"], request=request)
         asset["effective_status"] = get_effective_status(asset)
     return assets
 
 
-def search_people_with_assets(query: str = "", show_all: bool = False, status: str = "active") -> list[dict]:
-    assets = list_assets()
-    people = list_people()
+def search_people_with_assets(
+    query: str = "",
+    show_all: bool = False,
+    status: str = "active",
+    request: Optional[Request] = None,
+) -> list[dict]:
+    assets = list_assets(request=request)
+    people = list_people(request=request)
     assignments_by_person: dict[int, list[dict]] = {}
 
     for asset in assets:
@@ -5899,10 +6200,12 @@ def search_people_with_assets(query: str = "", show_all: bool = False, status: s
     return rows
 
 
-def get_assets_for_person(person_id: int) -> list[dict]:
+def get_assets_for_person(
+    person_id: int,
+    request: Optional[Request] = None,
+) -> list[dict]:
     assignments_response = (
-        supabase.table("asset_assignments")
-        .select("*")
+        tenant_filter(supabase.table("asset_assignments").select("*"), request=request)
         .eq("person_id", person_id)
         .is_("return_date", "null")
         .execute()
@@ -5918,8 +6221,7 @@ def get_assets_for_person(person_id: int) -> list[dict]:
     }
     asset_ids = list(assignments_by_asset_id.keys())
     assets_response = (
-        supabase.table("assets")
-        .select("*")
+        tenant_filter(supabase.table("assets").select("*"), request=request)
         .in_("asset_id", asset_ids)
         .execute()
     )
@@ -5929,7 +6231,7 @@ def get_assets_for_person(person_id: int) -> list[dict]:
         asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
         asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
         assignment = assignments_by_asset_id.get(asset.get("asset_id")) or {}
-        asset["current_assignment"] = enrich_assignment(assignment)
+        asset["current_assignment"] = enrich_assignment(assignment, request=request)
         asset["effective_status"] = get_effective_status(asset)
 
     assets.sort(key=lambda item: item.get("asset_tag_number") or "")
@@ -6229,8 +6531,11 @@ def load_telegram_asset_list_person(token: str) -> Optional[dict]:
     return person
 
 
-def split_person_assets_by_usage(person: dict) -> tuple[list[dict], list[dict], list[dict]]:
-    assigned_assets = get_assets_for_person(person["person_id"])
+def split_person_assets_by_usage(
+    person: dict,
+    request: Optional[Request] = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    assigned_assets = get_assets_for_person(person["person_id"], request=request)
     assigned_standard_assets = [
         asset
         for asset in assigned_assets
@@ -6269,14 +6574,21 @@ def normalize_department_key(value: Optional[str]) -> str:
     return " ".join((value or "").strip().casefold().split())
 
 
-def get_department_manager_context(person: dict) -> dict:
-    scopes = list_person_responsibility_scopes(int(person.get("person_id")), active_only=True)
+def get_department_manager_context(
+    person: dict,
+    request: Optional[Request] = None,
+) -> dict:
+    scopes = list_person_responsibility_scopes(
+        int(person.get("person_id")),
+        active_only=True,
+        request=request,
+    )
     people = []
     assets = []
-    people_by_id = {row.get("person_id"): row for row in list_people()}
+    people_by_id = {row.get("person_id"): row for row in list_people(request=request)}
 
     if scopes:
-        for asset in list_assets():
+        for asset in list_assets(request=request):
             assignment = asset.get("current_assignment") or {}
             if any(scope_matches_assignment(scope, assignment) for scope in scopes):
                 assets.append(asset)
@@ -6885,7 +7197,10 @@ def telegram_person_asset_list(request: Request, token: str):
     if not person:
         raise HTTPException(status_code=404, detail="Asset list not found")
 
-    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
+    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(
+        person,
+        request=request,
+    )
     _, branding, branding_storage = resolve_branding_for_request(request)
 
     return templates.TemplateResponse(
@@ -6914,7 +7229,10 @@ def telegram_person_asset_list_pdf(request: Request, token: str):
     if not person:
         raise HTTPException(status_code=404, detail="Asset list not found")
 
-    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
+    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(
+        person,
+        request=request,
+    )
     _, branding, _ = resolve_branding_for_request(request)
     pdf_bytes = build_telegram_asset_report_pdf(
         person,
@@ -7034,7 +7352,10 @@ def account_assets(request: Request):
     if account_role_has_admin_access(person.get("account_role")):
         return RedirectResponse(url="/admin", status_code=303)
 
-    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
+    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(
+        person,
+        request=request,
+    )
     personal_assets, department_shared_assets, warehouse_assets = split_person_assets_by_responsibility(assigned_assets)
     _, branding, _ = resolve_branding_for_request(request)
     return templates.TemplateResponse(
@@ -7086,7 +7407,7 @@ def account_department(request: Request):
             "is_department_manager": True,
             "active_page": "department",
             "page_title": "Responsibility Area",
-            **get_department_manager_context(person),
+            **get_department_manager_context(person, request=request),
         },
     )
 
@@ -7101,7 +7422,10 @@ def account_asset_report_pdf(request: Request):
     if not person:
         return RedirectResponse(url="/account/login", status_code=303)
 
-    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(person)
+    assigned_assets, assigned_standard_assets, assigned_low_cost_assets = split_person_assets_by_usage(
+        person,
+        request=request,
+    )
     _, branding, _ = resolve_branding_for_request(request)
     pdf_bytes = build_telegram_asset_report_pdf(
         person,
@@ -7185,7 +7509,7 @@ def admin_dashboard(request: Request, changes_limit: int = 5):
     database_error = ""
     changes_limit = normalize_audit_limit(changes_limit)
     try:
-        assets = list_assets()
+        assets = list_assets(request=request)
         summary = build_asset_summary(assets)
     except DatabaseConnectionError as exc:
         summary = build_asset_summary([])
@@ -7196,7 +7520,7 @@ def admin_dashboard(request: Request, changes_limit: int = 5):
         name="admin_dashboard.html",
         context={
             "summary": summary,
-            "recent_changes": list_recent_audit_events(changes_limit),
+            "recent_changes": list_recent_audit_events(changes_limit, request=request),
             "changes_limit": changes_limit,
             "changes_limit_options": [5, 10, 20, 50],
             "database_error": database_error,
@@ -7218,7 +7542,7 @@ def admin_audit_backfill_transfer_log(request: Request):
         return redirect
 
     try:
-        result = backfill_audit_from_transfer_log()
+        result = backfill_audit_from_transfer_log(request=request)
     except Exception as error:
         set_flash(request, "error", f"Transfer log backfill could not be completed: {error}")
         return RedirectResponse(url="/admin", status_code=303)
@@ -7253,6 +7577,7 @@ def admin_audit_log(
         source=source.strip(),
         page=page,
         page_size=page_size,
+        request=request,
     )
 
     query_params = {
@@ -7292,8 +7617,8 @@ def admin_audit_log(
             "page_count": result["page_count"],
             "pagination_items": pagination_items,
             "page_size_options": [50, 100, 200],
-            "entity_type_options": list_audit_filter_values("entity_type"),
-            "source_options": list_audit_filter_values("source"),
+            "entity_type_options": list_audit_filter_values("entity_type", request=request),
+            "source_options": list_audit_filter_values("source", request=request),
             "query_params": query_params,
             "previous_page_url": previous_page_url,
             "next_page_url": next_page_url,
@@ -7321,7 +7646,7 @@ def admin_assets(
     if redirect:
         return redirect
 
-    assets = list_assets()
+    assets = list_assets(request=request)
     filters = {
         "usage_type": usage_type.strip(),
         "asset_tag": asset_tag.strip(),
@@ -7359,14 +7684,14 @@ def admin_asset_new(request: Request):
     if redirect:
         return redirect
 
-    asset_tag_standards = get_asset_tag_standards()
+    asset_tag_standards = get_asset_tag_standards(request=request)
     asset_tag_standard = asset_tag_standards.get("standard") or {}
     return templates.TemplateResponse(
         request=request,
         name="admin_asset_create.html",
         context={
-            "asset_form": get_asset_form_values(),
-            **get_asset_create_options(),
+            "asset_form": get_asset_form_values(request=request),
+            **get_asset_create_options(request=request),
             "asset_tag_standard": asset_tag_standard,
             "asset_tag_standards": asset_tag_standards,
             "asset_tag_warning": "",
@@ -7426,7 +7751,7 @@ def admin_asset_create(
         return redirect
 
     resolved_status = current_status_custom.strip() if current_status == "__custom__" else current_status.strip()
-    asset_tag_standards = get_asset_tag_standards()
+    asset_tag_standards = get_asset_tag_standards(request=request)
     payment_forms = build_create_payment_forms(
         payment_date,
         payment_amount,
@@ -7503,7 +7828,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": "",
@@ -7521,7 +7846,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": "",
@@ -7540,7 +7865,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7561,7 +7886,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7581,7 +7906,7 @@ def admin_asset_create(
                 name="admin_asset_create.html",
                 context={
                     "asset_form": asset_form,
-                    **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                     "asset_tag_standard": asset_tag_standard,
                     "asset_tag_standards": asset_tag_standards,
                     "asset_tag_warning": asset_tag_warning,
@@ -7593,14 +7918,18 @@ def admin_asset_create(
                 status_code=400,
             )
 
-    existing_asset_tags = [generated_tag for generated_tag in asset_tags_to_create if asset_tag_exists(generated_tag)]
+    existing_asset_tags = [
+        generated_tag
+        for generated_tag in asset_tags_to_create
+        if asset_tag_exists(generated_tag, request=request)
+    ]
     if existing_asset_tags:
         return templates.TemplateResponse(
             request=request,
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7621,7 +7950,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7657,7 +7986,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7675,7 +8004,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7707,6 +8036,7 @@ def admin_asset_create(
                 notes="",
                 fallback_amount=insert_data_base.get("purchase_price") if len(filled_payment_forms) == 1 else None,
                 eur_equivalent_amount=payment.get("payment_eur_amount") or "",
+                request=request,
             )
         except Exception as error:
             return templates.TemplateResponse(
@@ -7714,7 +8044,7 @@ def admin_asset_create(
                 name="admin_asset_create.html",
                 context={
                     "asset_form": asset_form,
-                    **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                     "asset_tag_standard": asset_tag_standard,
                     "asset_tag_standards": asset_tag_standards,
                     "asset_tag_warning": asset_tag_warning,
@@ -7735,7 +8065,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7757,7 +8087,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7774,7 +8104,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7791,7 +8121,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7808,7 +8138,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7837,7 +8167,7 @@ def admin_asset_create(
                 name="admin_asset_create.html",
                 context={
                     "asset_form": asset_form,
-                    **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                     "asset_tag_standard": asset_tag_standard,
                     "asset_tag_standards": asset_tag_standards,
                     "asset_tag_warning": asset_tag_warning,
@@ -7878,7 +8208,7 @@ def admin_asset_create(
             name="admin_asset_create.html",
             context={
                 "asset_form": asset_form,
-                **get_asset_create_options(),
+                **get_asset_create_options(request=request),
                 "asset_tag_standard": asset_tag_standard,
                 "asset_tag_standards": asset_tag_standards,
                 "asset_tag_warning": asset_tag_warning,
@@ -7927,6 +8257,7 @@ def admin_asset_create(
                             notes=payment_note_lines[index - 1] if index - 1 < len(payment_note_lines) else "",
                             fallback_amount=parse_float_field(asset_form["purchase_price"]) if len(filled_payment_forms) == 1 else None,
                             eur_equivalent_amount=payment.get("payment_eur_amount") or "",
+                            request=request,
                         )
                     )
             supabase.table("asset_payments").insert(add_tenant_id_to_many(payment_payloads, request=request)).execute()
@@ -7967,7 +8298,10 @@ def admin_asset_create(
                     {**template, "asset_id": created_asset.get("asset_id")}
                     for template in funding_payload_templates
                 ]
-                funding_summary = " / ".join(describe_project_funding_payload(payload) for payload in created_funding)
+                funding_summary = " / ".join(
+                    describe_project_funding_payload(payload, request=request)
+                    for payload in created_funding
+                )
                 audit_log_event(
                     entity_type="Project",
                     entity_id=created_asset.get("asset_id"),
@@ -8093,7 +8427,7 @@ def admin_asset_delete_range_preview(
     flash = None
     try:
         asset_tags = generate_asset_tag_range(normalized_start, normalized_end)
-        delete_preview = get_asset_delete_preview(asset_tags)
+        delete_preview = get_asset_delete_preview(asset_tags, request=request)
     except ValueError as error:
         flash = {"level": "error", "message": str(error)}
     except Exception as error:
@@ -8139,7 +8473,7 @@ def admin_asset_delete_range_confirm(
 
     try:
         asset_tags = generate_asset_tag_range(normalized_start, normalized_end)
-        assets_to_delete = get_assets_by_tags(asset_tags)
+        assets_to_delete = get_assets_by_tags(asset_tags, request=request)
         asset_ids = [asset.get("asset_id") for asset in assets_to_delete if asset.get("asset_id")]
         delete_assets_cascade(asset_ids)
         for asset in assets_to_delete:
@@ -8184,7 +8518,7 @@ def get_bulk_assignment_template_context(request: Request, form: dict, bulk_prev
     return {
         "form": form,
         "bulk_preview": bulk_preview,
-        **get_asset_create_options(),
+        **get_asset_create_options(request=request),
         "flash": flash or pop_flash(request),
         "active_page": "assets",
         "page_title": "Bulk Assignment",
@@ -8192,9 +8526,16 @@ def get_bulk_assignment_template_context(request: Request, form: dict, bulk_prev
     }
 
 
-def get_bulk_assignment_preview(start_tag: str, end_tag: str) -> dict:
+def get_bulk_assignment_preview(
+    start_tag: str,
+    end_tag: str,
+    request: Optional[Request] = None,
+) -> dict:
     asset_tags = generate_asset_tag_range(start_tag, end_tag)
-    assets = [get_asset_by_id(asset.get("asset_id")) for asset in get_assets_by_tags(asset_tags)]
+    assets = [
+        get_asset_by_id(asset.get("asset_id"), request=request)
+        for asset in get_assets_by_tags(asset_tags, request=request)
+    ]
     assets = [asset for asset in assets if asset]
     found_tags = {normalize_asset_tag(asset.get("asset_tag_number") or "") for asset in assets}
     return {
@@ -8248,7 +8589,11 @@ def admin_asset_bulk_assignment_preview(
     bulk_preview = None
     flash = None
     try:
-        bulk_preview = get_bulk_assignment_preview(form["start_tag"], form["end_tag"])
+        bulk_preview = get_bulk_assignment_preview(
+            form["start_tag"],
+            form["end_tag"],
+            request=request,
+        )
     except ValueError as error:
         flash = {"level": "error", "message": str(error)}
     except Exception as error:
@@ -8301,7 +8646,7 @@ def admin_asset_bulk_assignment_apply(
     skipped = 0
     try:
         for selected_asset_id in asset_id:
-            asset = get_asset_by_id(int(selected_asset_id))
+            asset = get_asset_by_id(int(selected_asset_id), request=request)
             if not asset:
                 skipped += 1
                 continue
@@ -8338,7 +8683,12 @@ def admin_people(request: Request, q: str = "", show_all: bool = False, status: 
         return redirect
 
     status = status if status in {"active", "inactive", "all"} else "active"
-    people = search_people_with_assets(q, show_all=show_all, status=status)
+    people = search_people_with_assets(
+        q,
+        show_all=show_all,
+        status=status,
+        request=request,
+    )
 
     return templates.TemplateResponse(
         request=request,
@@ -8427,7 +8777,7 @@ def admin_person_create(
         if is_person_id_sequence_conflict(exc):
             retry_data = dict(insert_data)
             try:
-                retry_data["person_id"] = get_next_person_id()
+                retry_data["person_id"] = get_next_person_id(request=request)
                 response = supabase.table("persons").insert(retry_data).execute()
             except Exception as retry_exc:
                 exc = retry_exc
@@ -8457,7 +8807,7 @@ def admin_person_create(
             details = (exc.details or "").lower()
             combined = f"{message} {details}"
             if "duplicate" in combined or "unique" in combined:
-                existing_person = find_existing_person(person_form)
+                existing_person = find_existing_person(person_form, request=request)
                 if existing_person and existing_person.get("person_id"):
                     existing_name = get_person_display_name(existing_person)
                     set_flash(request, "success", f"Employee {existing_name} already exists. Opened the existing record.")
@@ -8500,11 +8850,11 @@ def admin_person_detail(request: Request, person_id: int):
     if redirect:
         return redirect
 
-    person = get_person_by_id(person_id)
+    person = get_person_by_id(person_id, request=request)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
-    assigned_assets = get_assets_for_person(person_id)
+    assigned_assets = get_assets_for_person(person_id, request=request)
     assigned_standard_assets = [
         asset
         for asset in assigned_assets
@@ -8526,8 +8876,11 @@ def admin_person_detail(request: Request, person_id: int):
         context={
             "person": person,
             "person_field_rows": build_person_field_rows(person),
-            "responsibility_scopes": list_person_responsibility_scopes(person_id),
-            "responsibility_scope_options": get_responsibility_scope_form_options(),
+            "responsibility_scopes": list_person_responsibility_scopes(
+                person_id,
+                request=request,
+            ),
+            "responsibility_scope_options": get_responsibility_scope_form_options(request=request),
             "display_name": display_name,
             "report_display_name": report_display_name,
             "assigned_assets": assigned_assets,
@@ -8563,7 +8916,7 @@ def admin_person_responsibility_scope_create(
     if redirect:
         return redirect
 
-    person = get_person_by_id(person_id)
+    person = get_person_by_id(person_id, request=request)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
@@ -8639,11 +8992,11 @@ def admin_person_offboard(request: Request, person_id: int):
     if redirect:
         return redirect
 
-    person = get_person_by_id(person_id)
+    person = get_person_by_id(person_id, request=request)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
-    context = build_person_offboarding_context(person)
+    context = build_person_offboarding_context(person, request=request)
     return templates.TemplateResponse(
         request=request,
         name="admin_person_offboard.html",
@@ -8668,15 +9021,15 @@ async def admin_person_offboard_submit(request: Request, person_id: int):
     if redirect:
         return redirect
 
-    person = get_person_by_id(person_id)
+    person = get_person_by_id(person_id, request=request)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
     form = await request.form()
     try:
-        result = apply_person_offboarding(person, form)
+        result = apply_person_offboarding(person, form, request=request)
     except Exception as error:
-        context = build_person_offboarding_context(person)
+        context = build_person_offboarding_context(person, request=request)
         return templates.TemplateResponse(
             request=request,
             name="admin_person_offboard.html",
@@ -8710,7 +9063,7 @@ def admin_person_edit(request: Request, person_id: int):
     if redirect:
         return redirect
 
-    person = get_person_by_id(person_id)
+    person = get_person_by_id(person_id, request=request)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
@@ -8739,7 +9092,7 @@ async def admin_person_edit_submit(request: Request, person_id: int):
     if redirect:
         return redirect
 
-    person = get_person_by_id(person_id)
+    person = get_person_by_id(person_id, request=request)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
@@ -8928,12 +9281,12 @@ def admin_reference_data(
     if redirect:
         return redirect
 
-    projects = list_projects()
-    donors = list_donors()
-    locations = list_assignment_location_options()
-    edit_project = get_project_by_id(edit_project_id) if edit_project_id else None
-    edit_donor = get_donor_by_id(edit_donor_id) if edit_donor_id else None
-    edit_location = get_location_by_id(edit_location_id) if edit_location_id else None
+    projects = list_projects(request=request)
+    donors = list_donors(request=request)
+    locations = list_assignment_location_options(request=request)
+    edit_project = get_project_by_id(edit_project_id, request=request) if edit_project_id else None
+    edit_donor = get_donor_by_id(edit_donor_id, request=request) if edit_donor_id else None
+    edit_location = get_location_by_id(edit_location_id, request=request) if edit_location_id else None
 
     return templates.TemplateResponse(
         request=request,
@@ -8984,7 +9337,7 @@ def admin_reference_data_location_create(
         return RedirectResponse(url="/admin/reference-data#locations", status_code=303)
 
     payload = {
-        "location_id": get_next_numeric_id("locations", "location_id"),
+        "location_id": get_next_numeric_id("locations", "location_id", request=request),
         "country": country,
         "city": city,
         "name": name,
@@ -9017,7 +9370,7 @@ def admin_reference_data_location_update(
     if redirect:
         return redirect
 
-    location = get_location_by_id(location_id)
+    location = get_location_by_id(location_id, request=request)
     if not location:
         raise HTTPException(status_code=404, detail="Location not found")
 
@@ -9073,7 +9426,7 @@ def admin_reference_data_project_create(
         return RedirectResponse(url="/admin/reference-data#projects", status_code=303)
 
     payload = {
-        "project_id": get_next_numeric_id("projects", "project_id"),
+        "project_id": get_next_numeric_id("projects", "project_id", request=request),
         "project_number": project_number,
         "project_name": project_name.strip() or None,
         "start_date": start_date.strip() or None,
@@ -9109,7 +9462,7 @@ def admin_reference_data_project_update(
     if redirect:
         return redirect
 
-    project = get_project_by_id(project_id)
+    project = get_project_by_id(project_id, request=request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -9156,7 +9509,7 @@ def admin_reference_data_donor_create(
         return RedirectResponse(url="/admin/reference-data#donors", status_code=303)
 
     payload = {
-        "donor_id": get_next_numeric_id("donors", "donor_id"),
+        "donor_id": get_next_numeric_id("donors", "donor_id", request=request),
         "donor_name": donor_name,
         "contact_person": contact_person.strip() or None,
         "contact_email": contact_email.strip() or None,
@@ -9188,7 +9541,7 @@ def admin_reference_data_donor_update(
     if redirect:
         return redirect
 
-    donor = get_donor_by_id(donor_id)
+    donor = get_donor_by_id(donor_id, request=request)
     if not donor:
         raise HTTPException(status_code=404, detail="Donor not found")
 
@@ -9219,12 +9572,12 @@ def admin_asset_detail(request: Request, asset_id: int):
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     assert_record_tenant(asset, request=request, label="Asset")
 
-    assignment_history = get_assignment_history(asset_id)
+    assignment_history = get_assignment_history(asset_id, request=request)
 
     return templates.TemplateResponse(
         request=request,
@@ -9237,10 +9590,10 @@ def admin_asset_detail(request: Request, asset_id: int):
             "page_title": f"Asset {asset.get('asset_tag_number')}",
             "admin_username": request.session.get("admin_username"),
             "usage_type_options": ASSET_USAGE_TYPE_OPTIONS,
-            **get_assignment_form_context(asset),
-            **get_asset_project_form_context(asset_id),
-            **get_asset_payment_context(asset_id),
-            **get_asset_transfer_context(asset_id),
+            **get_assignment_form_context(asset, request=request),
+            **get_asset_project_form_context(asset_id, request=request),
+            **get_asset_payment_context(asset_id, request=request),
+            **get_asset_transfer_context(asset_id, request=request),
         },
     )
 
@@ -9266,7 +9619,7 @@ def admin_asset_edit(
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -9326,7 +9679,7 @@ def admin_asset_assignment_update(
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -9368,7 +9721,7 @@ def admin_asset_assignment_update(
 
     if not parsed_person_id and not parsed_location_id:
         if current_assignment:
-            close_current_assignments(asset_id, assignment_date, actor)
+            close_current_assignments(asset_id, assignment_date, actor, request=request)
             if status:
                 tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
             transfer_id = create_asset_transfer_from_assignment_change(
@@ -9380,6 +9733,7 @@ def admin_asset_assignment_update(
                 status=status or current_assignment.get("status") or asset.get("current_status"),
                 condition=handover_condition or current_assignment.get("handover_condition"),
                 to_location_id=None,
+                request=request,
             )
             audit_log_event(
                 entity_type="Transfer",
@@ -9426,7 +9780,7 @@ def admin_asset_assignment_update(
             set_flash(request, "success", "Current assignment already matches the submitted values.")
             return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
         try:
-            close_current_assignments(asset_id, assignment_date, actor)
+            close_current_assignments(asset_id, assignment_date, actor, request=request)
             supabase.table("asset_assignments").insert(add_tenant_id(add_assignment_actor_fields(new_assignment, actor), request=request)).execute()
             if status:
                 tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
@@ -9438,7 +9792,7 @@ def admin_asset_assignment_update(
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
     try:
-        close_current_assignments(asset_id, assignment_date, actor)
+        close_current_assignments(asset_id, assignment_date, actor, request=request)
         supabase.table("asset_assignments").insert(add_tenant_id(add_assignment_actor_fields(new_assignment, actor), request=request)).execute()
         if status:
             tenant_filter(supabase.table("assets").update({"current_status": status}), request=request).eq("asset_id", asset_id).execute()
@@ -9446,7 +9800,7 @@ def admin_asset_assignment_update(
         set_flash(request, "error", describe_assignment_update_error(exc))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
-    target_person = get_person_by_id(parsed_person_id) if parsed_person_id else None
+    target_person = get_person_by_id(parsed_person_id, request=request) if parsed_person_id else None
     new_responsible = get_person_display_name(target_person) if target_person else "Warehouse"
     try:
         transfer_id = create_asset_transfer_from_assignment_change(
@@ -9458,6 +9812,7 @@ def admin_asset_assignment_update(
             status=status or (current_assignment or {}).get("status") or asset.get("current_status"),
             condition=handover_condition or (current_assignment or {}).get("handover_condition"),
             to_location_id=parsed_location_id,
+            request=request,
         )
     except Exception as exc:
         set_flash(request, "error", describe_assignment_update_error(exc))
@@ -9499,7 +9854,7 @@ def admin_asset_payment_create(
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -9513,6 +9868,7 @@ def admin_asset_payment_create(
             payment_status=payment_status,
             notes=notes,
             eur_equivalent_amount=eur_equivalent_amount,
+            request=request,
         )
         supabase.table("asset_payments").insert(add_tenant_id(payload, request=request)).execute()
         audit_log_event(
@@ -9548,7 +9904,7 @@ def admin_asset_payment_update(
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -9561,7 +9917,10 @@ def admin_asset_payment_update(
             .execute()
         )
         old_payment = (old_payment_response.data or [{}])[0]
-        parsed_number = int(payment_number.strip()) if payment_number.strip() else get_next_payment_number(asset_id)
+        parsed_number = int(payment_number.strip()) if payment_number.strip() else get_next_payment_number(
+            asset_id,
+            request=request,
+        )
         payload = build_asset_payment_payload(
             asset_id=asset_id,
             payment_number=parsed_number,
@@ -9571,6 +9930,7 @@ def admin_asset_payment_update(
             payment_status=payment_status,
             notes=notes,
             eur_equivalent_amount=eur_equivalent_amount,
+            request=request,
         )
         payload.pop("asset_id", None)
         tenant_filter(supabase.table("asset_payments").update(payload), request=request).eq("payment_id", payment_id).eq("asset_id", asset_id).execute()
@@ -9597,7 +9957,7 @@ def admin_asset_payment_delete(request: Request, asset_id: int, payment_id: int)
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -9645,7 +10005,7 @@ def admin_asset_project_create(
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -9665,7 +10025,7 @@ def admin_asset_project_create(
         set_flash(request, "error", str(error))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
-    if parsed_percent is not None and get_asset_project_total_percent(asset_id) + parsed_percent > 100.001:
+    if parsed_percent is not None and get_asset_project_total_percent(asset_id, request=request) + parsed_percent > 100.001:
         set_flash(request, "error", "Total allocated percent cannot be greater than 100%.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
@@ -9696,7 +10056,7 @@ def admin_asset_project_create(
             entity_id=asset_id,
             entity_label=asset.get("asset_tag_number"),
             action="created",
-            summary=f"Added project funding for {asset.get('asset_tag_number')}: {describe_project_funding_payload(payload)}",
+            summary=f"Added project funding for {asset.get('asset_tag_number')}: {describe_project_funding_payload(payload, request=request)}",
             request=request,
         )
     except Exception as error:
@@ -9726,7 +10086,7 @@ def admin_asset_project_update(
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -9746,7 +10106,11 @@ def admin_asset_project_update(
         set_flash(request, "error", str(error))
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
-    if parsed_percent is not None and get_asset_project_total_percent(asset_id, exclude_asset_project_id=asset_project_id) + parsed_percent > 100.001:
+    if parsed_percent is not None and get_asset_project_total_percent(
+        asset_id,
+        exclude_asset_project_id=asset_project_id,
+        request=request,
+    ) + parsed_percent > 100.001:
         set_flash(request, "error", "Total allocated percent cannot be greater than 100%.")
         return RedirectResponse(url=f"/admin/assets/{asset_id}", status_code=303)
 
@@ -9801,7 +10165,7 @@ def admin_asset_project_delete(request: Request, asset_id: int, asset_project_id
     if redirect:
         return redirect
 
-    asset = get_asset_by_id(asset_id)
+    asset = get_asset_by_id(asset_id, request=request)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -9820,7 +10184,7 @@ def admin_asset_project_delete(request: Request, asset_id: int, asset_project_id
             entity_id=asset_project_id,
             entity_label=asset.get("asset_tag_number"),
             action="deleted",
-            summary=f"Removed project funding for {asset.get('asset_tag_number')}: {describe_project_funding_payload(old_project)}",
+            summary=f"Removed project funding for {asset.get('asset_tag_number')}: {describe_project_funding_payload(old_project, request=request)}",
             request=request,
         )
     except Exception as error:
@@ -9837,7 +10201,7 @@ def admin_reports(request: Request):
     if redirect:
         return redirect
 
-    assets = list_assets()
+    assets = list_assets(request=request)
     summary = build_asset_summary(assets)
 
     return templates.TemplateResponse(
@@ -9858,7 +10222,7 @@ def admin_reports_export(request: Request, report_name: str):
     if redirect:
         return redirect
 
-    assets = list_assets()
+    assets = list_assets(request=request)
 
     if report_name == "cities":
         rows = summarize_assets_by_field(assets, "city", "Unknown")
@@ -9967,7 +10331,12 @@ async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)
     try:
         excel_records = load_excel_sync_rows(SYNC_WORKBOOK_PATH)
         transfer_records = load_excel_transfer_log_rows(SYNC_WORKBOOK_PATH)
-        preview = build_sync_preview(excel_records, list_asset_records(), transfer_records)
+        preview = build_sync_preview(
+            excel_records,
+            list_asset_records(request=request),
+            transfer_records,
+            request=request,
+        )
     except ValueError as error:
         set_flash(request, "error", str(error))
         return RedirectResponse(url="/admin/sync", status_code=303)
@@ -10029,7 +10398,7 @@ def admin_sync_apply(
         return RedirectResponse(url="/admin/sync", status_code=303)
 
     try:
-        result = apply_sync_preview(selected_preview)
+        result = apply_sync_preview(selected_preview, request=request)
     except Exception as error:
         set_flash(request, "error", f"Could not apply sync changes: {error}")
         return RedirectResponse(url="/admin/sync", status_code=303)
@@ -10064,7 +10433,7 @@ def admin_sync_export(request: Request):
 
     sync_state = load_sync_state()
     try:
-        result = export_supabase_to_excel()
+        result = export_supabase_to_excel(request=request)
     except ValueError as error:
         set_flash(request, "error", str(error))
         return RedirectResponse(url="/admin/sync", status_code=303)
