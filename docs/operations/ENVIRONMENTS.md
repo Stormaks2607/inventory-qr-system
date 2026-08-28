@@ -36,6 +36,7 @@ Secrets rules:
 - Use staging-only secrets.
 - `ADMIN_SESSION_SECRET` must be unique and strong.
 - Bot tokens and Supabase keys must be staging-specific if Telegram tests are enabled.
+- `TELEGRAM_WEBHOOK_SECRET` must be staging-specific when the webhook is enabled.
 
 Deployment expectations:
 - Provider-portable deployment target where practical.
@@ -43,6 +44,7 @@ Deployment expectations:
 - `PUBLIC_BASE_URL` must be configured as the canonical staging URL, for example `https://<staging-render-host>`.
 - `INTERNAL_API_BASE_URL` is optional; it may equal `PUBLIC_BASE_URL` while the bot/backend share one service.
 - `BOT_TOKEN` should remain unset unless a dedicated staging Telegram bot exists.
+- `TELEGRAM_WEBHOOK_SECRET` is required before enabling non-default tenant access through the webhook.
 - STAGING must not reuse the production Telegram bot token or webhook.
 
 Migration testing rules:
@@ -66,6 +68,7 @@ Deployment expectations:
 - User-visible links, QR links, Telegram Mini App links, and callbacks use `PUBLIC_BASE_URL`.
 - `PUBLIC_BASE_URL=https://inventory-qr-system.onrender.com` must be explicitly configured in Render for pilot production.
 - `DEFAULT_TENANT_ID=00000000-0000-4000-8000-000000000001` must be explicitly configured for Tenant #1 once tenant-aware writes are deployed.
+- `TELEGRAM_WEBHOOK_SECRET` must match the secret token configured with Telegram before any non-default tenant uses the webhook.
 - Provider-specific assumptions should be avoided in new code.
 
 Migration testing rules:

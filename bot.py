@@ -53,9 +53,14 @@ auth_keyboard = ReplyKeyboardMarkup(
 )
 
 
-def get_asset(asset_tag: str):
+def get_asset(asset_tag: str, tenant_id: str):
     try:
-        response = requests.get(f"{API_URL}/asset/{asset_tag}", timeout=10)
+        asset_path = inventory_app.build_tenant_public_asset_path(
+            tenant_id,
+            asset_tag,
+            view=False,
+        )
+        response = requests.get(f"{API_URL}{asset_path}", timeout=10)
         if response.status_code == 200:
             return response.json()
     except Exception as exc:
@@ -85,8 +90,9 @@ def format_asset(asset: dict) -> str:
     )
 
 
-async def send_asset_card(update: Update, asset_tag: str):
-    asset = get_asset(asset_tag)
+async def send_asset_card(update: Update, asset_tag: str, person: dict):
+    tenant_id = inventory_app.get_active_telegram_person_tenant_id(person)
+    asset = get_asset(asset_tag, tenant_id) if tenant_id else None
 
     if not asset:
         await update.message.reply_text(
@@ -96,7 +102,7 @@ async def send_asset_card(update: Update, asset_tag: str):
         return
 
     message = format_asset(asset)
-    url = f"{PUBLIC_WEB_URL}/view/{asset_tag}"
+    url = f"{PUBLIC_WEB_URL}{inventory_app.build_tenant_public_asset_path(tenant_id, asset_tag)}"
 
     inline_keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton("🔍 Open asset card", url=url)]]
@@ -189,7 +195,19 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    inventory_app.save_person_telegram_identity(person["person_id"], telegram_user.to_dict(), contact.phone_number)
+    tenant_id = inventory_app.get_active_telegram_person_tenant_id(person)
+    if not tenant_id:
+        await update.message.reply_text(
+            "Telegram authorization is not available for this organization. Please contact the administrator.",
+            reply_markup=auth_keyboard,
+        )
+        return
+    inventory_app.save_person_telegram_identity(
+        person["person_id"],
+        telegram_user.to_dict(),
+        contact.phone_number,
+        tenant_id=tenant_id,
+    )
     await update.message.reply_text(
         f"Authorization successful. Welcome, {inventory_app.get_person_display_name(person)}.",
         reply_markup=main_keyboard,
@@ -231,7 +249,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await reply_long_text(update, format_person_assets(person), reply_markup=inline_keyboard)
         return
 
-    await send_asset_card(update, text)
+    await send_asset_card(update, text, person)
 
 
 async def handle_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,14 +265,15 @@ async def handle_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return
 
-        if not get_authorized_person(update):
+        person = get_authorized_person(update)
+        if not person:
             await update.message.reply_text(
                 "Please authorize first: tap 'Share phone number'.",
                 reply_markup=auth_keyboard,
             )
             return
 
-        await send_asset_card(update, asset_tag)
+        await send_asset_card(update, asset_tag, person)
 
     except Exception as exc:
         await update.message.reply_text(

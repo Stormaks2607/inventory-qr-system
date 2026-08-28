@@ -71,6 +71,7 @@ Reason: the current application uses direct `public` schema Supabase calls throu
 | `INVENTORY_TEST_MODE` | `1` for automated tests | unset unless running isolated tests | unset | test-only | no | yes |
 | `SYNC_STORAGE_BUCKET` | optional; fake/local when testing | staging-only private bucket | production private bucket | optional with default | no | yes |
 | `BOT_TOKEN` | unset unless testing a dev bot | staging bot token or unset | production bot token if Telegram enabled | optional | yes | yes if enabled |
+| `TELEGRAM_WEBHOOK_SECRET` | unset unless testing a dev webhook | staging webhook secret or unset | production webhook secret if Telegram webhook is enabled | required for non-default tenants using webhook | yes | yes if enabled |
 | `ADMIN_USERNAME` | local admin username | staging admin username | production admin username | optional with unsafe default | yes-ish | yes |
 | `ADMIN_PASSWORD` | local password | staging password | production password | optional with unsafe default | yes | yes |
 | `ADMIN_SESSION_SECRET` | local strong value or test fallback only | staging strong random value | production strong random value | should be required in production later | yes | yes |
@@ -95,6 +96,7 @@ For initial staging, leave `BOT_TOKEN` unset unless a dedicated staging bot exis
 If enabled:
 
 - use a separate Telegram bot;
+- configure a unique `TELEGRAM_WEBHOOK_SECRET` and the matching Telegram webhook secret token before testing non-default tenants;
 - point Mini App and report links to staging `PUBLIC_BASE_URL`;
 - use `INTERNAL_API_BASE_URL` only for service-to-service backend calls if bot/backend are split;
 - never reuse the production bot token in staging;
