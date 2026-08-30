@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 TENANT_ONE = "00000000-0000-4000-8000-000000000001"
 TENANT_TWO = "00000000-0000-4000-8000-000000000002"
+UNKNOWN_TENANT = "00000000-0000-4000-8000-000000000099"
 
 
 class FakeResponse:
@@ -102,6 +103,67 @@ def install_webhook_identity(monkeypatch, app_module, person, asset_lookup):
         lambda candidate, **kwargs: candidate.get("tenant_id") if candidate else None,
     )
     monkeypatch.setattr(app_module, "get_asset_by_tag", asset_lookup)
+
+
+def install_asset_list_tenant_fixture(monkeypatch, app_module):
+    tenant_one_person = telegram_person(1, 101, TENANT_ONE)
+    tenant_two_person = telegram_person(2, 202, TENANT_TWO)
+    fake = MemorySupabase(
+        {
+            "tenants": [
+                {"tenant_id": TENANT_ONE, "status": "active"},
+                {"tenant_id": TENANT_TWO, "status": "active"},
+            ],
+            "persons": [tenant_one_person, tenant_two_person],
+            "organization_branding": [
+                {
+                    "tenant_id": TENANT_ONE,
+                    "tenant_key": "tenant-one",
+                    "company_name": "Tenant One Company",
+                },
+                {
+                    "tenant_id": TENANT_TWO,
+                    "tenant_key": "tenant-two",
+                    "company_name": "Tenant Two Company",
+                },
+            ],
+        }
+    )
+    assets = [
+        {
+            "asset_id": 11,
+            "asset_tag_number": "TENANT-ONE-ASSET",
+            "item_description": "Tenant One private asset",
+            "brand_make": "Tenant One Brand",
+            "model": "T1",
+            "usage_type": "standard",
+            "person_id": 1,
+            "tenant_id": TENANT_ONE,
+        },
+        {
+            "asset_id": 22,
+            "asset_tag_number": "TENANT-TWO-ASSET",
+            "item_description": "Tenant Two private asset",
+            "brand_make": "Tenant Two Brand",
+            "model": "T2",
+            "usage_type": "standard",
+            "person_id": 2,
+            "tenant_id": TENANT_TWO,
+        },
+    ]
+    asset_lookups = []
+
+    def get_assets_for_person(person_id, request=None, tenant_id=None):
+        asset_lookups.append((person_id, tenant_id))
+        return [
+            dict(asset)
+            for asset in assets
+            if asset["person_id"] == person_id and asset["tenant_id"] == tenant_id
+        ]
+
+    monkeypatch.setattr(app_module, "supabase", fake)
+    monkeypatch.setattr(app_module, "get_assets_for_person", get_assets_for_person)
+    return fake, tenant_one_person, tenant_two_person, asset_lookups
 
 
 def test_telegram_identity_resolves_unique_person_across_tenants(app_module, monkeypatch):
@@ -442,3 +504,209 @@ def test_standalone_bot_uses_tenant_qualified_api_and_view_links(app_module, mon
 
     button = replies[-1][1].inline_keyboard[0][0]
     assert button.url.endswith(f"/t/{TENANT_TWO}/view/TENANT%20TWO%2FASSET")
+
+
+def test_telegram_identity_for_inactive_registered_tenant_fails_closed(app_module, monkeypatch):
+    fake = MemorySupabase(
+        {
+            "tenants": [{"tenant_id": TENANT_TWO, "status": "inactive"}],
+            "persons": [telegram_person(2, 202, TENANT_TWO)],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake)
+
+    assert app_module.find_person_by_telegram_user_id(202) is None
+    assert ("tenants", "eq", "tenant_id", TENANT_TWO) in fake.operations
+    assert ("tenants", "eq", "status", "active") in fake.operations
+    assert all(operation[0] != "assets" for operation in fake.operations)
+
+
+def test_telegram_identity_for_unknown_tenant_uuid_fails_closed(app_module, monkeypatch):
+    fake = MemorySupabase(
+        {
+            "tenants": [],
+            "persons": [telegram_person(99, 999, UNKNOWN_TENANT)],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake)
+
+    assert app_module.find_person_by_telegram_user_id(999) is None
+    assert ("tenants", "eq", "tenant_id", UNKNOWN_TENANT) in fake.operations
+    assert all(operation[0] != "assets" for operation in fake.operations)
+
+
+def test_malformed_tenant_claim_in_signed_asset_list_token_fails_closed(
+    app_module,
+    client,
+    monkeypatch,
+):
+    token = app_module.get_telegram_asset_list_serializer().dumps(
+        {"person_id": 2, "messenger_id": "202", "tenant_id": "not-a-uuid"}
+    )
+    monkeypatch.setattr(
+        app_module,
+        "get_person_by_id",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("person lookup must not run")),
+    )
+
+    response = client.get(f"/telegram/assets/{token}")
+
+    assert response.status_code == 404
+
+
+def test_tenant_two_asset_list_route_isolates_assets_and_branding(
+    app_module,
+    client,
+    monkeypatch,
+):
+    fake, _, tenant_two_person, asset_lookups = install_asset_list_tenant_fixture(
+        monkeypatch,
+        app_module,
+    )
+    token = app_module.create_telegram_asset_list_token(tenant_two_person)
+
+    response = client.get(f"/telegram/assets/{token}")
+
+    assert response.status_code == 200
+    assert "TENANT-TWO-ASSET" in response.text
+    assert "Tenant Two Company" in response.text
+    assert "TENANT-ONE-ASSET" not in response.text
+    assert "Tenant One Company" not in response.text
+    assert asset_lookups == [(2, TENANT_TWO)]
+    person_tenant_filters = [
+        operation
+        for operation in fake.operations
+        if operation[:3] == ("persons", "eq", "tenant_id")
+    ]
+    assert person_tenant_filters == [("persons", "eq", "tenant_id", TENANT_TWO)]
+    branding_tenant_filters = [
+        operation
+        for operation in fake.operations
+        if operation[:3] == ("organization_branding", "eq", "tenant_id")
+    ]
+    assert branding_tenant_filters == [
+        ("organization_branding", "eq", "tenant_id", TENANT_TWO)
+    ]
+
+
+def test_tenant_two_asset_list_pdf_route_isolates_assets_and_branding(
+    app_module,
+    client,
+    monkeypatch,
+):
+    fake, _, tenant_two_person, asset_lookups = install_asset_list_tenant_fixture(
+        monkeypatch,
+        app_module,
+    )
+    captured = {}
+
+    def build_pdf(person, assets, standard_assets, low_cost_assets, branding):
+        captured.update(
+            {
+                "person": person,
+                "assets": assets,
+                "standard_assets": standard_assets,
+                "low_cost_assets": low_cost_assets,
+                "branding": branding,
+            }
+        )
+        return b"%PDF-1.4\nTENANT-TWO-REPORT\n"
+
+    monkeypatch.setattr(app_module, "build_telegram_asset_report_pdf", build_pdf)
+    token = app_module.create_telegram_asset_list_token(tenant_two_person)
+
+    response = client.get(f"/telegram/assets/{token}/pdf")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content == b"%PDF-1.4\nTENANT-TWO-REPORT\n"
+    assert [asset["asset_tag_number"] for asset in captured["assets"]] == [
+        "TENANT-TWO-ASSET"
+    ]
+    assert captured["branding"]["company_name"] == "Tenant Two Company"
+    assert asset_lookups == [(2, TENANT_TWO)]
+    assert ("organization_branding", "eq", "tenant_id", TENANT_TWO) in fake.operations
+    assert ("organization_branding", "eq", "tenant_id", TENANT_ONE) not in fake.operations
+
+
+def test_tampered_asset_list_token_is_rejected_before_person_or_asset_lookup(
+    app_module,
+    client,
+    monkeypatch,
+):
+    person = telegram_person(2, 202, TENANT_TWO)
+    monkeypatch.setattr(
+        app_module,
+        "get_active_telegram_person_tenant_id",
+        lambda candidate, **kwargs: candidate.get("tenant_id") if candidate else None,
+    )
+    token = app_module.create_telegram_asset_list_token(person)
+    monkeypatch.setattr(
+        app_module,
+        "get_person_by_id",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("person lookup must not run")),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "get_assets_for_person",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("asset lookup must not run")),
+    )
+
+    response = client.get(f"/telegram/assets/{token}tampered")
+
+    assert response.status_code == 404
+
+
+def test_asset_list_token_rejects_tenant_person_mismatch_before_asset_lookup(
+    app_module,
+    client,
+    monkeypatch,
+):
+    tenant_one_person = telegram_person(1, 101, TENANT_ONE)
+    token = app_module.get_telegram_asset_list_serializer().dumps(
+        {"person_id": 1, "messenger_id": "101", "tenant_id": TENANT_TWO}
+    )
+    person_lookups = []
+    monkeypatch.setattr(app_module, "resolve_public_tenant_id", lambda tenant_id: tenant_id)
+    monkeypatch.setattr(
+        app_module,
+        "get_person_by_id",
+        lambda person_id, request=None, tenant_id=None: person_lookups.append((person_id, tenant_id))
+        or tenant_one_person,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "get_assets_for_person",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("asset lookup must not run")),
+    )
+
+    response = client.get(f"/telegram/assets/{token}")
+
+    assert response.status_code == 404
+    assert person_lookups == [(1, TENANT_TWO)]
+
+
+def test_asset_list_token_rejects_messenger_identity_mismatch_before_asset_lookup(
+    app_module,
+    client,
+    monkeypatch,
+):
+    tenant_two_person = telegram_person(2, 999, TENANT_TWO)
+    token = app_module.get_telegram_asset_list_serializer().dumps(
+        {"person_id": 2, "messenger_id": "202", "tenant_id": TENANT_TWO}
+    )
+    monkeypatch.setattr(app_module, "resolve_public_tenant_id", lambda tenant_id: tenant_id)
+    monkeypatch.setattr(
+        app_module,
+        "get_person_by_id",
+        lambda person_id, request=None, tenant_id=None: tenant_two_person,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "get_assets_for_person",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("asset lookup must not run")),
+    )
+
+    response = client.get(f"/telegram/assets/{token}")
+
+    assert response.status_code == 404
