@@ -9,6 +9,7 @@ import secrets
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -153,6 +154,10 @@ class DatabaseConnectionError(RuntimeError):
     pass
 
 
+SUPABASE_READ_MAX_ATTEMPTS = 3
+SUPABASE_READ_RETRY_DELAY_SECONDS = 0.1
+
+
 def get_supabase_host() -> str:
     if not SUPABASE_URL:
         return "missing SUPABASE_URL"
@@ -161,16 +166,22 @@ def get_supabase_host() -> str:
 
 
 def execute_supabase_query(query, context: str):
-    try:
-        return query.execute()
-    except httpx.ConnectError as exc:
-        host = get_supabase_host()
-        message = (
-            f"Cannot connect to Supabase host '{host}'. "
-            "Check SUPABASE_URL in Render environment variables."
-        )
-        print(f"SUPABASE CONNECTION ERROR ({context}): {message} Original error: {exc}")
-        raise DatabaseConnectionError(message) from exc
+    """Execute an idempotent Supabase read with bounded transport retries."""
+    for attempt in range(1, SUPABASE_READ_MAX_ATTEMPTS + 1):
+        try:
+            return query.execute()
+        except httpx.TransportError as exc:
+            if attempt < SUPABASE_READ_MAX_ATTEMPTS:
+                time.sleep(SUPABASE_READ_RETRY_DELAY_SECONDS * attempt)
+                continue
+
+            host = get_supabase_host()
+            message = f"Supabase host '{host}' is temporarily unavailable. Please try again."
+            print(
+                f"SUPABASE READ ERROR ({context}, attempts={attempt}): "
+                f"{message} Original error: {exc}"
+            )
+            raise DatabaseConnectionError(message) from exc
 
 
 def get_admin_actor(request: Optional[Request] = None, fallback: str = "Admin") -> str:
@@ -3851,62 +3862,11 @@ def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_
     }
 
 
-def get_current_assignment(
-    asset_id: int,
-    request: Optional[Request] = None,
-    *,
-    tenant_id: Optional[str] = None,
-) -> Optional[dict]:
-    assignment_response = (
-        tenant_read_filter(
-            supabase.table("asset_assignments").select("*"),
-            request=request,
-            tenant_id=tenant_id,
-        )
-        .eq("asset_id", asset_id)
-        .is_("return_date", "null")
-        .order("assignment_date", desc=True)
-        .limit(1)
-        .execute()
-    )
-
-    if not assignment_response.data:
-        return None
-
-    assignment = assignment_response.data[0]
-    person = None
-    location = None
-
-    person_id = assignment.get("person_id")
-    if person_id:
-        person_response = (
-            tenant_read_filter(
-                supabase.table("persons").select("*"),
-                request=request,
-                tenant_id=tenant_id,
-            )
-            .eq("person_id", person_id)
-            .limit(1)
-            .execute()
-        )
-        if person_response.data:
-            person = person_response.data[0]
-
-    location_id = assignment.get("location_id")
-    if location_id:
-        location_response = (
-            tenant_read_filter(
-                supabase.table("locations").select("*"),
-                request=request,
-                tenant_id=tenant_id,
-            )
-            .eq("location_id", location_id)
-            .limit(1)
-            .execute()
-        )
-        if location_response.data:
-            location = location_response.data[0]
-
+def build_assignment_view(
+    assignment: dict,
+    person: Optional[dict] = None,
+    location: Optional[dict] = None,
+) -> dict:
     return {
         "assignment_id": assignment.get("assignment_id"),
         "person_id": assignment.get("person_id"),
@@ -3936,6 +3896,65 @@ def get_current_assignment(
         "city": location.get("city") if location else None,
         "location_name": get_office_location_name(location) if location else None,
     }
+
+
+def get_current_assignment(
+    asset_id: int,
+    request: Optional[Request] = None,
+    *,
+    tenant_id: Optional[str] = None,
+) -> Optional[dict]:
+    assignment_query = (
+        tenant_read_filter(
+            supabase.table("asset_assignments").select("*"),
+            request=request,
+            tenant_id=tenant_id,
+        )
+        .eq("asset_id", asset_id)
+        .is_("return_date", "null")
+        .order("assignment_date", desc=True)
+        .limit(1)
+    )
+    assignment_response = execute_supabase_query(assignment_query, "get_current_assignment")
+
+    if not assignment_response.data:
+        return None
+
+    assignment = assignment_response.data[0]
+    person = None
+    location = None
+
+    person_id = assignment.get("person_id")
+    if person_id:
+        person_query = (
+            tenant_read_filter(
+                supabase.table("persons").select("*"),
+                request=request,
+                tenant_id=tenant_id,
+            )
+            .eq("person_id", person_id)
+            .limit(1)
+        )
+        person_response = execute_supabase_query(person_query, "get_current_assignment.person")
+        if person_response.data:
+            person = person_response.data[0]
+
+    location_id = assignment.get("location_id")
+    if location_id:
+        location_query = (
+            tenant_read_filter(
+                supabase.table("locations").select("*"),
+                request=request,
+                tenant_id=tenant_id,
+            )
+            .eq("location_id", location_id)
+            .limit(1)
+        )
+        location_response = execute_supabase_query(location_query, "get_current_assignment.location")
+        if location_response.data:
+            location = location_response.data[0]
+
+    return build_assignment_view(assignment, person, location)
 
 
 def enrich_assignment(
@@ -3948,7 +3967,7 @@ def enrich_assignment(
 
     person_id = assignment.get("person_id")
     if person_id:
-        person_response = (
+        person_query = (
             tenant_read_filter(
                 supabase.table("persons").select("*"),
                 request=request,
@@ -3956,14 +3975,14 @@ def enrich_assignment(
             )
             .eq("person_id", person_id)
             .limit(1)
-            .execute()
         )
+        person_response = execute_supabase_query(person_query, "enrich_assignment.person")
         if person_response.data:
             person = person_response.data[0]
 
     location_id = assignment.get("location_id")
     if location_id:
-        location_response = (
+        location_query = (
             tenant_read_filter(
                 supabase.table("locations").select("*"),
                 request=request,
@@ -3971,40 +3990,12 @@ def enrich_assignment(
             )
             .eq("location_id", location_id)
             .limit(1)
-            .execute()
         )
+        location_response = execute_supabase_query(location_query, "enrich_assignment.location")
         if location_response.data:
             location = location_response.data[0]
 
-    return {
-        "assignment_id": assignment.get("assignment_id"),
-        "person_id": assignment.get("person_id"),
-        "location_id": assignment.get("location_id"),
-        "assignment_department": assignment.get("assignment_department"),
-        "assignment_date": assignment.get("assignment_date"),
-        "return_date": assignment.get("return_date"),
-        "status": assignment.get("status"),
-        "notes": assignment.get("notes"),
-        "handover_condition": assignment.get("handover_condition"),
-        "assignment_scope": assignment.get("assignment_scope") or "personal",
-        "custody_note": assignment.get("custody_note"),
-        "created_by": assignment.get("created_by"),
-        "updated_by": assignment.get("updated_by"),
-        "responsible_person": (
-            person.get("name_eng")
-            or person.get("name")
-            or person.get("full_name")
-            if person
-            else None
-        ),
-        "department": (
-            assignment.get("assignment_department")
-            or (person.get("department") if person else None)
-            or (location.get("department") if location else None)
-        ),
-        "city": location.get("city") if location else None,
-        "location_name": get_office_location_name(location) if location else None,
-    }
+    return build_assignment_view(assignment, person, location)
 
 
 def get_asset_by_tag(
@@ -6284,6 +6275,46 @@ def get_effective_status(asset: dict) -> str:
     return assignment.get("status") or asset.get("current_status") or "-"
 
 
+ADMIN_ASSET_BULK_READ_BATCH_SIZE = 500
+
+
+def chunked_ids(values: list[int], batch_size: int = ADMIN_ASSET_BULK_READ_BATCH_SIZE) -> list[list[int]]:
+    unique_values = list(dict.fromkeys(values))
+    return [unique_values[index : index + batch_size] for index in range(0, len(unique_values), batch_size)]
+
+
+def list_current_assignments_for_assets(asset_ids: list[int], request: Optional[Request] = None) -> list[dict]:
+    rows: list[dict] = []
+    for asset_id_batch in chunked_ids(asset_ids):
+        query = (
+            tenant_filter(supabase.table("asset_assignments").select("*"), request=request)
+            .in_("asset_id", asset_id_batch)
+            .is_("return_date", "null")
+            .order("assignment_date", desc=True)
+        )
+        response = execute_supabase_query(query, "list_assets.assignments")
+        rows.extend(response.data or [])
+    return rows
+
+
+def list_tenant_records_by_ids(
+    table_name: str,
+    id_column: str,
+    record_ids: list[int],
+    *,
+    request: Optional[Request] = None,
+) -> list[dict]:
+    rows: list[dict] = []
+    for record_id_batch in chunked_ids(record_ids):
+        query = tenant_filter(
+            supabase.table(table_name).select("*"),
+            request=request,
+        ).in_(id_column, record_id_batch)
+        response = execute_supabase_query(query, f"list_assets.{table_name}")
+        rows.extend(response.data or [])
+    return rows
+
+
 def list_assets(
     limit: Optional[int] = None,
     batch_size: int = 500,
@@ -6320,10 +6351,42 @@ def list_assets(
 
         start += len(batch)
 
+    asset_ids = [asset["asset_id"] for asset in assets]
+    asset_id_set = set(asset_ids)
+    current_assignments: dict[int, dict] = {}
+    for assignment in list_current_assignments_for_assets(asset_ids, request=request):
+        assignment_asset_id = assignment.get("asset_id")
+        if assignment_asset_id in asset_id_set and assignment_asset_id not in current_assignments:
+            current_assignments[assignment_asset_id] = assignment
+
+    people = list_tenant_records_by_ids(
+        "persons",
+        "person_id",
+        [assignment["person_id"] for assignment in current_assignments.values() if assignment.get("person_id")],
+        request=request,
+    )
+    locations = list_tenant_records_by_ids(
+        "locations",
+        "location_id",
+        [assignment["location_id"] for assignment in current_assignments.values() if assignment.get("location_id")],
+        request=request,
+    )
+    people_by_id = {person.get("person_id"): person for person in people}
+    locations_by_id = {location.get("location_id"): location for location in locations}
+
     for asset in assets:
         asset["usage_type"] = normalize_asset_usage_type(asset.get("usage_type"), asset.get("asset_tag_number"))
         asset["usage_type_label"] = get_asset_usage_type_label(asset.get("usage_type"))
-        asset["current_assignment"] = get_current_assignment(asset["asset_id"], request=request)
+        assignment = current_assignments.get(asset["asset_id"])
+        asset["current_assignment"] = (
+            build_assignment_view(
+                assignment,
+                people_by_id.get(assignment.get("person_id")),
+                locations_by_id.get(assignment.get("location_id")),
+            )
+            if assignment
+            else None
+        )
         asset["effective_status"] = get_effective_status(asset)
     return assets
 

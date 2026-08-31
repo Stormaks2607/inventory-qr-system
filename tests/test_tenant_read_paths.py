@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 
@@ -92,7 +93,13 @@ class MemoryQuery:
             rows = rows[: self.limit_value]
 
         self.database.operations.append(
-            {"table": self.table_name, "filters": list(self.filters)}
+            {
+                "table": self.table_name,
+                "filters": list(self.filters),
+                "orders": list(self.orders),
+                "limit": self.limit_value,
+                "range": self.range_value,
+            }
         )
         return FakeResponse(rows)
 
@@ -104,6 +111,49 @@ class MemorySupabase:
 
     def table(self, table_name):
         return MemoryQuery(self, table_name)
+
+
+class FlakyReadQuery:
+    def __init__(self, failures_before_success, data=None, error_type=httpx.ReadError):
+        self.failures_before_success = failures_before_success
+        self.data = data or []
+        self.error_type = error_type
+        self.attempts = 0
+
+    def execute(self):
+        self.attempts += 1
+        if self.attempts <= self.failures_before_success:
+            raise self.error_type(
+                "temporary read failure",
+                request=httpx.Request("GET", "https://example.invalid"),
+            )
+        return FakeResponse(self.data)
+
+
+class FailingWriteQuery:
+    def __init__(self, database):
+        self.database = database
+
+    def insert(self, payload):
+        self.database.payload = payload
+        return self
+
+    def execute(self):
+        self.database.attempts += 1
+        raise httpx.ReadError(
+            "write transport failure",
+            request=httpx.Request("POST", "https://example.invalid"),
+        )
+
+
+class FailingWriteSupabase:
+    def __init__(self):
+        self.attempts = 0
+        self.payload = None
+
+    def table(self, table_name):
+        assert table_name == "audit_log"
+        return FailingWriteQuery(self)
 
 
 def authenticated_request(session_tenant_id=TENANT_ONE, person_id=None, **client_values):
@@ -250,6 +300,178 @@ def test_asset_lists_are_isolated_in_both_directions(app_module, mixed_tenant_su
     assert [row["asset_tag_number"] for row in tenant_two_assets] == ["TENANT-TWO-ASSET"]
     assert tenant_one_assets[0]["current_assignment"]["responsible_person"] == "Tenant One Person"
     assert tenant_two_assets[0]["current_assignment"]["responsible_person"] == "Tenant Two Person"
+
+
+def test_list_assets_bulk_enriches_assignment_variants_without_per_asset_queries(
+    app_module,
+    mixed_tenant_supabase,
+    monkeypatch,
+):
+    mixed_tenant_supabase.rows["assets"] = [
+        {"asset_id": asset_id, "asset_tag_number": f"T1-{asset_id}", "tenant_id": TENANT_ONE, "current_status": "asset-status"}
+        for asset_id in range(1, 7)
+    ] + [
+        {"asset_id": 99, "asset_tag_number": "T2-99", "tenant_id": TENANT_TWO, "current_status": "functional"}
+    ]
+    mixed_tenant_supabase.rows["persons"] = [
+        {"person_id": 101, "name_eng": "Tenant One Person", "department": "Person Department", "tenant_id": TENANT_ONE},
+        {"person_id": 202, "name_eng": "Tenant Two Person", "department": "Other Tenant", "tenant_id": TENANT_TWO},
+    ]
+    mixed_tenant_supabase.rows["locations"] = [
+        {
+            "location_id": 301,
+            "name": "Office One",
+            "city": "Kyiv",
+            "department": "Location Department",
+            "tenant_id": TENANT_ONE,
+        },
+        {"location_id": 302, "name": "Office Two", "city": "Lviv", "tenant_id": TENANT_TWO},
+    ]
+    mixed_tenant_supabase.rows["asset_assignments"] = [
+        {
+            "assignment_id": 10,
+            "asset_id": 1,
+            "person_id": 101,
+            "location_id": 301,
+            "assignment_department": "Old Department",
+            "assignment_date": "2026-01-01",
+            "return_date": None,
+            "status": "old-status",
+            "assignment_scope": "personal",
+            "tenant_id": TENANT_ONE,
+        },
+        {
+            "assignment_id": 11,
+            "asset_id": 1,
+            "person_id": 101,
+            "location_id": 301,
+            "assignment_department": "Assignment Department",
+            "assignment_date": "2026-02-01",
+            "return_date": None,
+            "status": "assignment-status",
+            "assignment_scope": "personal",
+            "tenant_id": TENANT_ONE,
+        },
+        {
+            "assignment_id": 12,
+            "asset_id": 2,
+            "person_id": None,
+            "location_id": 301,
+            "assignment_date": "2026-02-02",
+            "return_date": None,
+            "status": "warehouse-status",
+            "assignment_scope": "warehouse",
+            "tenant_id": TENANT_ONE,
+        },
+        {
+            "assignment_id": 13,
+            "asset_id": 3,
+            "person_id": 101,
+            "location_id": None,
+            "assignment_date": "2026-02-03",
+            "return_date": None,
+            "status": "person-status",
+            "assignment_scope": None,
+            "tenant_id": TENANT_ONE,
+        },
+        {
+            "assignment_id": 14,
+            "asset_id": 4,
+            "person_id": None,
+            "location_id": 301,
+            "assignment_date": "2026-02-04",
+            "return_date": None,
+            "status": "location-status",
+            "assignment_scope": "department_shared",
+            "tenant_id": TENANT_ONE,
+        },
+        {
+            "assignment_id": 15,
+            "asset_id": 6,
+            "person_id": 202,
+            "location_id": 302,
+            "assignment_date": "2026-02-05",
+            "return_date": None,
+            "status": "cross-tenant-parent-status",
+            "assignment_scope": "personal",
+            "tenant_id": TENANT_ONE,
+        },
+    ]
+    monkeypatch.setattr(
+        app_module,
+        "get_current_assignment",
+        lambda *args, **kwargs: pytest.fail("list_assets must not perform per-asset assignment reads"),
+    )
+
+    assets = app_module.list_assets(request=authenticated_request(TENANT_ONE))
+    by_id = {asset["asset_id"]: asset for asset in assets}
+
+    assert len(mixed_tenant_supabase.operations) == 4
+    assert [operation["table"] for operation in mixed_tenant_supabase.operations] == [
+        "assets",
+        "asset_assignments",
+        "persons",
+        "locations",
+    ]
+    assert all(
+        ("eq", "tenant_id", TENANT_ONE) in operation["filters"]
+        for operation in mixed_tenant_supabase.operations
+    )
+    assert by_id[1]["current_assignment"] == {
+        "assignment_id": 11,
+        "person_id": 101,
+        "location_id": 301,
+        "assignment_department": "Assignment Department",
+        "assignment_date": "2026-02-01",
+        "return_date": None,
+        "status": "assignment-status",
+        "notes": None,
+        "handover_condition": None,
+        "assignment_scope": "personal",
+        "custody_note": None,
+        "created_by": None,
+        "updated_by": None,
+        "responsible_person": "Tenant One Person",
+        "department": "Assignment Department",
+        "city": "Kyiv",
+        "location_name": "Office One",
+    }
+    assert by_id[1]["effective_status"] == "assignment-status"
+    assert by_id[2]["current_assignment"]["assignment_scope"] == "warehouse"
+    assert by_id[2]["current_assignment"]["responsible_person"] is None
+    assert by_id[2]["current_assignment"]["department"] == "Location Department"
+    assert by_id[3]["current_assignment"]["assignment_scope"] == "personal"
+    assert by_id[3]["current_assignment"]["responsible_person"] == "Tenant One Person"
+    assert by_id[3]["current_assignment"]["city"] is None
+    assert by_id[4]["current_assignment"]["assignment_scope"] == "department_shared"
+    assert by_id[4]["current_assignment"]["location_name"] == "Office One"
+    assert by_id[5]["current_assignment"] is None
+    assert by_id[5]["effective_status"] == "asset-status"
+    assert by_id[6]["current_assignment"]["responsible_person"] is None
+    assert by_id[6]["current_assignment"]["city"] is None
+
+
+def test_list_assets_preserves_asset_pagination_and_limit(app_module, mixed_tenant_supabase):
+    mixed_tenant_supabase.rows["assets"] = [
+        {"asset_id": asset_id, "asset_tag_number": f"T1-{asset_id:02d}", "tenant_id": TENANT_ONE}
+        for asset_id in range(1, 6)
+    ]
+    mixed_tenant_supabase.rows["asset_assignments"] = []
+    request = authenticated_request(TENANT_ONE)
+
+    assets = app_module.list_assets(batch_size=2, request=request)
+
+    assert [asset["asset_id"] for asset in assets] == [1, 2, 3, 4, 5]
+    asset_operations = [operation for operation in mixed_tenant_supabase.operations if operation["table"] == "assets"]
+    assert [operation["range"] for operation in asset_operations] == [(0, 1), (2, 3), (4, 5)]
+
+    mixed_tenant_supabase.operations.clear()
+    limited_assets = app_module.list_assets(limit=3, batch_size=2, request=request)
+
+    assert [asset["asset_id"] for asset in limited_assets] == [1, 2, 3]
+    asset_operations = [operation for operation in mixed_tenant_supabase.operations if operation["table"] == "assets"]
+    assert [operation["range"] for operation in asset_operations] == [(0, 1), (2, 3)]
+    assert [operation["limit"] for operation in asset_operations] == [2, 1]
 
 
 def test_authenticated_asset_detail_and_account_person_reject_cross_tenant_rows(app_module, mixed_tenant_supabase):
@@ -429,6 +651,81 @@ def test_dashboard_and_reports_forward_the_trusted_request(app_module, monkeypat
     app_module.admin_reports(request)
 
     assert calls == [("assets", request), ("recent", request), ("assets", request)]
+
+
+def test_idempotent_read_retries_transient_read_error_and_succeeds(app_module, monkeypatch):
+    query = FlakyReadQuery(2, data=[{"asset_id": 1}])
+    sleep_delays = []
+    monkeypatch.setattr(app_module.time, "sleep", sleep_delays.append)
+
+    response = app_module.execute_supabase_query(query, "test.read")
+
+    assert response.data == [{"asset_id": 1}]
+    assert query.attempts == 3
+    assert sleep_delays == [0.1, 0.2]
+
+
+@pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.ReadTimeout])
+def test_idempotent_read_retries_other_transport_errors(app_module, monkeypatch, error_type):
+    query = FlakyReadQuery(1, data=[{"asset_id": 1}], error_type=error_type)
+    monkeypatch.setattr(app_module.time, "sleep", lambda delay: None)
+
+    response = app_module.execute_supabase_query(query, "test.transport")
+
+    assert response.data == [{"asset_id": 1}]
+    assert query.attempts == 2
+
+
+def test_read_retry_exhaustion_is_normalized_and_dashboard_handles_it(app_module, monkeypatch):
+    query = FlakyReadQuery(app_module.SUPABASE_READ_MAX_ATTEMPTS)
+    monkeypatch.setattr(app_module.time, "sleep", lambda delay: None)
+
+    with pytest.raises(app_module.DatabaseConnectionError) as error:
+        app_module.execute_supabase_query(query, "test.exhausted")
+
+    assert query.attempts == app_module.SUPABASE_READ_MAX_ATTEMPTS
+    assert isinstance(error.value.__cause__, httpx.ReadError)
+
+    dashboard_query = FlakyReadQuery(app_module.SUPABASE_READ_MAX_ATTEMPTS)
+    monkeypatch.setattr(
+        app_module,
+        "list_assets",
+        lambda **kwargs: app_module.execute_supabase_query(dashboard_query, "dashboard.assets"),
+    )
+    monkeypatch.setattr(app_module, "list_recent_audit_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        app_module.templates,
+        "TemplateResponse",
+        lambda **kwargs: kwargs["context"],
+    )
+
+    context = app_module.admin_dashboard(authenticated_request(TENANT_ONE))
+
+    assert dashboard_query.attempts == app_module.SUPABASE_READ_MAX_ATTEMPTS
+    assert "temporarily unavailable" in context["database_error"]
+    assert context["recent_changes"] == []
+
+
+def test_mutation_transport_failure_is_not_automatically_retried(app_module, monkeypatch):
+    fake_supabase = FailingWriteSupabase()
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(
+        app_module.time,
+        "sleep",
+        lambda delay: pytest.fail("Mutation paths must not use read retry delays"),
+    )
+
+    created = app_module.audit_log_event(
+        entity_type="Asset",
+        entity_id=1,
+        entity_label="T1-1",
+        action="updated",
+        request=authenticated_request(TENANT_ONE),
+    )
+
+    assert created is False
+    assert fake_supabase.attempts == 1
+    assert fake_supabase.payload["tenant_id"] == TENANT_ONE
 
 
 def test_excel_read_helpers_use_request_tenant(app_module, mixed_tenant_supabase):
