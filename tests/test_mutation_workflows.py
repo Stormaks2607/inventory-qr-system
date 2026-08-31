@@ -1,4 +1,7 @@
+import os
 from types import SimpleNamespace
+
+import pytest
 
 
 class FakeResponse:
@@ -117,13 +120,13 @@ class FailingInsertSupabase(RecordingSupabase):
         return FailingInsertQuery(self, table_name)
 
 
-def make_admin_request():
+def make_admin_request(tenant_id="00000000-0000-4000-8000-000000000001"):
     return SimpleNamespace(
         session={
             "admin_authenticated": True,
             "admin_role": "admin",
             "admin_username": "admin",
-            "tenant_id": "00000000-0000-4000-8000-000000000001",
+            "tenant_id": tenant_id,
         },
         method="POST",
         url=SimpleNamespace(path="/admin/assets/101/edit", query=""),
@@ -751,23 +754,45 @@ def test_assignment_date_earlier_than_current_is_rejected_before_mutation(app_mo
     assert not any(operation["table"] == "asset_assignments" and operation["action"] in {"insert", "update"} for operation in fake_supabase.operations)
 
 
+TENANT_TWO_ID = "00000000-0000-4000-8000-000000000002"
+
+
+def empty_sync_context():
+    return {
+        "person_lookup": {},
+        "location_lookup": {},
+        "project_lookup": {},
+        "donor_lookup": {},
+        "assignment_by_asset_id": {},
+        "projects_by_asset_id": {},
+        "payments_by_asset_id": {},
+        "transfer_signatures": set(),
+        "supports_asset_project_purchase_origin": False,
+    }
+
+
 def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch):
     fake_supabase = RecordingSupabase(
         {
+            ("tenants", "select"): [
+                {"tenant_id": app_module.DEFAULT_TENANT_ID, "status": "active"}
+            ],
             ("assets", "insert"): [
                 {
                     "asset_id": 101,
                     "asset_tag_number": "HELP-UKR-0753",
                     "tenant_id": app_module.DEFAULT_TENANT_ID,
                 }
-            ]
+            ],
         }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
-    monkeypatch.setattr(app_module, "build_sync_context", lambda: {})
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request: empty_sync_context())
+    request = make_admin_request()
 
     result = app_module.apply_sync_preview(
         {
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
             "new_records": [
                 {
                     "asset_tag_number": "HELP-UKR-0753",
@@ -778,14 +803,487 @@ def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch)
             ],
             "changed_records": [],
             "transfer_log": {"new_records": []},
-        }
+        },
+        request,
     )
 
     assert result["inserted"] == 1
-    asset_insert = fake_supabase.operations[0]
+    asset_insert = next(
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "assets" and operation["action"] == "insert"
+    )
     assert asset_insert["table"] == "assets"
     assert asset_insert["payload"]["tenant_id"] == app_module.DEFAULT_TENANT_ID
     assert asset_insert["payload"]["asset_tag_number"] == "HELP-UKR-0753"
+
+
+def test_tenant_two_excel_apply_keeps_new_asset_and_audit_in_tenant(app_module, monkeypatch):
+    request = make_admin_request(TENANT_TWO_ID)
+    fake_supabase = RecordingSupabase(
+        {
+            ("tenants", "select"): [{"tenant_id": TENANT_TWO_ID, "status": "active"}],
+            ("assets", "insert"): [
+                {"asset_id": 201, "asset_tag_number": "SYN-T2-EXCEL-001", "tenant_id": TENANT_TWO_ID}
+            ],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request: empty_sync_context())
+    monkeypatch.setattr(app_module, "asset_tag_exists", lambda asset_tag: False)
+
+    result = app_module.apply_sync_preview(
+        {
+            "tenant_id": TENANT_TWO_ID,
+            "new_records": [
+                {
+                    "asset_tag_number": "SYN-T2-EXCEL-001",
+                    "usage_type": "standard",
+                    "item_description": "Tenant two monitor",
+                    "current_status": "functional",
+                }
+            ],
+            "changed_records": [],
+            "transfer_log": {"new_records": []},
+        },
+        request,
+    )
+
+    asset_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "assets" and operation["action"] == "insert"
+    )
+    audit_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "audit_log" and operation["action"] == "insert"
+    )
+    assert result["inserted"] == 1
+    assert asset_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+    assert audit_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+
+
+def test_tenant_two_excel_apply_updates_existing_asset_in_tenant(app_module, monkeypatch):
+    request = make_admin_request(TENANT_TWO_ID)
+    fake_supabase = RecordingSupabase(
+        {
+            ("tenants", "select"): [{"tenant_id": TENANT_TWO_ID, "status": "active"}],
+            ("assets", "select"): [{"asset_id": 202}],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request: empty_sync_context())
+
+    result = app_module.apply_sync_preview(
+        {
+            "tenant_id": TENANT_TWO_ID,
+            "new_records": [],
+            "changed_records": [
+                {
+                    "asset_id": 202,
+                    "asset_tag_number": "SYN-T2-EXCEL-002",
+                    "changed_fields": ["remarks"],
+                    "record": {"remarks": "Tenant two correction"},
+                }
+            ],
+            "transfer_log": {"new_records": []},
+        },
+        request,
+    )
+
+    asset_update = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "assets" and operation["action"] == "update"
+    )
+    audit_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "audit_log" and operation["action"] == "insert"
+    )
+    assert result["updated"] == 1
+    assert ("eq", "tenant_id", TENANT_TWO_ID) in asset_update["filters"]
+    assert audit_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+
+
+def test_tenant_two_sync_assignment_uses_tenant_parents_and_payload(app_module, monkeypatch):
+    request = make_admin_request(TENANT_TWO_ID)
+    person = {"person_id": 63, "name_eng": "Tenant Two Holder", "department": "PROGRAM"}
+    location = {"location_id": 59, "city": "Synthetic City", "department": "PROGRAM"}
+    fake_supabase = RecordingSupabase(
+        {
+            ("assets", "select"): [{"asset_id": 202}],
+            ("persons", "select"): [{"person_id": 63}],
+            ("locations", "select"): [{"location_id": 59}],
+            ("asset_assignments", "select"): [],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "supports_asset_assignment_actor_columns", lambda: True)
+    monkeypatch.setattr(app_module, "supports_asset_assignment_department_column", lambda: True)
+    context = empty_sync_context()
+    context["person_lookup"] = app_module.build_person_lookup([person])
+    context["location_lookup"] = app_module.build_location_lookup([location])
+
+    applied = app_module.apply_sync_assignment(
+        202,
+        {
+            "recipient_name": "Tenant Two Holder",
+            "location_name": "Synthetic City",
+            "department_name": "PROGRAM",
+            "current_status": "functional",
+        },
+        context,
+        request,
+    )
+
+    assignment_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "asset_assignments" and operation["action"] == "insert"
+    )
+    parent_selects = [
+        operation for operation in fake_supabase.operations
+        if operation["table"] in {"assets", "persons", "locations"} and operation["action"] == "select"
+    ]
+    assert applied == 1
+    assert assignment_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+    assert all(("eq", "tenant_id", TENANT_TWO_ID) in operation["filters"] for operation in parent_selects)
+
+
+def test_tenant_two_sync_project_and_payment_rows_keep_tenant(app_module, monkeypatch):
+    request = make_admin_request(TENANT_TWO_ID)
+    fake_supabase = RecordingSupabase({("assets", "select"): [{"asset_id": 202}]})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    context = empty_sync_context()
+    context["project_lookup"] = app_module.build_project_lookup(
+        [{"project_id": 20, "project_number": "SYN-20001"}]
+    )
+    context["donor_lookup"] = app_module.build_donor_lookup([{"donor_id": 8, "donor_name": "SYN-DONOR"}])
+    project_record = {
+        "purchased_project_no": "SYN-20001",
+        "purchased_donor_name": "SYN-DONOR",
+        "current_status": "functional",
+    }
+
+    project_count = app_module.apply_sync_project(202, project_record, context, request)
+    payment_count = app_module.apply_sync_payments(
+        202,
+        {"remarks": "1000 UAH - 01.08.2026", "currency": "UAH"},
+        request,
+    )
+
+    project_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "asset_projects" and operation["action"] == "insert"
+    )
+    payment_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "asset_payments" and operation["action"] == "insert"
+    )
+    assert project_count == 1
+    assert payment_count == 1
+    assert project_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+    assert project_insert["payload"]["project_id"] == 20
+    assert project_insert["payload"]["donor_id"] == 8
+    assert all(row["tenant_id"] == TENANT_TWO_ID for row in payment_insert["payload"])
+
+
+def test_tenant_two_sync_transfer_projects_and_audit_keep_tenant(app_module, monkeypatch):
+    request = make_admin_request(TENANT_TWO_ID)
+    fake_supabase = RecordingSupabase(
+        {
+            ("assets", "select"): [{"asset_id": 202}],
+            ("persons", "select"): [{"person_id": 63}],
+            ("asset_transfers", "insert"): [{"transfer_id": 188}],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    context = empty_sync_context()
+    context["project_lookup"] = app_module.build_project_lookup(
+        [{"project_id": 20, "project_number": "SYN-20001"}]
+    )
+
+    applied = app_module.apply_sync_transfer(
+        {
+            "asset_id": 202,
+            "asset_tag_number": "SYN-T2-EXCEL-002",
+            "from_person_id": None,
+            "to_person_id": 63,
+            "from_holder_name": "Warehouse",
+            "to_holder_name": "Tenant Two Holder",
+            "from_project_raw": "SYN-20001",
+            "to_project_raw": "SYN-20001",
+            "transfer_date": "2026-08-31",
+        },
+        context,
+        request,
+    )
+
+    transfer_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "asset_transfers" and operation["action"] == "insert"
+    )
+    project_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "asset_transfer_projects" and operation["action"] == "insert"
+    )
+    audit_insert = next(
+        operation for operation in fake_supabase.operations
+        if operation["table"] == "audit_log" and operation["action"] == "insert"
+    )
+    assert applied == 1
+    assert transfer_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+    assert all(row["tenant_id"] == TENANT_TWO_ID for row in project_insert["payload"])
+    assert audit_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+
+
+@pytest.mark.parametrize(
+    ("preview_tenant_id", "session_tenant_id"),
+    [
+        ("00000000-0000-4000-8000-000000000001", TENANT_TWO_ID),
+        (TENANT_TWO_ID, "00000000-0000-4000-8000-000000000001"),
+    ],
+)
+def test_excel_preview_cannot_be_applied_by_another_tenant(
+    app_module,
+    monkeypatch,
+    preview_tenant_id,
+    session_tenant_id,
+):
+    fake_supabase = RecordingSupabase(
+        {("tenants", "select"): [{"tenant_id": session_tenant_id, "status": "active"}]}
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    with pytest.raises(app_module.TenantContextError, match="belongs to a different tenant"):
+        app_module.apply_sync_preview(
+            {
+                "tenant_id": preview_tenant_id,
+                "new_records": [{"asset_tag_number": "SHOULD-NOT-WRITE"}],
+                "changed_records": [],
+                "transfer_log": {"new_records": []},
+            },
+            make_admin_request(session_tenant_id),
+        )
+
+    assert not any(operation["action"] in {"insert", "update", "delete"} for operation in fake_supabase.operations)
+
+
+def test_excel_apply_requires_preview_tenant_and_trusted_request_before_writes(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase(
+        {("tenants", "select"): [{"tenant_id": TENANT_TWO_ID, "status": "active"}]}
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    preview = {
+        "new_records": [{"asset_tag_number": "SHOULD-NOT-WRITE"}],
+        "changed_records": [],
+        "transfer_log": {"new_records": []},
+    }
+
+    with pytest.raises(app_module.TenantContextError, match="missing tenant identity"):
+        app_module.apply_sync_preview(preview, make_admin_request(TENANT_TWO_ID))
+    with pytest.raises(app_module.TenantContextError, match="authenticated tenant context"):
+        app_module.apply_sync_preview({**preview, "tenant_id": TENANT_TWO_ID})
+
+    assert not any(operation["action"] in {"insert", "update", "delete"} for operation in fake_supabase.operations)
+
+
+def test_excel_apply_rejects_inactive_tenant_before_writes(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase({("tenants", "select"): []})
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    with pytest.raises(app_module.TenantContextError, match="missing or inactive"):
+        app_module.apply_sync_preview(
+            {
+                "tenant_id": TENANT_TWO_ID,
+                "new_records": [{"asset_tag_number": "SHOULD-NOT-WRITE"}],
+                "changed_records": [],
+                "transfer_log": {"new_records": []},
+            },
+            make_admin_request(TENANT_TWO_ID),
+        )
+
+    assert not any(operation["action"] in {"insert", "update", "delete"} for operation in fake_supabase.operations)
+
+
+def test_excel_apply_rejects_malformed_preview_tenant_before_writes(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase(
+        {("tenants", "select"): [{"tenant_id": TENANT_TWO_ID, "status": "active"}]}
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    with pytest.raises(app_module.TenantContextError, match="invalid tenant identity"):
+        app_module.apply_sync_preview(
+            {
+                "tenant_id": "../../tenant-one",
+                "new_records": [{"asset_tag_number": "SHOULD-NOT-WRITE"}],
+                "changed_records": [],
+                "transfer_log": {"new_records": []},
+            },
+            make_admin_request(TENANT_TWO_ID),
+        )
+
+    assert not any(operation["action"] in {"insert", "update", "delete"} for operation in fake_supabase.operations)
+
+
+def test_excel_apply_preflights_all_asset_parents_before_first_write(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase(
+        {("tenants", "select"): [{"tenant_id": TENANT_TWO_ID, "status": "active"}]}
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request: empty_sync_context())
+    monkeypatch.setattr(app_module, "asset_tag_exists", lambda asset_tag: False)
+
+    with pytest.raises(app_module.TenantContextError, match="does not belong to the current tenant"):
+        app_module.apply_sync_preview(
+            {
+                "tenant_id": TENANT_TWO_ID,
+                "new_records": [{"asset_tag_number": "SYN-T2-WOULD-BE-PARTIAL"}],
+                "changed_records": [
+                    {
+                        "asset_id": 287,
+                        "asset_tag_number": "TENANT-ONE-ASSET",
+                        "changed_fields": ["remarks"],
+                        "record": {"remarks": "Cross-tenant attempt"},
+                    }
+                ],
+                "transfer_log": {"new_records": []},
+            },
+            make_admin_request(TENANT_TWO_ID),
+        )
+
+    assert not any(operation["action"] in {"insert", "update", "delete"} for operation in fake_supabase.operations)
+
+
+def test_sync_artifacts_and_state_are_isolated_by_server_tenant(app_module, monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module, "SYNC_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(app_module, "sync_storage_object_exists", lambda request: False)
+    tenant_one_request = make_admin_request()
+    tenant_two_request = make_admin_request(TENANT_TWO_ID)
+
+    tenant_one_paths = app_module.get_sync_artifact_paths(tenant_one_request)
+    tenant_two_paths = app_module.get_sync_artifact_paths(tenant_two_request)
+
+    assert tenant_one_paths["workbook"] != tenant_two_paths["workbook"]
+    assert tenant_one_paths["state"] != tenant_two_paths["state"]
+    assert tenant_one_paths["storage_workbook"] != tenant_two_paths["storage_workbook"]
+    assert app_module.DEFAULT_TENANT_ID in tenant_one_paths["storage_workbook"]
+    assert TENANT_TWO_ID in tenant_two_paths["storage_workbook"]
+
+    app_module.save_sync_state(
+        {
+            "tenant_id": app_module.DEFAULT_TENANT_ID,
+            "file_name": "tenant-one.xlsx",
+            "preview": {"tenant_id": app_module.DEFAULT_TENANT_ID},
+        },
+        tenant_one_request,
+    )
+    assert app_module.load_sync_state(tenant_two_request) == {}
+
+    with open(tenant_two_paths["state"], "w", encoding="utf-8") as file:
+        file.write(
+            '{"tenant_id": "00000000-0000-4000-8000-000000000001", '
+            '"preview": {"tenant_id": "00000000-0000-4000-8000-000000000001"}}'
+        )
+    with pytest.raises(app_module.TenantContextError, match="state belongs to a different tenant"):
+        app_module.load_sync_state(tenant_two_request)
+
+    app_module.save_sync_state(
+        {
+            "tenant_id": TENANT_TWO_ID,
+            "file_name": "tenant-two.xlsx",
+            "preview": {"tenant_id": TENANT_TWO_ID},
+        },
+        tenant_two_request,
+    )
+    assert app_module.load_sync_state(tenant_one_request)["file_name"] == "tenant-one.xlsx"
+    assert app_module.load_sync_state(tenant_two_request)["file_name"] == "tenant-two.xlsx"
+
+
+def test_sync_tenants_do_not_fallback_to_legacy_global_local_workbook(app_module, monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module, "SYNC_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(app_module, "download_sync_workbook_from_storage", lambda request, target_path=None: False)
+    legacy_path = tmp_path / app_module.SYNC_WORKBOOK_FILENAME
+    legacy_path.write_bytes(b"untrusted-legacy-workbook")
+
+    for request in [make_admin_request(), make_admin_request(TENANT_TWO_ID)]:
+        paths = app_module.get_sync_artifact_paths(request)
+        with pytest.raises(ValueError, match="No official workbook is available"):
+            app_module.ensure_sync_workbook_template(request)
+        assert not os.path.exists(paths["workbook"])
+
+    assert legacy_path.read_bytes() == b"untrusted-legacy-workbook"
+
+
+def test_sync_tenants_never_request_legacy_global_storage_workbook(app_module, monkeypatch, tmp_path):
+    class RecordingBucket:
+        def __init__(self):
+            self.download_paths = []
+
+        def download(self, path):
+            self.download_paths.append(path)
+            if path == f"sync/{app_module.SYNC_WORKBOOK_FILENAME}":
+                return b"untrusted-legacy-workbook"
+            raise FileNotFoundError(path)
+
+    bucket = RecordingBucket()
+    monkeypatch.setattr(app_module, "SYNC_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(app_module, "get_sync_storage_bucket", lambda: bucket)
+    tenant_one_request = make_admin_request()
+    tenant_two_request = make_admin_request(TENANT_TWO_ID)
+
+    for request in [tenant_one_request, tenant_two_request]:
+        with pytest.raises(ValueError, match="No official workbook is available"):
+            app_module.ensure_sync_workbook_template(request)
+
+    expected_paths = {
+        app_module.get_sync_artifact_paths(tenant_one_request)["storage_workbook"],
+        app_module.get_sync_artifact_paths(tenant_two_request)["storage_workbook"],
+    }
+    assert set(bucket.download_paths) == expected_paths
+    assert f"sync/{app_module.SYNC_WORKBOOK_FILENAME}" not in bucket.download_paths
+
+
+def test_sync_tenant_scoped_local_and_storage_workbooks_remain_available(app_module, monkeypatch, tmp_path):
+    class ScopedBucket:
+        def __init__(self, objects):
+            self.objects = objects
+
+        def download(self, path):
+            return self.objects[path]
+
+    monkeypatch.setattr(app_module, "SYNC_STORAGE_DIR", str(tmp_path))
+    tenant_one_request = make_admin_request()
+    tenant_two_request = make_admin_request(TENANT_TWO_ID)
+    tenant_one_paths = app_module.ensure_sync_storage(tenant_one_request)
+    tenant_two_paths = app_module.ensure_sync_storage(tenant_two_request)
+
+    with open(tenant_one_paths["workbook"], "wb") as file:
+        file.write(b"tenant-one-local")
+    assert app_module.ensure_sync_workbook_template(tenant_one_request) == tenant_one_paths["workbook"]
+    with open(tenant_one_paths["workbook"], "rb") as file:
+        assert file.read() == b"tenant-one-local"
+
+    bucket = ScopedBucket({tenant_two_paths["storage_workbook"]: b"tenant-two-storage"})
+    monkeypatch.setattr(app_module, "get_sync_storage_bucket", lambda: bucket)
+    assert app_module.ensure_sync_workbook_template(tenant_two_request) == tenant_two_paths["workbook"]
+    with open(tenant_two_paths["workbook"], "rb") as file:
+        assert file.read() == b"tenant-two-storage"
+
+
+def test_sync_state_owner_mismatch_is_rejected_before_apply(app_module, monkeypatch):
+    fake_supabase = RecordingSupabase(
+        {("tenants", "select"): [{"tenant_id": TENANT_TWO_ID, "status": "active"}]}
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+
+    with pytest.raises(app_module.TenantContextError, match="state belongs to a different tenant"):
+        app_module.validate_sync_state_ownership(
+            {
+                "tenant_id": app_module.DEFAULT_TENANT_ID,
+                "preview": {"tenant_id": app_module.DEFAULT_TENANT_ID},
+            },
+            make_admin_request(TENANT_TWO_ID),
+        )
+
+    assert not any(operation["action"] in {"insert", "update", "delete"} for operation in fake_supabase.operations)
 
 
 def test_payment_create_includes_tenant_id(app_module, monkeypatch):
@@ -980,6 +1478,7 @@ def test_sync_transfer_rejects_cross_tenant_person_before_insert(app_module, mon
                 "transfer_date": "2026-08-13",
             },
             {"transfer_signatures": set()},
+            make_admin_request(),
         )
     except app_module.TenantContextError as error:
         result = str(error)

@@ -62,11 +62,10 @@ ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 BRANDING_SUPABASE_TABLE = "organization_branding"
 DEFAULT_BRANDING_TENANT_KEY = "default"
 SYNC_STORAGE_DIR = os.path.join("private_docs", "sync")
-SYNC_WORKBOOK_PATH = os.path.join(SYNC_STORAGE_DIR, "official_inventory.xlsx")
-SYNC_EXPORT_PATH = os.path.join(SYNC_STORAGE_DIR, "supabase_inventory_export.xlsx")
-SYNC_STATE_PATH = os.path.join(SYNC_STORAGE_DIR, "sync_state.json")
+SYNC_WORKBOOK_FILENAME = "official_inventory.xlsx"
+SYNC_EXPORT_FILENAME = "supabase_inventory_export.xlsx"
+SYNC_STATE_FILENAME = "sync_state.json"
 SYNC_STORAGE_BUCKET = clean_env_value("SYNC_STORAGE_BUCKET") or "private-inventory-docs"
-SYNC_WORKBOOK_STORAGE_PATH = "sync/official_inventory.xlsx"
 REGISTRATION_TRANSFER_EXPORT_FROM = clean_env_value("REGISTRATION_TRANSFER_EXPORT_FROM") or "2026-07-31"
 EXCEL_SYNC_SHEET_NAME = "Standard Asset List Format"
 EXCEL_LOW_COST_SHEET_NAME = "Low-cost-items"
@@ -1348,8 +1347,53 @@ def is_viewer_blocked_admin_get_path(path: str) -> bool:
     )
 
 
-def ensure_sync_storage() -> None:
-    os.makedirs(SYNC_STORAGE_DIR, exist_ok=True)
+def require_sync_tenant_id(request: Optional[Request]) -> str:
+    if request is None:
+        raise TenantContextError("Excel sync requires an authenticated tenant context.")
+    session = request.session
+    if session.get("admin_authenticated") is not True and session.get("account_person_id") is None:
+        raise TenantContextError("Excel sync requires an authenticated tenant context.")
+    return get_current_tenant_id(request)
+
+
+def require_active_sync_tenant_id(request: Optional[Request]) -> str:
+    tenant_id = require_sync_tenant_id(request)
+    response = (
+        supabase.table("tenants")
+        .select("tenant_id,status")
+        .eq("tenant_id", tenant_id)
+        .eq("status", "active")
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        raise TenantContextError("Excel sync tenant is missing or inactive.")
+    returned_tenant_id = normalize_tenant_uuid(response.data[0].get("tenant_id"))
+    if returned_tenant_id != tenant_id:
+        raise TenantContextError("Excel sync tenant validation failed.")
+    return tenant_id
+
+
+def get_sync_artifact_paths(request: Optional[Request]) -> dict[str, str]:
+    tenant_id = require_sync_tenant_id(request)
+    storage_root = os.path.abspath(SYNC_STORAGE_DIR)
+    tenant_dir = os.path.abspath(os.path.join(storage_root, tenant_id))
+    if os.path.commonpath([storage_root, tenant_dir]) != storage_root:
+        raise TenantContextError("Invalid Excel sync tenant path.")
+    return {
+        "tenant_id": tenant_id,
+        "directory": tenant_dir,
+        "workbook": os.path.join(tenant_dir, SYNC_WORKBOOK_FILENAME),
+        "export": os.path.join(tenant_dir, SYNC_EXPORT_FILENAME),
+        "state": os.path.join(tenant_dir, SYNC_STATE_FILENAME),
+        "storage_workbook": f"sync/{tenant_id}/{SYNC_WORKBOOK_FILENAME}",
+    }
+
+
+def ensure_sync_storage(request: Optional[Request]) -> dict[str, str]:
+    paths = get_sync_artifact_paths(request)
+    os.makedirs(paths["directory"], exist_ok=True)
+    return paths
 
 
 def get_sync_storage_bucket():
@@ -1376,14 +1420,16 @@ def ensure_sync_storage_bucket() -> None:
         return
 
 
-def sync_storage_object_exists() -> bool:
+def sync_storage_object_exists(request: Optional[Request]) -> bool:
+    paths = get_sync_artifact_paths(request)
     try:
-        return bool(get_sync_storage_bucket().exists(SYNC_WORKBOOK_STORAGE_PATH))
+        return bool(get_sync_storage_bucket().exists(paths["storage_workbook"]))
     except Exception:
         return False
 
 
-def upload_sync_workbook_to_storage(file_bytes: bytes) -> None:
+def upload_sync_workbook_to_storage(file_bytes: bytes, request: Optional[Request]) -> None:
+    paths = get_sync_artifact_paths(request)
     ensure_sync_storage_bucket()
     bucket = get_sync_storage_bucket()
     file_options = {
@@ -1392,50 +1438,109 @@ def upload_sync_workbook_to_storage(file_bytes: bytes) -> None:
         "upsert": "true",
     }
     try:
-        bucket.upload(SYNC_WORKBOOK_STORAGE_PATH, file_bytes, file_options=dict(file_options))
+        bucket.upload(paths["storage_workbook"], file_bytes, file_options=dict(file_options))
     except Exception:
-        bucket.update(SYNC_WORKBOOK_STORAGE_PATH, file_bytes, file_options=dict(file_options))
+        bucket.update(paths["storage_workbook"], file_bytes, file_options=dict(file_options))
 
 
-def download_sync_workbook_from_storage(target_path: str = SYNC_WORKBOOK_PATH) -> bool:
+def download_sync_workbook_from_storage(
+    request: Optional[Request],
+    target_path: Optional[str] = None,
+) -> bool:
+    paths = get_sync_artifact_paths(request)
+    target_path = target_path or paths["workbook"]
     try:
-        file_bytes = get_sync_storage_bucket().download(SYNC_WORKBOOK_STORAGE_PATH)
+        file_bytes = get_sync_storage_bucket().download(paths["storage_workbook"])
     except Exception:
         return False
     if not file_bytes:
         return False
-    ensure_sync_storage()
+    ensure_sync_storage(request)
     with open(target_path, "wb") as file:
         file.write(file_bytes)
     return True
 
 
-def ensure_sync_workbook_template() -> None:
-    if os.path.exists(SYNC_WORKBOOK_PATH):
-        return
-    if download_sync_workbook_from_storage(SYNC_WORKBOOK_PATH):
-        return
+def ensure_sync_workbook_template(request: Optional[Request]) -> str:
+    paths = ensure_sync_storage(request)
+    if os.path.exists(paths["workbook"]):
+        return paths["workbook"]
+    if download_sync_workbook_from_storage(request, paths["workbook"]):
+        return paths["workbook"]
     raise ValueError("No official workbook is available. Upload an Excel file first.")
 
 
-def load_sync_state() -> dict:
-    ensure_sync_storage()
-    if not os.path.exists(SYNC_STATE_PATH):
+def load_sync_state(request: Optional[Request]) -> dict:
+    paths = ensure_sync_storage(request)
+    if not os.path.exists(paths["state"]):
         state = {}
     else:
-        with open(SYNC_STATE_PATH, "r", encoding="utf-8") as file:
+        with open(paths["state"], "r", encoding="utf-8") as file:
             state = json.load(file)
-    if not state.get("storage_bucket") and sync_storage_object_exists():
+        state_tenant_id = state.get("tenant_id")
+        if state_tenant_id is None:
+            raise TenantContextError("Excel sync state is missing tenant identity.")
+        try:
+            normalized_state_tenant_id = normalize_tenant_uuid(state_tenant_id)
+        except TenantContextError as exc:
+            raise TenantContextError("Excel sync state has invalid tenant identity.") from exc
+        if normalized_state_tenant_id != paths["tenant_id"]:
+            raise TenantContextError("Excel sync state belongs to a different tenant.")
+    if not state.get("storage_bucket") and sync_storage_object_exists(request):
         state["storage_bucket"] = SYNC_STORAGE_BUCKET
-        state["storage_path"] = SYNC_WORKBOOK_STORAGE_PATH
-        state.setdefault("file_name", "official_inventory.xlsx")
+        state["storage_path"] = paths["storage_workbook"]
+        state.setdefault("file_name", SYNC_WORKBOOK_FILENAME)
     return state
 
 
-def save_sync_state(state: dict) -> None:
-    ensure_sync_storage()
-    with open(SYNC_STATE_PATH, "w", encoding="utf-8") as file:
-        json.dump(state, file, ensure_ascii=False, indent=2)
+def save_sync_state(state: dict, request: Optional[Request]) -> None:
+    paths = ensure_sync_storage(request)
+    tenant_id = paths["tenant_id"]
+    saved_tenant_id = state.get("tenant_id")
+    if saved_tenant_id is not None and normalize_tenant_uuid(saved_tenant_id) != tenant_id:
+        raise TenantContextError("Excel sync state belongs to a different tenant.")
+    preview = state.get("preview")
+    if preview is not None:
+        preview_tenant_id = preview.get("tenant_id")
+        if preview_tenant_id is None or normalize_tenant_uuid(preview_tenant_id) != tenant_id:
+            raise TenantContextError("Excel sync preview belongs to a different tenant.")
+    scoped_state = dict(state)
+    scoped_state["tenant_id"] = tenant_id
+    temporary_path = f"{paths['state']}.tmp"
+    with open(temporary_path, "w", encoding="utf-8") as file:
+        json.dump(scoped_state, file, ensure_ascii=False, indent=2)
+    os.replace(temporary_path, paths["state"])
+
+
+def validate_sync_preview_ownership(preview: dict, request: Optional[Request]) -> str:
+    tenant_id = require_active_sync_tenant_id(request)
+    preview_tenant_id = preview.get("tenant_id")
+    if preview_tenant_id is None:
+        raise TenantContextError("Excel sync preview is missing tenant identity.")
+    try:
+        normalized_preview_tenant_id = normalize_tenant_uuid(preview_tenant_id)
+    except TenantContextError as exc:
+        raise TenantContextError("Excel sync preview has invalid tenant identity.") from exc
+    if normalized_preview_tenant_id != tenant_id:
+        raise TenantContextError("Excel sync preview belongs to a different tenant.")
+    return tenant_id
+
+
+def validate_sync_state_ownership(state: dict, request: Optional[Request]) -> str:
+    tenant_id = require_active_sync_tenant_id(request)
+    state_tenant_id = state.get("tenant_id")
+    if state_tenant_id is None:
+        raise TenantContextError("Excel sync state is missing tenant identity.")
+    try:
+        normalized_state_tenant_id = normalize_tenant_uuid(state_tenant_id)
+    except TenantContextError as exc:
+        raise TenantContextError("Excel sync state has invalid tenant identity.") from exc
+    if normalized_state_tenant_id != tenant_id:
+        raise TenantContextError("Excel sync state belongs to a different tenant.")
+    preview = state.get("preview")
+    if preview is not None:
+        validate_sync_preview_ownership(preview, request)
+    return tenant_id
 
 
 def clean_excel_value(value):
@@ -2351,7 +2456,7 @@ def select_current_project(asset_projects: list[dict]) -> Optional[dict]:
     return asset_projects[0] if asset_projects else None
 
 
-def build_sync_context(request: Optional[Request] = None) -> dict:
+def build_sync_context(request: Request) -> dict:
     people = list_people(request=request)
     locations = list_locations(request=request)
     projects = list_projects(request=request)
@@ -2511,6 +2616,7 @@ def build_sync_preview(
     transfer_records: Optional[list[dict]] = None,
     request: Optional[Request] = None,
 ) -> dict:
+    tenant_id = require_sync_tenant_id(request)
     sync_context = build_sync_context(request=request)
     current_by_tag = {
         normalize_asset_tag(asset.get("asset_tag_number") or ""): asset
@@ -2641,6 +2747,7 @@ def build_sync_preview(
             unchanged_count += 1
 
     return {
+        "tenant_id": tenant_id,
         "summary": {
             "excel_rows": len(excel_records),
             "standard_rows": standard_count,
@@ -2655,14 +2762,14 @@ def build_sync_preview(
     }
 
 
-def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> int:
-    ensure_parent_tenant("assets", "asset_id", asset_id)
+def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict, request: Request) -> int:
+    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
     excel_recipient = normalize_sync_string(record.get("recipient_name"))
     assignment_date = record.get("last_transfer_date") or datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
     actor = "Excel import"
 
     if not excel_recipient:
-        close_current_assignments(asset_id, assignment_date, actor)
+        close_current_assignments(asset_id, assignment_date, actor, request=request)
         return 1
 
     person = resolve_excel_person(record, sync_context["person_lookup"])
@@ -2672,7 +2779,7 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     location = resolve_excel_location(record, person, sync_context["location_lookup"])
     if not location:
         return 0
-    validate_assignment_parent_tenants(person.get("person_id"), location.get("location_id"))
+    validate_assignment_parent_tenants(person.get("person_id"), location.get("location_id"), request=request)
     assignment_department = normalize_sync_string(record.get("department_name") or person.get("department"))
 
     existing = sync_context.get("assignment_by_asset_id", {}).get(asset_id) or {}
@@ -2691,7 +2798,7 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
     if record.get("remarks"):
         notes_parts.append(f"Remarks: {record.get('remarks')}")
 
-    close_current_assignments(asset_id, assignment_date, actor)
+    close_current_assignments(asset_id, assignment_date, actor, request=request)
     supabase.table("asset_assignments").insert(
         add_tenant_id(
             add_assignment_actor_fields(
@@ -2708,14 +2815,15 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict) -> in
                     assignment_department,
                 ),
                 actor,
-            )
+            ),
+            request=request,
         )
     ).execute()
     return 1
 
 
-def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
-    ensure_parent_tenant("assets", "asset_id", asset_id)
+def apply_sync_project(asset_id: int, record: dict, sync_context: dict, request: Request) -> int:
+    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
     purchased_allocations = get_excel_purchased_project_allocations(record)
     transferred_allocations = get_excel_transferred_project_allocations(record)
     if not purchased_allocations and not transferred_allocations:
@@ -2764,7 +2872,7 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
     reset_payload = {"is_current": False, "is_primary": False}
     if supports_purchase_origin:
         reset_payload["is_purchase_origin"] = False
-    tenant_filter(supabase.table("asset_projects").update(reset_payload)).eq("asset_id", asset_id).execute()
+    tenant_filter(supabase.table("asset_projects").update(reset_payload), request=request).eq("asset_id", asset_id).execute()
 
     applied = 0
     has_transferred_project = bool(resolved_transferred)
@@ -2834,21 +2942,21 @@ def apply_sync_project(asset_id: int, record: dict, sync_context: dict) -> int:
         existing = existing_by_key.get(payload_key)
 
         if existing:
-            tenant_filter(supabase.table("asset_projects").update(payload)).eq("asset_project_id", existing["asset_project_id"]).execute()
+            tenant_filter(supabase.table("asset_projects").update(payload), request=request).eq("asset_project_id", existing["asset_project_id"]).execute()
         else:
-            supabase.table("asset_projects").insert(add_tenant_id({"asset_id": asset_id, **payload})).execute()
+            supabase.table("asset_projects").insert(add_tenant_id({"asset_id": asset_id, **payload}, request=request)).execute()
         applied += 1
 
     return applied
 
 
-def apply_sync_payments(asset_id: int, record: dict) -> int:
+def apply_sync_payments(asset_id: int, record: dict, request: Request) -> int:
     payments = get_excel_payment_records(record)
     if not payments:
         return 0
-    ensure_parent_tenant("assets", "asset_id", asset_id)
+    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
 
-    tenant_filter(supabase.table("asset_payments").delete()).eq("asset_id", asset_id).execute()
+    tenant_filter(supabase.table("asset_payments").delete(), request=request).eq("asset_id", asset_id).execute()
     payloads = []
     for index, payment in enumerate(payments, start=1):
         payloads.append(
@@ -2863,11 +2971,11 @@ def apply_sync_payments(asset_id: int, record: dict) -> int:
             }
         )
 
-    supabase.table("asset_payments").insert(add_tenant_id_to_many(payloads)).execute()
+    supabase.table("asset_payments").insert(add_tenant_id_to_many(payloads, request=request)).execute()
     return len(payloads)
 
 
-def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: dict) -> int:
+def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: dict, request: Request) -> int:
     payloads = []
     for direction, field_name in [("from", "from_project_raw"), ("to", "to_project_raw")]:
         for allocation in transfer_project_allocations(record.get(field_name)):
@@ -2886,17 +2994,17 @@ def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: di
     if not payloads:
         return 0
 
-    tenant_filter(supabase.table("asset_transfer_projects").delete()).eq("transfer_id", transfer_id).execute()
-    supabase.table("asset_transfer_projects").insert(add_tenant_id_to_many(payloads)).execute()
+    tenant_filter(supabase.table("asset_transfer_projects").delete(), request=request).eq("transfer_id", transfer_id).execute()
+    supabase.table("asset_transfer_projects").insert(add_tenant_id_to_many(payloads, request=request)).execute()
     return len(payloads)
 
 
-def apply_sync_transfer(record: dict, sync_context: dict) -> int:
+def apply_sync_transfer(record: dict, sync_context: dict, request: Request) -> int:
     asset_id = record.get("asset_id")
     if not asset_id:
         return 0
-    ensure_parent_tenant("assets", "asset_id", asset_id)
-    validate_transfer_person_tenants(record.get("from_person_id"), record.get("to_person_id"))
+    ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
+    validate_transfer_person_tenants(record.get("from_person_id"), record.get("to_person_id"), request=request)
 
     payload = add_tenant_id({
         "asset_id": asset_id,
@@ -2915,7 +3023,7 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
         "to_project_raw": record.get("to_project_raw"),
         "asset_status": record.get("asset_status"),
         "asset_condition_description": record.get("asset_condition_description"),
-    })
+    }, request=request)
 
     signature = make_transfer_signature(asset_id, record)
     if signature in sync_context.get("transfer_signatures", set()):
@@ -2925,7 +3033,7 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
     transfer = (response.data or [{}])[0]
     transfer_id = transfer.get("transfer_id")
     if transfer_id:
-        apply_transfer_project_rows(transfer_id, record, sync_context)
+        apply_transfer_project_rows(transfer_id, record, sync_context, request)
         sync_context.setdefault("transfer_signatures", set()).add(signature)
         audit_log_event(
             entity_type="Transfer",
@@ -2940,11 +3048,81 @@ def apply_sync_transfer(record: dict, sync_context: dict) -> int:
             actor="Excel Transfer log",
             event_date=record.get("transfer_date"),
             event_key=f"asset_transfer:{transfer_id}",
+            request=request,
         )
     return 1
 
 
-def apply_sync_preview(preview: dict) -> dict:
+def preflight_sync_preview(preview: dict, sync_context: dict, request: Request) -> None:
+    for record in preview.get("new_records", []):
+        asset_tag = normalize_asset_tag(record.get("asset_tag_number") or "")
+        if not asset_tag:
+            raise ValueError("Excel sync contains a new asset without an asset tag.")
+        if asset_tag_exists(asset_tag):
+            raise ValueError(f"Asset tag/Inventory No. already exists: {asset_tag}.")
+
+    asset_ids = {
+        item.get("asset_id")
+        for item in preview.get("changed_records", [])
+        if item.get("asset_id") is not None
+    }
+    asset_ids.update(
+        record.get("asset_id")
+        for record in preview.get("transfer_log", {}).get("new_records", [])
+        if record.get("asset_id") is not None
+    )
+    for asset_id in asset_ids:
+        ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
+
+    records = list(preview.get("new_records", []))
+    records.extend((item.get("record") or {}) for item in preview.get("changed_records", []))
+    for record in records:
+        recipient = normalize_sync_string(record.get("recipient_name"))
+        if recipient:
+            person = resolve_excel_person(record, sync_context["person_lookup"])
+            if person:
+                location = resolve_excel_location(record, person, sync_context["location_lookup"])
+                validate_assignment_parent_tenants(
+                    person.get("person_id"),
+                    location.get("location_id") if location else None,
+                    request=request,
+                )
+
+        for allocation in (
+            get_excel_purchased_project_allocations(record)
+            + get_excel_transferred_project_allocations(record)
+        ):
+            project = sync_context["project_lookup"].get(
+                normalize_sync_match_key(allocation.get("project_number"))
+            )
+            if project:
+                ensure_parent_tenant("projects", "project_id", project.get("project_id"), request=request)
+
+        for donor_field in ["purchased_donor_name", "transferred_donor_name", "donor_name"]:
+            donor_key = normalize_sync_match_key(record.get(donor_field))
+            if not donor_key:
+                continue
+            donor = sync_context["donor_lookup"].get(donor_key)
+            if donor:
+                ensure_parent_tenant("donors", "donor_id", donor.get("donor_id"), request=request)
+
+    for record in preview.get("transfer_log", {}).get("new_records", []):
+        validate_transfer_person_tenants(
+            record.get("from_person_id"),
+            record.get("to_person_id"),
+            request=request,
+        )
+        for direction in ["from_project_raw", "to_project_raw"]:
+            for allocation in transfer_project_allocations(record.get(direction)):
+                project = sync_context["project_lookup"].get(
+                    normalize_sync_match_key(allocation.get("project_number"))
+                )
+                if project:
+                    ensure_parent_tenant("projects", "project_id", project.get("project_id"), request=request)
+
+
+def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict:
+    validate_sync_preview_ownership(preview, request)
     inserted = 0
     updated = 0
     assignment_updated = 0
@@ -2952,7 +3130,8 @@ def apply_sync_preview(preview: dict) -> dict:
     payment_updated = 0
     transfer_updated = 0
     skipped_relationships = 0
-    sync_context = build_sync_context()
+    sync_context = build_sync_context(request=request)
+    preflight_sync_preview(preview, sync_context, request)
     asset_fields = {
         "usage_type",
         "asset_classification",
@@ -2972,7 +3151,7 @@ def apply_sync_preview(preview: dict) -> dict:
         insert_record = {field_name: record.get(field_name) for field_name in asset_fields}
         insert_record["asset_tag_number"] = record.get("asset_tag_number")
         insert_record["inventory_code"] = insert_record.get("asset_tag_number")
-        insert_record = add_tenant_id(insert_record)
+        insert_record = add_tenant_id(insert_record, request=request)
         insert_response = supabase.table("assets").insert(insert_record).execute()
         inserted_asset = (insert_response.data or [{}])[0]
         asset_id = inserted_asset.get("asset_id")
@@ -2985,15 +3164,16 @@ def apply_sync_preview(preview: dict) -> dict:
             summary=f"Created asset from Excel: {record.get('asset_tag_number')}",
             source="Excel import",
             actor="Excel import",
+            request=request,
         )
         if asset_id:
             if record.get("_has_recipient_column") and normalize_sync_string(record.get("recipient_name")):
-                assignment_updated += apply_sync_assignment(asset_id, record, sync_context)
+                assignment_updated += apply_sync_assignment(asset_id, record, sync_context, request)
             if record.get("_has_project_column") and (
                 get_excel_purchased_project_allocations(record) or get_excel_transferred_project_allocations(record)
             ):
-                project_updated += apply_sync_project(asset_id, record, sync_context)
-            payment_updated += apply_sync_payments(asset_id, record)
+                project_updated += apply_sync_project(asset_id, record, sync_context, request)
+            payment_updated += apply_sync_payments(asset_id, record, request)
 
     for item in preview.get("changed_records", []):
         asset_id = item.get("asset_id")
@@ -3006,8 +3186,7 @@ def apply_sync_preview(preview: dict) -> dict:
             if field_name in asset_fields
         }
         if update_data:
-            ensure_parent_tenant("assets", "asset_id", asset_id)
-            tenant_filter(supabase.table("assets").update(update_data)).eq("asset_id", asset_id).execute()
+            tenant_filter(supabase.table("assets").update(update_data), request=request).eq("asset_id", asset_id).execute()
             updated += 1
             audit_log_event(
                 entity_type="Asset",
@@ -3017,22 +3196,23 @@ def apply_sync_preview(preview: dict) -> dict:
                 summary=f"Excel updated fields: {', '.join(update_data.keys())}",
                 source="Excel import",
                 actor="Excel import",
+                request=request,
             )
         if "responsible_person" in item.get("changed_fields", []):
-            applied = apply_sync_assignment(asset_id, record, sync_context)
+            applied = apply_sync_assignment(asset_id, record, sync_context, request)
             assignment_updated += applied
             skipped_relationships += 0 if applied else 1
         if any(field_name in item.get("changed_fields", []) for field_name in ["project_number", "purchased_project_number", "transferred_project_number"]):
-            applied = apply_sync_project(asset_id, record, sync_context)
+            applied = apply_sync_project(asset_id, record, sync_context, request)
             project_updated += applied
             skipped_relationships += 0 if applied else 1
         if "purchase_date_raw" in item.get("changed_fields", []) or "remarks" in item.get("changed_fields", []):
-            applied = apply_sync_payments(asset_id, record)
+            applied = apply_sync_payments(asset_id, record, request)
             payment_updated += applied
             skipped_relationships += 0 if applied else 1
 
     for record in preview.get("transfer_log", {}).get("new_records", []):
-        applied = apply_sync_transfer(record, sync_context)
+        applied = apply_sync_transfer(record, sync_context, request)
         transfer_updated += applied
         skipped_relationships += 0 if applied else 1
 
@@ -3566,15 +3746,17 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
     }
 
 
-def export_supabase_to_excel(request: Optional[Request] = None) -> dict:
-    ensure_sync_workbook_template()
+def export_supabase_to_excel(request: Request) -> dict:
+    require_active_sync_tenant_id(request)
+    paths = ensure_sync_storage(request)
+    workbook_path = ensure_sync_workbook_template(request)
 
     try:
         from openpyxl import load_workbook  # type: ignore
     except Exception as exc:
         raise ValueError(f"Excel export requires openpyxl support: {exc}") from exc
 
-    workbook = load_workbook(SYNC_WORKBOOK_PATH)
+    workbook = load_workbook(workbook_path)
     if EXCEL_SYNC_SHEET_NAME not in workbook.sheetnames:
         raise ValueError(f"The workbook does not contain the expected sheet '{EXCEL_SYNC_SHEET_NAME}'.")
 
@@ -3605,11 +3787,10 @@ def export_supabase_to_excel(request: Optional[Request] = None) -> dict:
             build_database_transfer_log_records(request=request),
         )
 
-    ensure_sync_storage()
-    workbook.save(SYNC_EXPORT_PATH)
+    workbook.save(paths["export"])
 
     return {
-        "path": SYNC_EXPORT_PATH,
+        "path": paths["export"],
         "updated_rows": standard_result["updated_rows"] + low_cost_result["updated_rows"] + transfer_result["updated_rows"],
         "appended_rows": standard_result["appended_rows"] + low_cost_result["appended_rows"] + transfer_result["appended_rows"],
         "written_cells": standard_result["written_cells"] + low_cost_result["written_cells"] + transfer_result["written_cells"],
@@ -3649,6 +3830,7 @@ def filter_sync_preview(preview: dict, selected_new_assets: list[str], selected_
     excel_rows = summary.get("excel_rows", unchanged_records + len(filtered_new_records) + len(filtered_changed_records))
 
     return {
+        "tenant_id": preview.get("tenant_id"),
         "summary": {
             "excel_rows": excel_rows,
             "standard_rows": summary.get("standard_rows", 0),
@@ -10478,7 +10660,7 @@ def admin_sync(request: Request):
     if redirect:
         return redirect
 
-    sync_state = load_sync_state()
+    sync_state = load_sync_state(request)
     sync_rules = [
         "Supabase is the operational working database.",
         "The Excel inventory file remains the official control file.",
@@ -10519,18 +10701,23 @@ async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)
         set_flash(request, "error", "Upload an .xlsx workbook for Excel synchronization.")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
-    ensure_sync_storage()
+    try:
+        tenant_id = require_active_sync_tenant_id(request)
+        paths = ensure_sync_storage(request)
+    except TenantContextError as error:
+        set_flash(request, "error", str(error))
+        return RedirectResponse(url="/admin/sync", status_code=303)
     file_bytes = await excel_file.read()
     if not file_bytes:
         set_flash(request, "error", "The uploaded Excel file is empty.")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
-    with open(SYNC_WORKBOOK_PATH, "wb") as file:
+    with open(paths["workbook"], "wb") as file:
         file.write(file_bytes)
 
     try:
-        excel_records = load_excel_sync_rows(SYNC_WORKBOOK_PATH)
-        transfer_records = load_excel_transfer_log_rows(SYNC_WORKBOOK_PATH)
+        excel_records = load_excel_sync_rows(paths["workbook"])
+        transfer_records = load_excel_transfer_log_rows(paths["workbook"])
         preview = build_sync_preview(
             excel_records,
             list_asset_records(request=request),
@@ -10545,19 +10732,21 @@ async def admin_sync_upload(request: Request, excel_file: UploadFile = File(...)
         return RedirectResponse(url="/admin/sync", status_code=303)
 
     try:
-        upload_sync_workbook_to_storage(file_bytes)
+        upload_sync_workbook_to_storage(file_bytes, request)
     except Exception as error:
         set_flash(request, "error", f"Excel workbook was valid, but could not be saved to Supabase Storage: {error}")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
     save_sync_state(
         {
+            "tenant_id": tenant_id,
             "file_name": filename,
             "uploaded_at": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M"),
             "storage_bucket": SYNC_STORAGE_BUCKET,
-            "storage_path": SYNC_WORKBOOK_STORAGE_PATH,
+            "storage_path": paths["storage_workbook"],
             "preview": preview,
-        }
+        },
+        request,
     )
     set_flash(
         request,
@@ -10586,19 +10775,24 @@ def admin_sync_apply(
         set_flash(request, "error", "Only admin can apply Excel synchronization changes.")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
-    sync_state = load_sync_state()
+    sync_state = load_sync_state(request)
     preview = sync_state.get("preview")
     if not preview:
         set_flash(request, "error", "No sync preview is available. Upload an Excel file first.")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
-    selected_preview = filter_sync_preview(preview, selected_new_assets, selected_changed_assets, selected_transfers)
+    try:
+        validate_sync_state_ownership(sync_state, request)
+        selected_preview = filter_sync_preview(preview, selected_new_assets, selected_changed_assets, selected_transfers)
+    except TenantContextError as error:
+        set_flash(request, "error", str(error))
+        return RedirectResponse(url="/admin/sync", status_code=303)
     if not selected_preview["new_records"] and not selected_preview["changed_records"] and not selected_preview.get("transfer_log", {}).get("new_records"):
         set_flash(request, "error", "No sync records were selected for apply.")
         return RedirectResponse(url="/admin/sync", status_code=303)
 
     try:
-        result = apply_sync_preview(selected_preview)
+        result = apply_sync_preview(selected_preview, request)
     except Exception as error:
         set_flash(request, "error", f"Could not apply sync changes: {error}")
         return RedirectResponse(url="/admin/sync", status_code=303)
@@ -10606,7 +10800,7 @@ def admin_sync_apply(
     sync_state["last_applied_at"] = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M")
     sync_state["last_apply_result"] = result
     sync_state["preview"] = None
-    save_sync_state(sync_state)
+    save_sync_state(sync_state, request)
     set_flash(
         request,
         "success",
@@ -10631,10 +10825,10 @@ def admin_sync_export(request: Request):
         set_flash(request, "error", "You do not have permission to export Excel workbooks.")
         return RedirectResponse(url="/admin", status_code=303)
 
-    sync_state = load_sync_state()
+    sync_state = load_sync_state(request)
     try:
         result = export_supabase_to_excel(request=request)
-    except ValueError as error:
+    except (ValueError, TenantContextError) as error:
         set_flash(request, "error", str(error))
         return RedirectResponse(url="/admin/sync", status_code=303)
     except Exception as error:
@@ -10651,7 +10845,7 @@ def admin_sync_export(request: Request):
         "low_cost_exported_records": result.get("low_cost_exported_records", 0),
         "transfer_exported_records": result.get("transfer_exported_records", 0),
     }
-    save_sync_state(sync_state)
+    save_sync_state(sync_state, request)
 
     filename = f"supabase_inventory_export_{datetime.now(ZoneInfo('Europe/Kyiv')).strftime('%Y%m%d_%H%M')}.xlsx"
     return FileResponse(
