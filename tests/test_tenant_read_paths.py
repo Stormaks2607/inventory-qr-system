@@ -739,6 +739,10 @@ def test_excel_read_helpers_use_request_tenant(app_module, mixed_tenant_supabase
     assert [row["payment_id"] for row in app_module.list_asset_payment_records(request=request)] == [52]
     assert [row["transfer_id"] for row in app_module.list_asset_transfer_records(request=request)] == [62]
 
+    sync_context = app_module.build_sync_context(request)
+    assert set(sync_context["transfers_by_id"]) == {62}
+    assert 61 not in sync_context["transfers_by_id"]
+
 
 def test_client_supplied_tenant_id_cannot_change_read_scope(app_module, mixed_tenant_supabase):
     request = authenticated_request(TENANT_ONE, tenant_id=TENANT_TWO)

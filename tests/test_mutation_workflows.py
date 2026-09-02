@@ -766,6 +766,7 @@ def empty_sync_context():
         "assignment_by_asset_id": {},
         "projects_by_asset_id": {},
         "payments_by_asset_id": {},
+        "transfers_by_id": {},
         "transfer_signatures": set(),
         "supports_asset_project_purchase_origin": False,
     }
@@ -901,6 +902,76 @@ def test_tenant_two_excel_apply_updates_existing_asset_in_tenant(app_module, mon
     assert result["updated"] == 1
     assert ("eq", "tenant_id", TENANT_TWO_ID) in asset_update["filters"]
     assert audit_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+
+
+def test_model_only_excel_apply_does_not_reinsert_exported_transfer(app_module, monkeypatch):
+    request = make_admin_request(TENANT_TWO_ID)
+    transfer = {
+        "transfer_id": 188,
+        "asset_id": 1232,
+        "transfer_date": "2026-08-29",
+        "from_holder_name": "Warehouse",
+        "to_holder_name": "Synthetic Tenant #2 Admin",
+        "from_project_raw": "SYN-20001",
+        "to_project_raw": "SYN-20001",
+        "asset_status": "functional",
+        "transfer_reason": "Assignment changed in web app",
+    }
+    context = empty_sync_context()
+    context["transfers_by_id"] = {188: transfer}
+    context["transfer_signatures"] = {
+        app_module.make_transfer_signature(1232, transfer)
+    }
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request: context)
+
+    preview = app_module.build_sync_preview(
+        [
+            {
+                "asset_tag_number": "SYN-T2-0001",
+                "usage_type": "standard",
+                "model": "T2-SYNC-REHEARSAL",
+            }
+        ],
+        [
+            {
+                "asset_id": 1232,
+                "asset_tag_number": "SYN-T2-0001",
+                "usage_type": "standard",
+                "model": None,
+            }
+        ],
+        [
+            {
+                "system_transfer_id": 188,
+                "asset_tag_number": "SYN-T2-0001",
+                "transfer_date": "2026-08-29",
+                "from_holder_name": "Warehouse",
+                "to_holder_name": "Synthetic Tenant #2 Admin",
+            }
+        ],
+        request=request,
+    )
+
+    assert preview["summary"]["changed_records"] == 1
+    assert preview["changed_records"][0]["changed_fields"] == ["model"]
+    assert preview["transfer_log"]["summary"]["new_records"] == 0
+    assert preview["transfer_log"]["summary"]["skipped_existing"] == 1
+
+    fake_supabase = RecordingSupabase(
+        {
+            ("tenants", "select"): [{"tenant_id": TENANT_TWO_ID, "status": "active"}],
+            ("assets", "select"): [{"asset_id": 1232}],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    result = app_module.apply_sync_preview(preview, request)
+
+    assert result["updated"] == 1
+    assert result["transfer_updated"] == 0
+    assert not any(
+        operation["table"] == "asset_transfers" and operation["action"] == "insert"
+        for operation in fake_supabase.operations
+    )
 
 
 def test_tenant_two_sync_assignment_uses_tenant_parents_and_payload(app_module, monkeypatch):
