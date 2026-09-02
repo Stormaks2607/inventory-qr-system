@@ -193,6 +193,107 @@ def test_transfer_export_roundtrip_uses_hidden_stable_id_and_skips_existing(
     assert preview["summary"]["skipped_existing"] == 1
 
 
+def test_transfer_export_numbers_null_source_logs_after_record_max(app_module, tmp_path):
+    workbook_path = tmp_path / "numbered-transfer-log.xlsx"
+    create_transfer_workbook(workbook_path)
+    workbook = load_workbook(workbook_path)
+    records = [
+        {**existing_transfer_record(188), "source_log_no": 160},
+        existing_transfer_record(189),
+        existing_transfer_record(190),
+    ]
+
+    app_module.write_transfer_log_records_to_excel_sheet(
+        workbook["Transfer log"],
+        records,
+    )
+    workbook.save(workbook_path)
+    workbook.close()
+
+    imported = app_module.load_excel_transfer_log_rows(str(workbook_path))
+    assert [row["source_log_no"] for row in imported] == [160, 161, 162]
+    assert [row["system_transfer_id"] for row in imported] == [188, 189, 190]
+    assert records[1]["source_log_no"] is None
+    assert records[2]["source_log_no"] is None
+
+
+def test_transfer_export_numbers_null_source_logs_after_worksheet_max(app_module, tmp_path):
+    workbook_path = tmp_path / "existing-numbered-transfer-log.xlsx"
+    create_transfer_workbook(workbook_path)
+    workbook = load_workbook(workbook_path)
+    sheet = workbook["Transfer log"]
+    populate_legacy_transfer_rows(sheet, 160)
+
+    app_module.write_transfer_log_records_to_excel_sheet(
+        sheet,
+        [existing_transfer_record(188)],
+    )
+    workbook.save(workbook_path)
+    workbook.close()
+
+    imported = app_module.load_excel_transfer_log_rows(str(workbook_path))
+    assert imported[-1]["source_log_no"] == 161
+    assert imported[-1]["system_transfer_id"] == 188
+
+
+def test_transfer_rebuild_numbers_null_source_logs_deterministically(app_module, tmp_path):
+    workbook_path = tmp_path / "rebuilt-numbered-transfer-log.xlsx"
+    create_transfer_workbook(workbook_path)
+    workbook = load_workbook(workbook_path)
+    sheet = workbook["Transfer log"]
+    populate_legacy_transfer_rows(sheet, 175)
+    records = [
+        {**existing_transfer_record(188), "source_log_no": 160},
+        existing_transfer_record(189),
+        existing_transfer_record(190),
+    ]
+
+    app_module.rebuild_transfer_log_records_in_excel_sheet(sheet, records)
+    first_numbers = [sheet.cell(row=row, column=3).value for row in range(2, 5)]
+    first_ids = [sheet.cell(row=row, column=16).value for row in range(2, 5)]
+    app_module.rebuild_transfer_log_records_in_excel_sheet(sheet, records)
+    second_numbers = [sheet.cell(row=row, column=3).value for row in range(2, 5)]
+    second_ids = [sheet.cell(row=row, column=16).value for row in range(2, 5)]
+
+    assert first_numbers == second_numbers == [160, 161, 162]
+    assert first_ids == second_ids == [188, 189, 190]
+    assert records[1]["source_log_no"] is None
+    assert records[2]["source_log_no"] is None
+    workbook.close()
+
+
+def test_transfer_export_normalizes_only_low_cost_compatibility_label(app_module, tmp_path):
+    workbook_path = tmp_path / "transfer-type-labels.xlsx"
+    create_transfer_workbook(workbook_path)
+    workbook = load_workbook(workbook_path)
+    persisted_low_cost = {
+        **existing_transfer_record(188),
+        "source_asset_type": "Low-cost item",
+    }
+    derived_low_cost = {
+        **existing_transfer_record(189),
+        "source_asset_type": app_module.get_asset_usage_type_label("low_cost"),
+    }
+    standard = {
+        **existing_transfer_record(190),
+        "source_asset_type": "Standard asset",
+    }
+
+    app_module.write_transfer_log_records_to_excel_sheet(
+        workbook["Transfer log"],
+        [persisted_low_cost, derived_low_cost, standard],
+    )
+
+    sheet = workbook["Transfer log"]
+    assert [sheet.cell(row=row, column=5).value for row in range(2, 5)] == [
+        "Low-cost",
+        "Low-cost",
+        "Standard asset",
+    ]
+    assert [sheet.cell(row=row, column=16).value for row in range(2, 5)] == [188, 189, 190]
+    workbook.close()
+
+
 def test_database_transfer_export_record_includes_exact_transfer_id(app_module, monkeypatch):
     transfer = {
         "transfer_id": 188,

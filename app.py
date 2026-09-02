@@ -3992,6 +3992,12 @@ def write_database_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
     }
 
 
+def normalize_transfer_log_asset_type_label(value):
+    if isinstance(value, str) and value.strip().casefold() == "low-cost item":
+        return "Low-cost"
+    return value
+
+
 def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
     ensure_transfer_system_id_column(sheet)
     columns = get_transfer_header_columns(sheet)
@@ -4001,6 +4007,7 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
     header_row_number = EXCEL_TRANSFER_LOG_HEADER_ROW + 1
     data_start_row = EXCEL_TRANSFER_LOG_HEADER_ROW + 2
     row_by_key = {}
+    source_log_no_by_key = {}
     max_source_log_no = 0
 
     for row_number in range(data_start_row, sheet.max_row + 1):
@@ -4016,7 +4023,13 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
                 else normalized.get("transfer_key")
             )
             row_by_key.setdefault(row_key, row_number)
+            source_log_no_by_key.setdefault(row_key, normalized.get("source_log_no"))
             max_source_log_no = max(max_source_log_no, int(normalized.get("source_log_no") or 0))
+
+    for record in records:
+        source_log_no = safe_excel_int(record.get("source_log_no"))
+        if source_log_no is not None:
+            max_source_log_no = max(max_source_log_no, source_log_no)
 
     last_data_row = max(row_by_key.values(), default=data_start_row - 1)
     template_row = max(data_start_row, last_data_row)
@@ -4025,10 +4038,11 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
     written_cells = 0
 
     for record in records:
-        transfer_key = record.get("transfer_key") or make_transfer_key(record)
+        export_record = dict(record)
+        transfer_key = export_record.get("transfer_key") or make_transfer_key(export_record)
         row_key = (
-            f"system:{record.get('system_transfer_id')}"
-            if record.get("system_transfer_id") is not None
+            f"system:{export_record.get('system_transfer_id')}"
+            if export_record.get("system_transfer_id") is not None
             else transfer_key
         )
         row_number = row_by_key.get(row_key)
@@ -4041,14 +4055,22 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
             last_data_row = row_number
             template_row = row_number
             appended_rows += 1
-            if not record.get("source_log_no"):
+
+        if export_record.get("source_log_no") is None:
+            existing_source_log_no = source_log_no_by_key.get(row_key)
+            if existing_source_log_no is not None:
+                export_record["source_log_no"] = existing_source_log_no
+            else:
                 max_source_log_no += 1
-                record["source_log_no"] = max_source_log_no
+                export_record["source_log_no"] = max_source_log_no
+        export_record["source_asset_type"] = normalize_transfer_log_asset_type_label(
+            export_record.get("source_asset_type")
+        )
 
         for field_name, column_number in columns.items():
-            if field_name in record:
+            if field_name in export_record:
                 cell = sheet.cell(row=row_number, column=column_number)
-                value = record.get(field_name)
+                value = export_record.get(field_name)
                 if field_name == "transfer_date":
                     value = format_excel_transfer_date(value)
                     cell.number_format = "DD.MM.YYYY"
