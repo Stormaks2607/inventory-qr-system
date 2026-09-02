@@ -3209,6 +3209,50 @@ def preflight_sync_preview(preview: dict, sync_context: dict, request: Request) 
                     ensure_parent_tenant("projects", "project_id", project.get("project_id"), request=request)
 
 
+def compensate_excel_created_asset(asset_id: int, request: Request) -> dict:
+    failed_steps = []
+    transfer_ids = []
+    try:
+        transfer_rows = fetch_rows_by_asset_ids(
+            "asset_transfers",
+            [asset_id],
+            "transfer_id,asset_id",
+            request=request,
+        )
+        transfer_ids = [row.get("transfer_id") for row in transfer_rows if row.get("transfer_id")]
+    except Exception as exc:
+        failed_steps.append(f"transfer discovery: {exc}")
+
+    try:
+        delete_assets_cascade([asset_id], request=request)
+    except Exception as exc:
+        failed_steps.append(f"asset cascade cleanup: {exc}")
+    else:
+        try:
+            tenant_filter(
+                supabase.table("audit_log").delete(),
+                request=request,
+            ).eq("source", "Excel import").eq("entity_type", "Asset").eq("entity_id", asset_id).execute()
+        except Exception as exc:
+            failed_steps.append(f"asset audit cleanup: {exc}")
+
+        if transfer_ids:
+            try:
+                tenant_filter(
+                    supabase.table("audit_log").delete(),
+                    request=request,
+                ).eq("source", "Excel import").eq("entity_type", "Transfer").in_("entity_id", transfer_ids).execute()
+            except Exception as exc:
+                failed_steps.append(f"transfer audit cleanup: {exc}")
+
+    if failed_steps:
+        raise RuntimeError(
+            f"Compensation was incomplete for asset_id {asset_id}: {'; '.join(failed_steps)}"
+        )
+
+    return {"asset_id": asset_id, "transfer_ids": transfer_ids}
+
+
 def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict:
     validate_sync_preview_ownership(preview, request)
     inserted = 0
@@ -3218,7 +3262,7 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
     payment_updated = 0
     transfer_updated = 0
     skipped_relationships = 0
-    created_assets = []
+    completed_new_assets = []
     sync_context = build_sync_context(request=request)
     preflight_sync_preview(preview, sync_context, request)
     asset_fields = {
@@ -3249,37 +3293,61 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
         asset_id = inserted_asset.get("asset_id")
         if not isinstance(asset_id, int) or isinstance(asset_id, bool) or asset_id <= 0:
             raise RuntimeError("Asset insert did not return a valid asset_id.")
-        created_assets.append(inserted_asset)
-        inserted += 1
-        audit_log_event(
-            entity_type="Asset",
-            entity_id=asset_id,
-            entity_label=record.get("asset_tag_number"),
-            action="created",
-            summary=f"Created asset from Excel: {record.get('asset_tag_number')}",
-            source="Excel import",
-            actor="Excel import",
-            request=request,
-        )
-        if asset_id:
+        asset_assignment_updated = 0
+        asset_project_updated = 0
+        asset_payment_updated = 0
+        try:
+            audit_created = audit_log_event(
+                entity_type="Asset",
+                entity_id=asset_id,
+                entity_label=record.get("asset_tag_number"),
+                action="created",
+                summary=f"Created asset from Excel: {record.get('asset_tag_number')}",
+                source="Excel import",
+                actor="Excel import",
+                request=request,
+            )
+            if not audit_created:
+                raise RuntimeError("Asset creation audit was not saved.")
             if record.get("_has_recipient_column") and normalize_sync_string(record.get("recipient_name")):
-                assignment_updated += apply_sync_assignment(asset_id, record, sync_context, request)
+                asset_assignment_updated = apply_sync_assignment(asset_id, record, sync_context, request)
             if record.get("_has_project_column") and (
                 get_excel_purchased_project_allocations(record) or get_excel_transferred_project_allocations(record)
             ):
-                project_updated += apply_sync_project(asset_id, record, sync_context, request)
-            payment_updated += apply_sync_payments(asset_id, record, request)
+                asset_project_updated = apply_sync_project(asset_id, record, sync_context, request)
+            asset_payment_updated = apply_sync_payments(asset_id, record, request)
 
-    if created_assets:
-        registration_context = build_sync_context(request=request)
-        for created_asset in created_assets:
+            registration_context = build_sync_context(request=request)
             create_asset_registration_transfer(
-                created_asset,
+                inserted_asset,
                 registration_context,
                 request,
                 audit_source="Excel import",
                 audit_actor="Excel import",
             )
+        except Exception as creation_error:
+            try:
+                compensate_excel_created_asset(asset_id, request)
+            except Exception as compensation_error:
+                completed_tags = [asset.get("asset_tag_number") for asset in completed_new_assets]
+                raise RuntimeError(
+                    f"Excel asset creation failed for {record.get('asset_tag_number')} (asset_id {asset_id}); "
+                    f"compensation also failed. Completed earlier assets: {completed_tags or 'none'}. "
+                    f"Creation error: {creation_error}. Compensation error: {compensation_error}"
+                ) from compensation_error
+
+            completed_tags = [asset.get("asset_tag_number") for asset in completed_new_assets]
+            raise RuntimeError(
+                f"Excel asset creation failed for {record.get('asset_tag_number')} (asset_id {asset_id}) "
+                f"and was fully compensated. Completed earlier assets: {completed_tags or 'none'}. "
+                f"Cause: {creation_error}"
+            ) from creation_error
+
+        completed_new_assets.append(inserted_asset)
+        inserted += 1
+        assignment_updated += asset_assignment_updated
+        project_updated += asset_project_updated
+        payment_updated += asset_payment_updated
 
     for item in preview.get("changed_records", []):
         asset_id = item.get("asset_id")
