@@ -71,6 +71,7 @@ REGISTRATION_TRANSFER_EXPORT_FROM = clean_env_value("REGISTRATION_TRANSFER_EXPOR
 EXCEL_SYNC_SHEET_NAME = "Standard Asset List Format"
 EXCEL_LOW_COST_SHEET_NAME = "Low-cost-items"
 EXCEL_TRANSFER_LOG_SHEET_NAME = "Transfer log"
+EXCEL_TRANSFER_SYSTEM_ID_HEADER = "System Transfer ID"
 EXCEL_SYNC_HEADER_ROW = 7
 EXCEL_TRANSFER_LOG_HEADER_ROW = 0
 PROJECT_NUMBER_PATTERN = r"\b[A-Z]{2,5}-\d{1,5}\b"
@@ -1922,6 +1923,8 @@ def normalize_transfer_header(value) -> str:
 
 def resolve_transfer_header_field(value) -> Optional[str]:
     normalized = normalize_transfer_header(value)
+    if normalized == normalize_transfer_header(EXCEL_TRANSFER_SYSTEM_ID_HEADER):
+        return "system_transfer_id"
     if normalized == "no.":
         return "source_log_no"
     if normalized == "transfer date":
@@ -1984,14 +1987,41 @@ def make_transfer_key(record: dict) -> str:
     )
 
 
+def parse_transfer_system_id(value, source_row_number: int) -> Optional[int]:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"Transfer log row {source_row_number} has an invalid System Transfer ID.")
+
+    if isinstance(value, int):
+        transfer_id = value
+    elif isinstance(value, float) and value.is_integer():
+        transfer_id = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
+        transfer_id = int(value.strip())
+    else:
+        raise ValueError(f"Transfer log row {source_row_number} has an invalid System Transfer ID.")
+
+    if transfer_id <= 0:
+        raise ValueError(f"Transfer log row {source_row_number} has an invalid System Transfer ID.")
+    return transfer_id
+
+
 def normalize_excel_transfer_record(row: dict, source_row_number: int) -> Optional[dict]:
+    system_transfer_id = parse_transfer_system_id(row.get("system_transfer_id"), source_row_number)
     asset_tag = normalize_asset_tag(clean_excel_value(row.get("asset_tag_number")) or "")
     transfer_date = parse_excel_sync_date(row.get("transfer_date"))
     if not asset_tag or not transfer_date:
+        if system_transfer_id is not None:
+            raise ValueError(
+                f"Transfer log row {source_row_number} with a System Transfer ID "
+                "must contain a valid asset tag and transfer date."
+            )
         return None
 
     record = {
         "transfer_key": "",
+        "system_transfer_id": system_transfer_id,
         "source_row_number": source_row_number,
         "source_log_no": safe_excel_int(row.get("source_log_no")),
         "transfer_date": transfer_date,
@@ -2513,19 +2543,13 @@ def build_sync_context(request: Request) -> dict:
     for payment in asset_payments:
         payments_by_asset_id.setdefault(payment.get("asset_id"), []).append(payment)
 
+    transfers_by_id = {}
     transfer_signatures = set()
     for transfer in asset_transfers:
-        transfer_signatures.add(
-            "|".join(
-                [
-                    str(transfer.get("asset_id") or ""),
-                    str(transfer.get("transfer_date") or ""),
-                    str(transfer.get("source_log_no") or ""),
-                    normalize_sync_match_key(transfer.get("from_holder_name")) or "",
-                    normalize_sync_match_key(transfer.get("to_holder_name")) or "",
-                ]
-            )
-        )
+        transfer_id = transfer.get("transfer_id")
+        if transfer_id is not None:
+            transfers_by_id[int(transfer_id)] = transfer
+        transfer_signatures.add(make_transfer_signature(transfer.get("asset_id"), transfer))
 
     return {
         "person_lookup": build_person_lookup(people),
@@ -2535,6 +2559,7 @@ def build_sync_context(request: Request) -> dict:
         "assignment_by_asset_id": assignment_by_asset_id,
         "projects_by_asset_id": projects_by_asset_id,
         "payments_by_asset_id": payments_by_asset_id,
+        "transfers_by_id": transfers_by_id,
         "transfer_signatures": transfer_signatures,
         "supports_asset_project_purchase_origin": asset_project_purchase_origin_supported(),
     }
@@ -2545,11 +2570,29 @@ def make_transfer_signature(asset_id: int, record: dict) -> str:
         [
             str(asset_id or ""),
             str(record.get("transfer_date") or ""),
-            str(record.get("source_log_no") or ""),
             normalize_sync_match_key(record.get("from_holder_name")) or "",
             normalize_sync_match_key(record.get("to_holder_name")) or "",
+            normalize_sync_match_key(record.get("from_project_raw")) or "",
+            normalize_sync_match_key(record.get("to_project_raw")) or "",
+            normalize_sync_match_key(record.get("asset_status")) or "",
+            normalize_sync_match_key(record.get("asset_condition_description")) or "",
+            normalize_sync_match_key(record.get("transfer_reason") or record.get("notes")) or "",
         ]
     )
+
+
+def transfer_record_already_exists(asset_id: int, record: dict, sync_context: dict) -> bool:
+    system_transfer_id = record.get("system_transfer_id")
+    if system_transfer_id is not None:
+        existing = sync_context.get("transfers_by_id", {}).get(system_transfer_id)
+        if not existing or existing.get("asset_id") != asset_id:
+            raise TenantContextError(
+                "System Transfer ID is not valid for the current tenant and asset."
+            )
+        return True
+
+    signature = make_transfer_signature(asset_id, record)
+    return signature in sync_context.get("transfer_signatures", set())
 
 
 def transfer_project_allocations(value) -> list[dict]:
@@ -2593,9 +2636,13 @@ def build_transfer_log_preview(transfer_records: list[dict], current_by_tag: dic
                 if project_number and not sync_context["project_lookup"].get(normalize_sync_match_key(project_number)):
                     warnings.append(f"{direction} not found in Projects: {project_number}")
 
+        if record.get("system_transfer_id") is not None and not asset:
+            raise TenantContextError(
+                "System Transfer ID is not valid for the current tenant and asset."
+            )
+
         if asset:
-            signature = make_transfer_signature(asset.get("asset_id"), record)
-            if signature in sync_context.get("transfer_signatures", set()):
+            if transfer_record_already_exists(asset.get("asset_id"), record, sync_context):
                 skipped_existing += 1
                 continue
 
@@ -3013,6 +3060,10 @@ def apply_transfer_project_rows(transfer_id: int, record: dict, sync_context: di
 def apply_sync_transfer(record: dict, sync_context: dict, request: Request) -> int:
     asset_id = record.get("asset_id")
     if not asset_id:
+        if record.get("system_transfer_id") is not None:
+            raise TenantContextError(
+                "System Transfer ID is not valid for the current tenant and asset."
+            )
         return 0
     ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
     validate_transfer_person_tenants(record.get("from_person_id"), record.get("to_person_id"), request=request)
@@ -3036,31 +3087,37 @@ def apply_sync_transfer(record: dict, sync_context: dict, request: Request) -> i
         "asset_condition_description": record.get("asset_condition_description"),
     }, request=request)
 
-    signature = make_transfer_signature(asset_id, record)
-    if signature in sync_context.get("transfer_signatures", set()):
+    if transfer_record_already_exists(asset_id, record, sync_context):
         return 0
 
     response = supabase.table("asset_transfers").insert(payload).execute()
     transfer = (response.data or [{}])[0]
     transfer_id = transfer.get("transfer_id")
-    if transfer_id:
-        apply_transfer_project_rows(transfer_id, record, sync_context, request)
-        sync_context.setdefault("transfer_signatures", set()).add(signature)
-        audit_log_event(
-            entity_type="Transfer",
-            entity_id=transfer_id,
-            entity_label=record.get("asset_tag_number"),
-            action="transferred",
-            field_name="assignment",
-            old_value=record.get("from_holder_name"),
-            new_value=record.get("to_holder_name"),
-            summary=build_transfer_audit_summary(record),
-            source="Excel Transfer log",
-            actor="Excel Transfer log",
-            event_date=record.get("transfer_date"),
-            event_key=f"asset_transfer:{transfer_id}",
-            request=request,
-        )
+    if not isinstance(transfer_id, int) or isinstance(transfer_id, bool) or transfer_id <= 0:
+        raise RuntimeError("Asset transfer insert did not return a valid transfer_id.")
+
+    apply_transfer_project_rows(transfer_id, record, sync_context, request)
+    signature = make_transfer_signature(asset_id, record)
+    sync_context.setdefault("transfer_signatures", set()).add(signature)
+    sync_context.setdefault("transfers_by_id", {})[transfer_id] = {
+        **payload,
+        "transfer_id": transfer_id,
+    }
+    audit_log_event(
+        entity_type="Transfer",
+        entity_id=transfer_id,
+        entity_label=record.get("asset_tag_number"),
+        action="transferred",
+        field_name="assignment",
+        old_value=record.get("from_holder_name"),
+        new_value=record.get("to_holder_name"),
+        summary=build_transfer_audit_summary(record),
+        source="Excel Transfer log",
+        actor="Excel Transfer log",
+        event_date=record.get("transfer_date"),
+        event_key=f"asset_transfer:{transfer_id}",
+        request=request,
+    )
     return 1
 
 
@@ -3118,6 +3175,13 @@ def preflight_sync_preview(preview: dict, sync_context: dict, request: Request) 
                 ensure_parent_tenant("donors", "donor_id", donor.get("donor_id"), request=request)
 
     for record in preview.get("transfer_log", {}).get("new_records", []):
+        asset_id = record.get("asset_id")
+        if record.get("system_transfer_id") is not None:
+            if not asset_id:
+                raise TenantContextError(
+                    "System Transfer ID is not valid for the current tenant and asset."
+                )
+            transfer_record_already_exists(asset_id, record, sync_context)
         validate_transfer_person_tenants(
             record.get("from_person_id"),
             record.get("to_person_id"),
@@ -3323,6 +3387,26 @@ def get_transfer_header_columns(sheet) -> dict[str, int]:
         if field_name and field_name not in columns:
             columns[field_name] = cell.column
     return columns
+
+
+def ensure_transfer_system_id_column(sheet) -> int:
+    try:
+        from openpyxl.utils import get_column_letter  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Excel transfer export requires openpyxl support: {exc}") from exc
+
+    columns = get_transfer_header_columns(sheet)
+    column_number = columns.get("system_transfer_id")
+    if column_number is None:
+        column_number = sheet.max_column + 1
+        header_cell = sheet.cell(row=EXCEL_TRANSFER_LOG_HEADER_ROW + 1, column=column_number)
+        template_cell = sheet.cell(row=EXCEL_TRANSFER_LOG_HEADER_ROW + 1, column=max(1, column_number - 1))
+        if template_cell.has_style:
+            header_cell._style = copy(template_cell._style)
+        header_cell.value = EXCEL_TRANSFER_SYSTEM_ID_HEADER
+
+    sheet.column_dimensions[get_column_letter(column_number)].hidden = True
+    return column_number
 
 
 def get_export_project_numbers(asset_projects: list[dict], mode: str) -> str:
@@ -3557,6 +3641,7 @@ def build_database_transfer_log_records(request: Optional[Request] = None) -> li
         from_project = transfer.get("from_project_raw") or (format_transfer_project_rows(project_rows, "from") if project_rows else None)
         to_project = transfer.get("to_project_raw") or (format_transfer_project_rows(project_rows, "to") if project_rows else None)
         record = {
+            "system_transfer_id": transfer.get("transfer_id"),
             "source_log_no": transfer.get("source_log_no"),
             "transfer_date": transfer.get("transfer_date"),
             "source_asset_type": transfer.get("source_asset_type") or get_asset_usage_type_label(asset.get("usage_type")),
@@ -3697,6 +3782,7 @@ def write_database_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
 
 
 def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
+    ensure_transfer_system_id_column(sheet)
     columns = get_transfer_header_columns(sheet)
     if "asset_tag_number" not in columns or "transfer_date" not in columns:
         raise ValueError(f"The workbook sheet '{sheet.title}' does not contain the expected Transfer log headers.")
@@ -3713,7 +3799,12 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
         }
         normalized = normalize_excel_transfer_record(row, row_number)
         if normalized:
-            row_by_key.setdefault(normalized.get("transfer_key"), row_number)
+            row_key = (
+                f"system:{normalized.get('system_transfer_id')}"
+                if normalized.get("system_transfer_id") is not None
+                else normalized.get("transfer_key")
+            )
+            row_by_key.setdefault(row_key, row_number)
             max_source_log_no = max(max_source_log_no, int(normalized.get("source_log_no") or 0))
 
     last_data_row = max(row_by_key.values(), default=data_start_row - 1)
@@ -3724,13 +3815,18 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
 
     for record in records:
         transfer_key = record.get("transfer_key") or make_transfer_key(record)
-        row_number = row_by_key.get(transfer_key)
+        row_key = (
+            f"system:{record.get('system_transfer_id')}"
+            if record.get("system_transfer_id") is not None
+            else transfer_key
+        )
+        row_number = row_by_key.get(row_key)
         if row_number:
             updated_rows += 1
         else:
             row_number = last_data_row + 1
             copy_excel_row_style(sheet, template_row, row_number)
-            row_by_key[transfer_key] = row_number
+            row_by_key[row_key] = row_number
             last_data_row = row_number
             template_row = row_number
             appended_rows += 1
@@ -3755,6 +3851,60 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
         "written_cells": written_cells,
         "exported_records": len(records),
     }
+
+
+def rebuild_transfer_log_records_in_excel_sheet(sheet, records: list[dict]) -> dict:
+    try:
+        from openpyxl.utils import get_column_letter, range_boundaries  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Excel transfer export requires openpyxl support: {exc}") from exc
+
+    system_id_column = ensure_transfer_system_id_column(sheet)
+    header_row_number = EXCEL_TRANSFER_LOG_HEADER_ROW + 1
+    data_start_row = EXCEL_TRANSFER_LOG_HEADER_ROW + 2
+    column_count = max(sheet.max_column, system_id_column)
+    template_styles = [
+        copy(sheet.cell(row=data_start_row, column=column_number)._style)
+        for column_number in range(1, column_count + 1)
+    ]
+    template_row_height = sheet.row_dimensions[data_start_row].height
+
+    for merged_range in list(sheet.merged_cells.ranges):
+        if merged_range.max_row >= data_start_row:
+            sheet.unmerge_cells(str(merged_range))
+
+    if sheet.max_row >= data_start_row:
+        sheet.delete_rows(data_start_row, sheet.max_row - data_start_row + 1)
+
+    for column_number, style in enumerate(template_styles, start=1):
+        sheet.cell(row=data_start_row, column=column_number)._style = copy(style)
+    sheet.row_dimensions[data_start_row].height = template_row_height
+
+    sheet.data_validations.dataValidation = []
+    sheet.conditional_formatting._cf_rules.clear()
+
+    result = write_transfer_log_records_to_excel_sheet(sheet, records)
+    last_data_row = header_row_number + len(records)
+    range_last_row = max(data_start_row, last_data_row)
+
+    for table in sheet.tables.values():
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        if min_row <= header_row_number <= max_row:
+            table.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{range_last_row}"
+            )
+
+    auto_filter_ref = getattr(sheet.auto_filter, "ref", None)
+    if auto_filter_ref:
+        min_col, min_row, max_col, max_row = range_boundaries(auto_filter_ref)
+        if min_row <= header_row_number <= max_row:
+            sheet.auto_filter.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{range_last_row}"
+            )
+
+    return result
 
 
 def export_supabase_to_excel(request: Request) -> dict:
@@ -3793,7 +3943,7 @@ def export_supabase_to_excel(request: Request) -> dict:
         "exported_records": 0,
     }
     if EXCEL_TRANSFER_LOG_SHEET_NAME in workbook.sheetnames:
-        transfer_result = write_transfer_log_records_to_excel_sheet(
+        transfer_result = rebuild_transfer_log_records_in_excel_sheet(
             workbook[EXCEL_TRANSFER_LOG_SHEET_NAME],
             build_database_transfer_log_records(request=request),
         )
