@@ -25,6 +25,34 @@ TRANSFER_HEADERS = [
     "Reason for Asset Transfer",
 ]
 
+ASSET_HEADERS = [
+    "Asset Tag No. / Inventory Code\n(new standardised system)",
+    "Asset Classification",
+    "Asset Sub Classification",
+    "Item Description",
+    "Brand / Make ",
+    "Model",
+    "Serial/ Chassis No.",
+    "Quantity",
+    "Purchase price",
+    "Currency",
+    "Current Status\n(functionality)",
+]
+
+
+def create_asset_sheet(workbook, title, stale_tag):
+    sheet = workbook.create_sheet(title)
+    for column_number, header in enumerate(ASSET_HEADERS, start=1):
+        sheet.cell(row=8, column=column_number).value = header
+    sheet.cell(row=8, column=25).value = "Last date of transfer"
+    sheet.cell(row=9, column=1).value = stale_tag
+    sheet.cell(row=9, column=4).value = "Foreign stale asset"
+    sheet.cell(row=9, column=25).value = "=IF(A9<>\"\",\"template\",\"\")"
+    sheet.column_dimensions["A"].width = 31
+    sheet.column_dimensions["B"].hidden = True
+    sheet.freeze_panes = "A9"
+    return sheet
+
 
 def create_transfer_workbook(path, *, include_system_id=False):
     workbook = Workbook()
@@ -88,6 +116,11 @@ def transfer_context(app_module, *transfers):
         "transfer_signatures": {
             app_module.make_transfer_signature(transfer["asset_id"], transfer)
             for transfer in transfers
+        },
+        "registration_asset_ids": {
+            transfer["asset_id"]
+            for transfer in transfers
+            if app_module.is_registration_transfer_record(transfer)
         },
     }
 
@@ -180,13 +213,54 @@ def test_database_transfer_export_record_includes_exact_transfer_id(app_module, 
     monkeypatch.setattr(app_module, "list_current_assignment_records", lambda request=None: [])
     monkeypatch.setattr(app_module, "list_asset_project_records", lambda request=None: [])
     monkeypatch.setattr(app_module, "list_asset_payment_records", lambda request=None: [])
-    monkeypatch.setattr(app_module, "get_asset_transfer_project_rows", lambda transfer_ids: {})
-    monkeypatch.setattr(app_module, "build_asset_registration_transfer_records", lambda *args: [])
+    captured_request = SimpleNamespace(session={"tenant_id": "tenant-two"})
+    project_requests = []
+    monkeypatch.setattr(
+        app_module,
+        "get_asset_transfer_project_rows",
+        lambda transfer_ids, request=None: project_requests.append(request) or {},
+    )
 
-    records = app_module.build_database_transfer_log_records(request=SimpleNamespace())
+    records = app_module.build_database_transfer_log_records(request=captured_request)
 
     assert len(records) == 1
     assert records[0]["system_transfer_id"] == 188
+    assert project_requests == [captured_request]
+
+
+def test_database_transfer_export_does_not_generate_pseudo_registration_rows(
+    app_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(app_module, "list_asset_transfer_records", lambda request=None: [])
+    monkeypatch.setattr(
+        app_module,
+        "list_asset_records",
+        lambda request=None: [
+            {
+                "asset_id": 1232,
+                "asset_tag_number": "SYN-T2-0001",
+                "created_at": "2026-08-29T10:00:00+00:00",
+            }
+        ],
+    )
+    monkeypatch.setattr(app_module, "list_people", lambda request=None: [])
+    monkeypatch.setattr(app_module, "list_projects", lambda request=None: [])
+    monkeypatch.setattr(app_module, "list_donors", lambda request=None: [])
+    monkeypatch.setattr(app_module, "list_current_assignment_records", lambda request=None: [])
+    monkeypatch.setattr(app_module, "list_asset_project_records", lambda request=None: [])
+    monkeypatch.setattr(app_module, "list_asset_payment_records", lambda request=None: [])
+    monkeypatch.setattr(
+        app_module,
+        "get_asset_transfer_project_rows",
+        lambda transfer_ids, request=None: {},
+    )
+
+    records = app_module.build_database_transfer_log_records(
+        request=SimpleNamespace(session={"tenant_id": "tenant-two"})
+    )
+
+    assert records == []
 
 
 def test_same_looking_transfers_with_distinct_system_ids_remain_distinct(
@@ -358,6 +432,137 @@ def test_new_semantic_transfer_inserts_once_and_repeat_is_idempotent(
     assert len(database.inserts) == 1
 
 
+def test_new_asset_registration_creates_one_durable_tenant_transfer(
+    app_module,
+    monkeypatch,
+):
+    database = TransferInsertSupabase([501])
+    monkeypatch.setattr(app_module, "supabase", database)
+    monkeypatch.setattr(app_module, "ensure_parent_tenant", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "validate_transfer_person_tenants", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "apply_transfer_project_rows", lambda *args, **kwargs: 0)
+    audit_calls = []
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: audit_calls.append(kwargs) or True)
+    request = SimpleNamespace(
+        session={
+            "admin_authenticated": True,
+            "tenant_id": "00000000-0000-4000-8000-000000000002",
+        }
+    )
+    context = transfer_context(app_module)
+    context.update(
+        {
+            "assignment_by_asset_id": {},
+            "projects_by_asset_id": {},
+            "payments_by_asset_id": {},
+            "registration_asset_ids": set(),
+        }
+    )
+    asset = {
+        "asset_id": 1232,
+        "asset_tag_number": "SYN-T2-0001",
+        "usage_type": "standard",
+        "current_status": "functional",
+        "created_at": "2026-08-29T10:00:00+00:00",
+    }
+
+    first = app_module.create_asset_registration_transfer(
+        asset,
+        context,
+        request,
+        audit_source="Asset creation",
+        audit_actor="admin",
+    )
+    second = app_module.create_asset_registration_transfer(
+        asset,
+        context,
+        request,
+        audit_source="Asset creation",
+        audit_actor="admin",
+    )
+
+    assert first == 1
+    assert second == 0
+    assert len(database.inserts) == 1
+    assert database.inserts[0]["tenant_id"] == "00000000-0000-4000-8000-000000000002"
+    assert database.inserts[0]["asset_id"] == 1232
+    assert database.inserts[0]["transfer_reason"] == app_module.REGISTRATION_TRANSFER_REASON
+    assert context["transfers_by_id"][501]["transfer_id"] == 501
+    assert context["registration_asset_ids"] == {1232}
+    assert audit_calls[0]["entity_id"] == 501
+    assert audit_calls[0]["source"] == "Asset creation"
+
+
+def test_registration_backfill_is_dry_run_tenant_scoped_and_idempotent(
+    app_module,
+    monkeypatch,
+):
+    tenant_id = "00000000-0000-4000-8000-000000000002"
+    request = SimpleNamespace(
+        session={
+            "admin_authenticated": True,
+            "tenant_id": tenant_id,
+        }
+    )
+    assets = [
+        {
+            "asset_id": 1232,
+            "asset_tag_number": "SYN-T2-0001",
+            "usage_type": "standard",
+            "current_status": "functional",
+            "created_at": "2026-08-29T10:00:00+00:00",
+        },
+        {
+            "asset_id": 1000,
+            "asset_tag_number": "SYN-T2-OLD",
+            "created_at": "2026-07-01T10:00:00+00:00",
+        },
+    ]
+    context = {
+        "assignment_by_asset_id": {},
+        "projects_by_asset_id": {},
+        "payments_by_asset_id": {},
+        "registration_asset_ids": set(),
+    }
+    read_requests = []
+    create_calls = []
+    monkeypatch.setattr(
+        app_module,
+        "require_active_sync_tenant_id",
+        lambda received_request: received_request.session["tenant_id"],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "list_asset_records",
+        lambda request=None: read_requests.append(request) or assets,
+    )
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request=None: context)
+
+    def fake_create(asset, sync_context, received_request, **kwargs):
+        create_calls.append((asset["asset_id"], received_request, kwargs))
+        sync_context["registration_asset_ids"].add(asset["asset_id"])
+        return 1
+
+    monkeypatch.setattr(app_module, "create_asset_registration_transfer", fake_create)
+
+    dry_run = app_module.backfill_asset_registration_transfers(request)
+    first_apply = app_module.backfill_asset_registration_transfers(request, apply=True)
+    second_apply = app_module.backfill_asset_registration_transfers(request, apply=True)
+
+    assert dry_run["tenant_id"] == tenant_id
+    assert dry_run["dry_run"] is True
+    assert dry_run["candidate_count"] == 1
+    assert dry_run["inserted_count"] == 0
+    assert dry_run["proposed_inserts"][0]["asset_tag_number"] == "SYN-T2-0001"
+    assert first_apply["candidate_count"] == 1
+    assert first_apply["inserted_count"] == 1
+    assert second_apply["candidate_count"] == 0
+    assert second_apply["inserted_count"] == 0
+    assert [call[0] for call in create_calls] == [1232]
+    assert all(received is request for received in read_requests)
+    assert create_calls[0][1] is request
+
+
 def test_apply_rechecks_system_transfer_id_before_insert(app_module, monkeypatch):
     database = TransferInsertSupabase([190])
     monkeypatch.setattr(app_module, "supabase", database)
@@ -479,6 +684,152 @@ def test_generated_export_rebuilds_populated_legacy_transfer_log(
     assert all(sheet.cell(row=row, column=6).value is None for row in range(3, sheet.max_row + 1))
     exported.close()
     assert result["transfer_exported_records"] == 1
+
+
+def test_generated_export_rebuilds_asset_sheets_from_tenant_database_only(
+    app_module,
+    monkeypatch,
+    tmp_path,
+):
+    source_path = tmp_path / "official_inventory.xlsx"
+    export_path = tmp_path / "supabase_inventory_export.xlsx"
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    create_asset_sheet(workbook, "Standard Asset List Format", "SYN-T2-0001")
+    create_asset_sheet(workbook, "Low-cost-items", "SYN-T2-LC-0001")
+    transfer_sheet = workbook.create_sheet("Transfer log")
+    for column_number, header in enumerate(TRANSFER_HEADERS, start=3):
+        transfer_sheet.cell(row=1, column=column_number).value = header
+    workbook.save(source_path)
+    workbook.close()
+    source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+
+    request = SimpleNamespace(
+        session={
+            "admin_authenticated": True,
+            "tenant_id": "00000000-0000-4000-8000-000000000001",
+        }
+    )
+    standard_record = {
+        "asset_tag_number": "HELP-UKR-0001",
+        "usage_type": "standard",
+        "item_description": "Tenant one monitor",
+        "model": "T1-MONITOR",
+        "current_status": "functional",
+    }
+    low_cost_record = {
+        "asset_tag_number": "HELP-UKR-LC-0001",
+        "usage_type": "low_cost",
+        "item_description": "Tenant one mouse",
+        "model": "T1-MOUSE",
+        "current_status": "functional",
+    }
+    registration_transfer = {
+        "system_transfer_id": 500,
+        "transfer_date": "2026-08-30",
+        "source_asset_type": "Standard",
+        "asset_tag_number": "HELP-UKR-0001",
+        "from_holder_name": "Supplier",
+        "to_holder_name": "Warehouse",
+        "asset_status": "functional",
+        "asset_condition_description": "New",
+        "transfer_reason": "Registration of the new asset",
+    }
+    monkeypatch.setattr(app_module, "require_active_sync_tenant_id", lambda received: received.session["tenant_id"])
+    monkeypatch.setattr(app_module, "ensure_sync_storage", lambda received: {"export": str(export_path)})
+    monkeypatch.setattr(app_module, "ensure_sync_workbook_template", lambda received: str(source_path))
+    monkeypatch.setattr(
+        app_module,
+        "build_database_excel_records",
+        lambda usage_type, request=None: [standard_record] if usage_type == "standard" else [low_cost_record],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "build_database_transfer_log_records",
+        lambda request=None: [registration_transfer],
+    )
+
+    first_result = app_module.export_supabase_to_excel(request)
+    first_bytes = export_path.read_bytes()
+    second_result = app_module.export_supabase_to_excel(request)
+
+    assert hashlib.sha256(source_path.read_bytes()).hexdigest() == source_hash
+    assert first_bytes == export_path.read_bytes()
+    assert first_result["exported_records"] == second_result["exported_records"] == 3
+
+    source = load_workbook(source_path, data_only=False)
+    assert source["Standard Asset List Format"]["A9"].value == "SYN-T2-0001"
+    assert source["Low-cost-items"]["A9"].value == "SYN-T2-LC-0001"
+    source.close()
+
+    exported = load_workbook(export_path, data_only=False)
+    for sheet_name, expected_tag in [
+        ("Standard Asset List Format", "HELP-UKR-0001"),
+        ("Low-cost-items", "HELP-UKR-LC-0001"),
+    ]:
+        sheet = exported[sheet_name]
+        assert sheet["A9"].value == expected_tag
+        assert sheet.max_row == 9
+        assert sheet.column_dimensions["A"].width == 31
+        assert sheet.column_dimensions["B"].hidden is True
+        assert sheet.freeze_panes == "A9"
+        assert sheet["Y9"].data_type == "f"
+    exported.close()
+
+    parsed_assets = app_module.load_excel_sync_rows(str(export_path))
+    parsed_transfers = app_module.load_excel_transfer_log_rows(str(export_path))
+    assert {row["asset_tag_number"] for row in parsed_assets} == {
+        "HELP-UKR-0001",
+        "HELP-UKR-LC-0001",
+    }
+    assert all(not row["asset_tag_number"].startswith("SYN-T2") for row in parsed_assets)
+    assert [row["system_transfer_id"] for row in parsed_transfers] == [500]
+
+    context = {
+        "person_lookup": {},
+        "location_lookup": {},
+        "project_lookup": {},
+        "donor_lookup": {},
+        "assignment_by_asset_id": {},
+        "projects_by_asset_id": {},
+        "payments_by_asset_id": {},
+        "transfers_by_id": {500: {"transfer_id": 500, "asset_id": 1}},
+        "transfer_signatures": set(),
+        "registration_asset_ids": {1},
+        "supports_asset_project_purchase_origin": False,
+    }
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request: context)
+    synced_fields = [
+        "usage_type",
+        "asset_classification",
+        "asset_sub_classification",
+        "item_description",
+        "brand_make",
+        "model",
+        "serial_chassis_number",
+        "quantity",
+        "purchase_price",
+        "currency",
+        "current_status",
+    ]
+    current_assets = [
+        {
+            "asset_id": index,
+            "asset_tag_number": row["asset_tag_number"],
+            **{field_name: row.get(field_name) for field_name in synced_fields},
+        }
+        for index, row in enumerate(parsed_assets, start=1)
+    ]
+    preview = app_module.build_sync_preview(
+        parsed_assets,
+        current_assets,
+        parsed_transfers,
+        request=request,
+    )
+    assert preview["summary"]["new_records"] == 0
+    assert preview["summary"]["changed_records"] == 0
+    assert preview["transfer_log"]["summary"]["new_records"] == 0
+    assert preview["transfer_log"]["summary"]["skipped_existing"] == 1
 
 
 def test_rebuild_175_legacy_rows_keeps_only_authoritative_history(app_module, tmp_path):

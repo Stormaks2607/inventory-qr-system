@@ -1,3 +1,6 @@
+RETIRED_MESSAGE = "Legacy import script is retired. Use the tenant-aware application import flow."
+raise RuntimeError(RETIRED_MESSAGE)
+
 import math
 import pandas as pd
 from supabase import create_client

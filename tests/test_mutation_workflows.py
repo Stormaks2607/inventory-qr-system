@@ -1,4 +1,7 @@
 import os
+import builtins
+import runpy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -118,6 +121,88 @@ class FailingInsertSupabase(RecordingSupabase):
 
     def table(self, table_name):
         return FailingInsertQuery(self, table_name)
+
+
+class StatefulQuery(RecordingQuery):
+    def execute(self):
+        operation = {
+            "table": self.table_name,
+            "action": self.action,
+            "payload": self.payload,
+            "filters": self.filters,
+            "orders": self.orders,
+        }
+        self.database.operations.append(operation)
+        rows = self.database.tables.setdefault(self.table_name, [])
+
+        def matches(row):
+            for operator, field_name, value in self.filters:
+                if operator == "eq" and row.get(field_name) != value:
+                    return False
+                if operator == "in" and row.get(field_name) not in value:
+                    return False
+                if operator == "is" and value == "null" and row.get(field_name) is not None:
+                    return False
+                if operator == "not_is" and value == "null" and row.get(field_name) is None:
+                    return False
+            return True
+
+        if self.action == "select":
+            return FakeResponse([dict(row) for row in rows if matches(row)])
+        if self.action == "delete":
+            retained = [row for row in rows if not matches(row)]
+            deleted = [dict(row) for row in rows if matches(row)]
+            self.database.tables[self.table_name] = retained
+            return FakeResponse(deleted)
+        if self.action == "update":
+            updated = []
+            for row in rows:
+                if matches(row):
+                    row.update(self.payload)
+                    updated.append(dict(row))
+            return FakeResponse(updated)
+        if self.action == "insert":
+            payloads = self.payload if isinstance(self.payload, list) else [self.payload]
+            inserted = []
+            for payload in payloads:
+                row = dict(payload)
+                if (
+                    self.table_name == "asset_transfers"
+                    and row.get("asset_id") in self.database.fail_registration_asset_ids
+                    and row.get("transfer_reason") == self.database.registration_reason
+                ):
+                    raise RuntimeError(f"registration failed for asset {row.get('asset_id')}")
+                id_field = self.database.id_fields.get(self.table_name)
+                if id_field and not row.get(id_field):
+                    row[id_field] = self.database.next_ids.setdefault(self.table_name, 1)
+                    self.database.next_ids[self.table_name] += 1
+                rows.append(row)
+                inserted.append(dict(row))
+            return FakeResponse(inserted)
+        return FakeResponse()
+
+
+class StatefulSupabase(RecordingSupabase):
+    id_fields = {
+        "assets": "asset_id",
+        "asset_assignments": "assignment_id",
+        "asset_projects": "asset_project_id",
+        "asset_payments": "payment_id",
+        "asset_transfers": "transfer_id",
+        "asset_transfer_projects": "transfer_project_id",
+        "audit_log": "audit_id",
+    }
+
+    def __init__(self, registration_reason, *, asset_start=401, transfer_start=701):
+        super().__init__()
+        self.tables = {table_name: [] for table_name in self.id_fields}
+        self.tables.update({"tenants": [], "persons": [], "locations": [], "projects": [], "donors": []})
+        self.next_ids = {"assets": asset_start, "asset_transfers": transfer_start}
+        self.fail_registration_asset_ids = set()
+        self.registration_reason = registration_reason
+
+    def table(self, table_name):
+        return StatefulQuery(self, table_name)
 
 
 def make_admin_request(tenant_id="00000000-0000-4000-8000-000000000001"):
@@ -768,8 +853,119 @@ def empty_sync_context():
         "payments_by_asset_id": {},
         "transfers_by_id": {},
         "transfer_signatures": set(),
+        "registration_asset_ids": set(),
         "supports_asset_project_purchase_origin": False,
     }
+
+
+def build_stateful_sync_context(app_module, database):
+    context = empty_sync_context()
+    person = {
+        "person_id": 51,
+        "name_eng": "Excel User",
+        "department": "PROGRAM",
+    }
+    location = {
+        "location_id": 61,
+        "city": "Kyiv",
+        "department": "PROGRAM",
+    }
+    project = {"project_id": 71, "project_number": "SYN-20001"}
+    donor = {"donor_id": 81, "donor_name": "SYNTHETIC DONOR"}
+    context.update(
+        {
+            "person_lookup": {app_module.normalize_sync_match_key("Excel User"): person},
+            "location_lookup": {
+                (
+                    app_module.normalize_sync_match_key("Kyiv"),
+                    app_module.normalize_sync_match_key("PROGRAM"),
+                ): location,
+            },
+            "project_lookup": {app_module.normalize_sync_match_key("SYN-20001"): project},
+            "donor_lookup": {app_module.normalize_sync_match_key("SYNTHETIC DONOR"): donor},
+        }
+    )
+    for assignment in database.tables["asset_assignments"]:
+        context["assignment_by_asset_id"][assignment["asset_id"]] = {
+            **assignment,
+            "responsible_person": "Excel User",
+            "location_name": "Kyiv",
+        }
+    for asset_project in database.tables["asset_projects"]:
+        context["projects_by_asset_id"].setdefault(asset_project["asset_id"], []).append(
+            {**asset_project, "project_number": "SYN-20001", "donor_name": "SYNTHETIC DONOR"}
+        )
+    for payment in database.tables["asset_payments"]:
+        context["payments_by_asset_id"].setdefault(payment["asset_id"], []).append(payment)
+    for transfer in database.tables["asset_transfers"]:
+        transfer_id = transfer["transfer_id"]
+        context["transfers_by_id"][transfer_id] = transfer
+        if transfer.get("transfer_reason") == app_module.REGISTRATION_TRANSFER_REASON:
+            context["registration_asset_ids"].add(transfer["asset_id"])
+    return context
+
+
+def excel_new_asset_record(asset_tag):
+    return {
+        "asset_tag_number": asset_tag,
+        "usage_type": "standard",
+        "item_description": "Compensation test asset",
+        "current_status": "functional",
+        "recipient_name": "Excel User",
+        "location_name": "Kyiv",
+        "department_name": "PROGRAM",
+        "_has_recipient_column": True,
+        "purchased_project_no": "SYN-20001",
+        "purchased_donor_name": "SYNTHETIC DONOR",
+        "_has_project_column": True,
+        "remarks": "100.00 EUR - 01.09.2026",
+        "currency": "EUR",
+        "last_transfer_date": "2026-09-01",
+    }
+
+
+def configure_stateful_excel_apply(app_module, monkeypatch, database):
+    monkeypatch.setattr(app_module, "supabase", database)
+    monkeypatch.setattr(app_module, "validate_sync_preview_ownership", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "preflight_sync_preview", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "ensure_parent_tenant", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "validate_assignment_parent_tenants", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "validate_transfer_person_tenants", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "close_current_assignments", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        app_module,
+        "build_sync_context",
+        lambda request=None: build_stateful_sync_context(app_module, database),
+    )
+
+
+def stateful_excel_preview(app_module, records):
+    return {
+        "tenant_id": app_module.DEFAULT_TENANT_ID,
+        "new_records": records,
+        "changed_records": [],
+        "transfer_log": {"new_records": []},
+    }
+
+
+@pytest.mark.parametrize("script_name", ["import_assets.py", "import_assets2.py"])
+def test_retired_legacy_import_fails_before_external_setup(monkeypatch, script_name):
+    original_import = builtins.__import__
+    blocked_imports = {"dotenv", "pandas", "supabase"}
+
+    def guarded_import(name, *args, **kwargs):
+        if name.split(".", 1)[0] in blocked_imports:
+            raise AssertionError(f"retired script attempted external setup import: {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    script_path = Path(__file__).resolve().parents[1] / script_name
+
+    with pytest.raises(
+        RuntimeError,
+        match="Legacy import script is retired. Use the tenant-aware application import flow.",
+    ):
+        runpy.run_path(str(script_path), run_name="__main__")
 
 
 def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch):
@@ -785,10 +981,13 @@ def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch)
                     "tenant_id": app_module.DEFAULT_TENANT_ID,
                 }
             ],
+            ("asset_transfers", "insert"): [{"transfer_id": 501}],
         }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
     monkeypatch.setattr(app_module, "build_sync_context", lambda request: empty_sync_context())
+    monkeypatch.setattr(app_module, "asset_tag_exists", lambda asset_tag: False)
+    monkeypatch.setattr(app_module, "ensure_parent_tenant", lambda *args, **kwargs: None)
     request = make_admin_request()
 
     result = app_module.apply_sync_preview(
@@ -817,6 +1016,145 @@ def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch)
     assert asset_insert["table"] == "assets"
     assert asset_insert["payload"]["tenant_id"] == app_module.DEFAULT_TENANT_ID
     assert asset_insert["payload"]["asset_tag_number"] == "HELP-UKR-0753"
+    transfer_inserts = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_transfers" and operation["action"] == "insert"
+    ]
+    assert len(transfer_inserts) == 1
+    assert transfer_inserts[0]["payload"]["tenant_id"] == app_module.DEFAULT_TENANT_ID
+    assert transfer_inserts[0]["payload"]["transfer_reason"] == app_module.REGISTRATION_TRANSFER_REASON
+
+
+def test_excel_new_asset_success_keeps_complete_durable_state(app_module, monkeypatch):
+    database = StatefulSupabase(app_module.REGISTRATION_TRANSFER_REASON)
+    configure_stateful_excel_apply(app_module, monkeypatch, database)
+    request = make_admin_request()
+
+    result = app_module.apply_sync_preview(
+        stateful_excel_preview(app_module, [excel_new_asset_record("HELP-UKR-0901")]),
+        request,
+    )
+
+    assert result == {
+        "inserted": 1,
+        "updated": 0,
+        "assignment_updated": 1,
+        "project_updated": 1,
+        "payment_updated": 1,
+        "transfer_updated": 0,
+        "skipped_relationships": 0,
+    }
+    assert [row["asset_id"] for row in database.tables["assets"]] == [401]
+    assert [row["asset_id"] for row in database.tables["asset_assignments"]] == [401]
+    assert [row["asset_id"] for row in database.tables["asset_projects"]] == [401]
+    assert [row["asset_id"] for row in database.tables["asset_payments"]] == [401]
+    assert len(database.tables["asset_transfers"]) == 1
+    assert database.tables["asset_transfers"][0]["asset_id"] == 401
+    assert database.tables["asset_transfers"][0]["transfer_id"] == 701
+    assert database.tables["asset_transfers"][0]["tenant_id"] == app_module.DEFAULT_TENANT_ID
+    assert {row["entity_type"] for row in database.tables["audit_log"]} == {"Asset", "Transfer"}
+
+
+def test_excel_first_asset_registration_failure_compensates_all_created_state(
+    app_module,
+    monkeypatch,
+):
+    database = StatefulSupabase(app_module.REGISTRATION_TRANSFER_REASON)
+    database.fail_registration_asset_ids.add(401)
+    configure_stateful_excel_apply(app_module, monkeypatch, database)
+    request = make_admin_request()
+
+    with pytest.raises(RuntimeError, match=r"HELP-UKR-0901.*fully compensated.*none"):
+        app_module.apply_sync_preview(
+            stateful_excel_preview(app_module, [excel_new_asset_record("HELP-UKR-0901")]),
+            request,
+        )
+
+    for table_name in [
+        "assets",
+        "asset_assignments",
+        "asset_projects",
+        "asset_payments",
+        "asset_transfers",
+        "asset_transfer_projects",
+        "audit_log",
+    ]:
+        assert database.tables[table_name] == []
+
+
+def test_excel_second_asset_registration_failure_compensates_only_failed_asset(
+    app_module,
+    monkeypatch,
+):
+    tenant_id = app_module.DEFAULT_TENANT_ID
+    database = StatefulSupabase(app_module.REGISTRATION_TRANSFER_REASON)
+    database.fail_registration_asset_ids.add(402)
+    database.tables["assets"].append(
+        {"asset_id": 999, "asset_tag_number": "PRE-EXISTING", "tenant_id": tenant_id}
+    )
+    database.tables["asset_assignments"].append(
+        {"assignment_id": 99, "asset_id": 999, "tenant_id": tenant_id}
+    )
+    database.tables["asset_projects"].append(
+        {"asset_project_id": 99, "asset_id": 999, "tenant_id": tenant_id}
+    )
+    database.tables["asset_payments"].append(
+        {"payment_id": 99, "asset_id": 999, "tenant_id": tenant_id}
+    )
+    database.tables["audit_log"].append(
+        {
+            "audit_id": 99,
+            "tenant_id": tenant_id,
+            "source": "Admin",
+            "entity_type": "Asset",
+            "entity_id": 999,
+        }
+    )
+    configure_stateful_excel_apply(app_module, monkeypatch, database)
+    request = make_admin_request()
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"HELP-UKR-0902.*fully compensated.*HELP-UKR-0901",
+    ):
+        app_module.apply_sync_preview(
+            stateful_excel_preview(
+                app_module,
+                [
+                    excel_new_asset_record("HELP-UKR-0901"),
+                    excel_new_asset_record("HELP-UKR-0902"),
+                ],
+            ),
+            request,
+        )
+
+    assert {row["asset_id"] for row in database.tables["assets"]} == {401, 999}
+    for table_name in ["asset_assignments", "asset_projects", "asset_payments"]:
+        assert {row["asset_id"] for row in database.tables[table_name]} == {401, 999}
+    assert [row["asset_id"] for row in database.tables["asset_transfers"]] == [401]
+    assert all(row.get("asset_id") != 402 for row in database.tables["asset_transfer_projects"])
+    assert {row["entity_id"] for row in database.tables["audit_log"] if row["entity_type"] == "Asset"} == {
+        401,
+        999,
+    }
+    assert any(row["entity_type"] == "Transfer" and row["entity_id"] == 701 for row in database.tables["audit_log"])
+    compensation_deletes = [
+        operation
+        for operation in database.operations
+        if operation["action"] == "delete"
+        and operation["table"] in {
+            "assets",
+            "asset_assignments",
+            "asset_projects",
+            "asset_payments",
+            "asset_transfers",
+            "asset_transfer_projects",
+            "audit_log",
+        }
+    ]
+    assert compensation_deletes
+    assert all(("eq", "tenant_id", tenant_id) in operation["filters"] for operation in compensation_deletes)
 
 
 def test_tenant_two_excel_apply_keeps_new_asset_and_audit_in_tenant(app_module, monkeypatch):
@@ -827,6 +1165,8 @@ def test_tenant_two_excel_apply_keeps_new_asset_and_audit_in_tenant(app_module, 
             ("assets", "insert"): [
                 {"asset_id": 201, "asset_tag_number": "SYN-T2-EXCEL-001", "tenant_id": TENANT_TWO_ID}
             ],
+            ("assets", "select"): [{"asset_id": 201, "tenant_id": TENANT_TWO_ID}],
+            ("asset_transfers", "insert"): [{"transfer_id": 601}],
         }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
@@ -861,6 +1201,178 @@ def test_tenant_two_excel_apply_keeps_new_asset_and_audit_in_tenant(app_module, 
     assert result["inserted"] == 1
     assert asset_insert["payload"]["tenant_id"] == TENANT_TWO_ID
     assert audit_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+    transfer_inserts = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_transfers" and operation["action"] == "insert"
+    ]
+    assert len(transfer_inserts) == 1
+    assert transfer_inserts[0]["payload"]["tenant_id"] == TENANT_TWO_ID
+
+
+def test_web_asset_creation_path_creates_exactly_one_registration_transfer(app_module, monkeypatch):
+    request = make_admin_request(TENANT_TWO_ID)
+    fake_supabase = RecordingSupabase(
+        {
+            ("assets", "insert"): [
+                {
+                    "asset_id": 301,
+                    "asset_tag_number": "SYN-T2-WEB-001",
+                    "tenant_id": TENANT_TWO_ID,
+                    "created_at": "2026-09-02T10:00:00+00:00",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "require_admin", lambda request: None)
+    monkeypatch.setattr(app_module, "get_asset_tag_standards", lambda: {"standard": {}})
+    monkeypatch.setattr(app_module, "validate_asset_tag_format", lambda value: None)
+    monkeypatch.setattr(app_module, "get_asset_tag_warning", lambda *args: "")
+    monkeypatch.setattr(app_module, "asset_tag_exists", lambda value: False)
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request=None: empty_sync_context())
+    registration_calls = []
+    monkeypatch.setattr(
+        app_module,
+        "create_asset_registration_transfer",
+        lambda asset, context, received_request, **kwargs: registration_calls.append(
+            (asset, received_request, kwargs)
+        ) or 1,
+    )
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: True)
+
+    response = app_module.admin_asset_create(
+        request,
+        asset_tag_number="SYN-T2-WEB-001",
+        usage_type="standard",
+        item_description="Tenant two web asset",
+        brand_make="",
+        model="",
+        asset_classification="EQUIPMENT",
+        asset_sub_classification="Other",
+        quantity="1",
+        clone_count="1",
+        single_quantity_bundle=None,
+        purchase_price="",
+        currency="EUR",
+        serial_number="",
+        current_status="functional",
+        current_status_custom="",
+        remarks="",
+        payment_date=[],
+        payment_amount=[],
+        payment_currency=[],
+        payment_eur_amount=[],
+        payment_status=[],
+        payment_notes="",
+        funding_project_id=[],
+        funding_donor_id=[],
+        funding_allocation_percent=[],
+        funding_note=[],
+        initial_assignment_enabled=None,
+        initial_person_id="",
+        initial_assignment_department="",
+        initial_assignment_city="",
+        initial_location_id="",
+        initial_assignment_date="",
+        initial_assignment_status="",
+        initial_assignment_scope="warehouse",
+        initial_handover_condition="",
+        initial_custody_note="",
+        initial_assignment_notes="",
+        confirm_nonstandard_asset_tag="",
+        confirm_payment_total_mismatch="",
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/assets/301"
+    assert len(registration_calls) == 1
+    assert registration_calls[0][0]["asset_id"] == 301
+    assert registration_calls[0][0]["tenant_id"] == TENANT_TWO_ID
+    assert registration_calls[0][1] is request
+    assert registration_calls[0][2]["audit_source"] == "Asset creation"
+
+
+def test_web_asset_series_creates_one_positive_registration_transfer_per_asset(
+    app_module,
+    monkeypatch,
+):
+    request = make_admin_request(TENANT_TWO_ID)
+    database = StatefulSupabase(
+        app_module.REGISTRATION_TRANSFER_REASON,
+        asset_start=501,
+        transfer_start=801,
+    )
+    monkeypatch.setattr(app_module, "supabase", database)
+    monkeypatch.setattr(app_module, "require_admin", lambda request: None)
+    monkeypatch.setattr(app_module, "get_asset_tag_standards", lambda: {"standard": {}})
+    monkeypatch.setattr(app_module, "validate_asset_tag_format", lambda value: None)
+    monkeypatch.setattr(app_module, "get_asset_tag_warning", lambda *args: "")
+    monkeypatch.setattr(app_module, "asset_tag_exists", lambda value: False)
+    monkeypatch.setattr(app_module, "ensure_parent_tenant", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "validate_transfer_person_tenants", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        app_module,
+        "build_sync_context",
+        lambda request=None: build_stateful_sync_context(app_module, database),
+    )
+
+    response = app_module.admin_asset_create(
+        request,
+        asset_tag_number="SYN-T2-WEB-010",
+        usage_type="standard",
+        item_description="Tenant two web series",
+        brand_make="",
+        model="",
+        asset_classification="EQUIPMENT",
+        asset_sub_classification="Other",
+        quantity="1",
+        clone_count="3",
+        single_quantity_bundle=None,
+        purchase_price="",
+        currency="EUR",
+        serial_number="",
+        current_status="functional",
+        current_status_custom="",
+        remarks="",
+        payment_date=[],
+        payment_amount=[],
+        payment_currency=[],
+        payment_eur_amount=[],
+        payment_status=[],
+        payment_notes="",
+        funding_project_id=[],
+        funding_donor_id=[],
+        funding_allocation_percent=[],
+        funding_note=[],
+        initial_assignment_enabled=None,
+        initial_person_id="",
+        initial_assignment_department="",
+        initial_assignment_city="",
+        initial_location_id="",
+        initial_assignment_date="",
+        initial_assignment_status="",
+        initial_assignment_scope="warehouse",
+        initial_handover_condition="",
+        initial_custody_note="",
+        initial_assignment_notes="",
+        confirm_nonstandard_asset_tag="",
+        confirm_payment_total_mismatch="",
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/assets"
+    assert {row["asset_id"] for row in database.tables["assets"]} == {501, 502, 503}
+    registrations = [
+        row
+        for row in database.tables["asset_transfers"]
+        if row.get("transfer_reason") == app_module.REGISTRATION_TRANSFER_REASON
+    ]
+    assert len(registrations) == 3
+    assert {row["asset_id"] for row in registrations} == {501, 502, 503}
+    assert {row["transfer_id"] for row in registrations} == {801, 802, 803}
+    assert all(row["transfer_id"] > 0 for row in registrations)
+    assert all(row["tenant_id"] == TENANT_TWO_ID for row in registrations)
 
 
 def test_tenant_two_excel_apply_updates_existing_asset_in_tenant(app_module, monkeypatch):
