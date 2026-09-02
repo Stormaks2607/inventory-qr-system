@@ -2545,11 +2545,14 @@ def build_sync_context(request: Request) -> dict:
 
     transfers_by_id = {}
     transfer_signatures = set()
+    registration_asset_ids = set()
     for transfer in asset_transfers:
         transfer_id = transfer.get("transfer_id")
         if transfer_id is not None:
             transfers_by_id[int(transfer_id)] = transfer
         transfer_signatures.add(make_transfer_signature(transfer.get("asset_id"), transfer))
+        if is_registration_transfer_record(transfer) and transfer.get("asset_id") is not None:
+            registration_asset_ids.add(transfer.get("asset_id"))
 
     return {
         "person_lookup": build_person_lookup(people),
@@ -2561,6 +2564,7 @@ def build_sync_context(request: Request) -> dict:
         "payments_by_asset_id": payments_by_asset_id,
         "transfers_by_id": transfers_by_id,
         "transfer_signatures": transfer_signatures,
+        "registration_asset_ids": registration_asset_ids,
         "supports_asset_project_purchase_origin": asset_project_purchase_origin_supported(),
     }
 
@@ -3067,11 +3071,16 @@ def apply_sync_transfer(record: dict, sync_context: dict, request: Request) -> i
         return 0
     ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
     validate_transfer_person_tenants(record.get("from_person_id"), record.get("to_person_id"), request=request)
+    for location_id in [record.get("from_location_id"), record.get("to_location_id")]:
+        if location_id is not None:
+            ensure_parent_tenant("locations", "location_id", location_id, request=request)
 
     payload = add_tenant_id({
         "asset_id": asset_id,
         "from_person_id": record.get("from_person_id"),
         "to_person_id": record.get("to_person_id"),
+        "from_location_id": record.get("from_location_id"),
+        "to_location_id": record.get("to_location_id"),
         "transfer_date": record.get("transfer_date"),
         "transfer_reason": record.get("transfer_reason"),
         "notes": record.get("transfer_reason"),
@@ -3103,6 +3112,10 @@ def apply_sync_transfer(record: dict, sync_context: dict, request: Request) -> i
         **payload,
         "transfer_id": transfer_id,
     }
+    if is_registration_transfer_record(record):
+        sync_context.setdefault("registration_asset_ids", set()).add(asset_id)
+    audit_source = record.get("_audit_source") or "Excel Transfer log"
+    audit_actor = record.get("_audit_actor") or audit_source
     audit_log_event(
         entity_type="Transfer",
         entity_id=transfer_id,
@@ -3112,8 +3125,8 @@ def apply_sync_transfer(record: dict, sync_context: dict, request: Request) -> i
         old_value=record.get("from_holder_name"),
         new_value=record.get("to_holder_name"),
         summary=build_transfer_audit_summary(record),
-        source="Excel Transfer log",
-        actor="Excel Transfer log",
+        source=audit_source,
+        actor=audit_actor,
         event_date=record.get("transfer_date"),
         event_key=f"asset_transfer:{transfer_id}",
         request=request,
@@ -3205,6 +3218,7 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
     payment_updated = 0
     transfer_updated = 0
     skipped_relationships = 0
+    created_assets = []
     sync_context = build_sync_context(request=request)
     preflight_sync_preview(preview, sync_context, request)
     asset_fields = {
@@ -3228,8 +3242,14 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
         insert_record["inventory_code"] = insert_record.get("asset_tag_number")
         insert_record = add_tenant_id(insert_record, request=request)
         insert_response = supabase.table("assets").insert(insert_record).execute()
-        inserted_asset = (insert_response.data or [{}])[0]
+        inserted_asset = {
+            **insert_record,
+            **((insert_response.data or [{}])[0]),
+        }
         asset_id = inserted_asset.get("asset_id")
+        if not isinstance(asset_id, int) or isinstance(asset_id, bool) or asset_id <= 0:
+            raise RuntimeError("Asset insert did not return a valid asset_id.")
+        created_assets.append(inserted_asset)
         inserted += 1
         audit_log_event(
             entity_type="Asset",
@@ -3249,6 +3269,17 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
             ):
                 project_updated += apply_sync_project(asset_id, record, sync_context, request)
             payment_updated += apply_sync_payments(asset_id, record, request)
+
+    if created_assets:
+        registration_context = build_sync_context(request=request)
+        for created_asset in created_assets:
+            create_asset_registration_transfer(
+                created_asset,
+                registration_context,
+                request,
+                audit_source="Excel import",
+                audit_actor="Excel import",
+            )
 
     for item in preview.get("changed_records", []):
         asset_id = item.get("asset_id")
@@ -3529,61 +3560,140 @@ def get_registration_transfer_date(asset: dict, assignment: dict, payments: list
     return created_at.strftime("%Y-%m-%d") if created_at else None
 
 
-def build_asset_registration_transfer_records(
-    assets_by_id: dict,
-    assignment_by_asset_id: dict,
-    projects_by_asset_id: dict,
-    payments_by_asset_id: dict,
-    existing_transfer_keys: set[str],
+def build_asset_registration_transfer_record(
+    asset: dict,
+    sync_context: dict,
+    *,
+    fallback_date: Optional[str] = None,
+) -> dict:
+    asset_id = asset.get("asset_id")
+    if not asset_id:
+        raise ValueError("Asset ID is required for registration transfer creation.")
+
+    assignment = sync_context.get("assignment_by_asset_id", {}).get(asset_id) or {}
+    asset_projects = sync_context.get("projects_by_asset_id", {}).get(asset_id, [])
+    payments = sync_context.get("payments_by_asset_id", {}).get(asset_id, [])
+    current_project = get_export_project_numbers(asset_projects, "transferred")
+    project_raw = current_project or get_export_project_numbers(asset_projects, "purchased") or None
+    transfer_date = get_registration_transfer_date(asset, assignment, payments) or fallback_date
+    if not transfer_date:
+        raise ValueError(
+            f"Asset {asset.get('asset_tag_number') or asset_id} has no reliable registration date."
+        )
+
+    record = {
+        "system_transfer_id": None,
+        "source_log_no": None,
+        "transfer_date": transfer_date,
+        "source_asset_type": get_asset_usage_type_label(asset.get("usage_type")),
+        "asset_id": asset_id,
+        "asset_tag_number": asset.get("asset_tag_number"),
+        "asset_tag_snapshot": asset.get("asset_tag_number"),
+        "description_snapshot": asset.get("item_description"),
+        "serial_snapshot": asset.get("serial_chassis_number") or asset.get("serial_number"),
+        "from_person_id": None,
+        "to_person_id": assignment.get("person_id"),
+        "from_location_id": None,
+        "to_location_id": assignment.get("location_id"),
+        "from_holder_name": REGISTRATION_TRANSFER_HOLDER,
+        "from_project_raw": project_raw,
+        "to_project_raw": project_raw,
+        "to_holder_name": assignment.get("responsible_person") or "Warehouse",
+        "asset_status": assignment.get("status") or asset.get("current_status"),
+        "asset_condition_description": REGISTRATION_TRANSFER_CONDITION,
+        "transfer_reason": REGISTRATION_TRANSFER_REASON,
+    }
+    record["transfer_key"] = make_transfer_key(record)
+    return record
+
+
+def create_asset_registration_transfer(
+    asset: dict,
+    sync_context: dict,
+    request: Request,
+    *,
+    audit_source: str,
+    audit_actor: str,
+) -> int:
+    asset_id = asset.get("asset_id")
+    if asset_id in sync_context.setdefault("registration_asset_ids", set()):
+        return 0
+
+    record = build_asset_registration_transfer_record(
+        asset,
+        sync_context,
+        fallback_date=datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d"),
+    )
+    record["_audit_source"] = audit_source
+    record["_audit_actor"] = audit_actor
+    inserted = apply_sync_transfer(record, sync_context, request)
+    if inserted != 1:
+        raise RuntimeError(
+            f"Registration transfer was not created for {asset.get('asset_tag_number') or asset_id}."
+        )
+    return inserted
+
+
+def get_registration_transfer_backfill_candidates(
+    assets: list[dict],
+    sync_context: dict,
 ) -> list[dict]:
-    records = []
-    for asset in sorted(
-        assets_by_id.values(),
+    registration_asset_ids = sync_context.get("registration_asset_ids", set())
+    candidates = [
+        asset
+        for asset in assets
+        if asset.get("asset_id") not in registration_asset_ids
+        and should_export_asset_registration_transfer(asset)
+    ]
+    return sorted(
+        candidates,
         key=lambda row: (
-            parse_app_datetime(row.get("created_at")) or datetime.min.replace(tzinfo=ZoneInfo("Europe/Kiev")),
+            parse_app_datetime(row.get("created_at")) or datetime.max.replace(tzinfo=ZoneInfo("Europe/Kiev")),
             int(row.get("asset_id") or 0),
             normalize_asset_tag(row.get("asset_tag_number") or ""),
         ),
-    ):
-        asset_tag = normalize_asset_tag(asset.get("asset_tag_number") or "")
-        if not asset_tag or not should_export_asset_registration_transfer(asset):
-            continue
-        registration_key = f"registration:{asset_tag}"
-        if registration_key in existing_transfer_keys:
-            continue
+    )
 
-        asset_id = asset.get("asset_id")
-        assignment = assignment_by_asset_id.get(asset_id) or {}
-        asset_projects = projects_by_asset_id.get(asset_id, [])
-        current_project = get_export_project_numbers(asset_projects, "transferred")
-        project_raw = current_project or get_export_project_numbers(asset_projects, "purchased") or None
-        transfer_date = get_registration_transfer_date(
-            asset,
-            assignment,
-            payments_by_asset_id.get(asset_id, []),
-        )
-        if not transfer_date:
-            continue
 
-        record = {
-            "source_log_no": None,
-            "transfer_date": transfer_date,
-            "source_asset_type": get_asset_usage_type_label(asset.get("usage_type")),
-            "asset_tag_number": asset.get("asset_tag_number"),
-            "asset_tag_snapshot": asset.get("asset_tag_number"),
-            "description_snapshot": asset.get("item_description"),
-            "serial_snapshot": asset.get("serial_chassis_number") or asset.get("serial_number"),
-            "from_holder_name": REGISTRATION_TRANSFER_HOLDER,
-            "from_project_raw": project_raw,
-            "to_project_raw": project_raw,
-            "to_holder_name": assignment.get("responsible_person"),
-            "asset_status": assignment.get("status") or asset.get("current_status"),
-            "asset_condition_description": REGISTRATION_TRANSFER_CONDITION,
-            "transfer_reason": REGISTRATION_TRANSFER_REASON,
-        }
-        record["transfer_key"] = make_transfer_key(record)
-        records.append(record)
-    return records
+def backfill_asset_registration_transfers(
+    request: Request,
+    *,
+    apply: bool = False,
+) -> dict:
+    tenant_id = require_active_sync_tenant_id(request)
+    assets = list_asset_records(request=request)
+    sync_context = build_sync_context(request=request)
+    candidates = get_registration_transfer_backfill_candidates(assets, sync_context)
+    proposed = [build_asset_registration_transfer_record(asset, sync_context) for asset in candidates]
+    inserted = 0
+
+    if apply:
+        for asset in candidates:
+            inserted += create_asset_registration_transfer(
+                asset,
+                sync_context,
+                request,
+                audit_source="Registration transfer backfill",
+                audit_actor="Registration transfer backfill",
+            )
+
+    return {
+        "tenant_id": tenant_id,
+        "dry_run": not apply,
+        "candidate_count": len(candidates),
+        "inserted_count": inserted,
+        "proposed_inserts": [
+            {
+                "asset_id": record.get("asset_id"),
+                "asset_tag_number": record.get("asset_tag_number"),
+                "transfer_date": record.get("transfer_date"),
+                "from_holder_name": record.get("from_holder_name"),
+                "to_holder_name": record.get("to_holder_name"),
+                "transfer_reason": record.get("transfer_reason"),
+            }
+            for record in proposed
+        ],
+    }
 
 
 def build_database_transfer_log_records(request: Optional[Request] = None) -> list[dict]:
@@ -3627,7 +3737,7 @@ def build_database_transfer_log_records(request: Optional[Request] = None) -> li
         payments_by_asset_id.setdefault(payment.get("asset_id"), []).append(payment)
 
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
-    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids)
+    projects_by_transfer_id = get_asset_transfer_project_rows(transfer_ids, request=request)
     records = []
 
     for index, transfer in enumerate(
@@ -3660,16 +3770,6 @@ def build_database_transfer_log_records(request: Optional[Request] = None) -> li
         record["transfer_key"] = make_transfer_key(record)
         records.append(record)
 
-    existing_transfer_keys = {record.get("transfer_key") for record in records if record.get("transfer_key")}
-    records.extend(
-        build_asset_registration_transfer_records(
-            assets_by_id,
-            assignment_by_asset_id,
-            projects_by_asset_id,
-            payments_by_asset_id,
-            existing_transfer_keys,
-        )
-    )
     return records
 
 
@@ -3733,6 +3833,12 @@ def expand_excel_data_ranges(sheet, header_row_number: int, last_data_row: int) 
 
 
 def write_database_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
+    try:
+        from openpyxl.formula.translate import Translator  # type: ignore
+        from openpyxl.utils import get_column_letter, range_boundaries  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Excel asset export requires openpyxl support: {exc}") from exc
+
     columns = get_excel_header_columns(sheet)
     if "asset_tag_number" not in columns:
         raise ValueError(f"The workbook sheet '{sheet.title}' does not contain the expected Asset Tag column.")
@@ -3743,39 +3849,76 @@ def write_database_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
     if not asset_tag_column:
         raise ValueError(f"The workbook sheet '{sheet.title}' does not contain the expected Asset Tag column.")
 
-    row_by_tag = {}
+    column_count = sheet.max_column
+    template_styles = [
+        copy(sheet.cell(row=data_start_row, column=column_number)._style)
+        for column_number in range(1, column_count + 1)
+    ]
+    template_row_height = sheet.row_dimensions[data_start_row].height
+    template_row_hidden = sheet.row_dimensions[data_start_row].hidden
+    formula_templates = {}
     for row_number in range(data_start_row, sheet.max_row + 1):
-        asset_tag = normalize_asset_tag(sheet.cell(row=row_number, column=asset_tag_column).value or "")
-        if asset_tag and asset_tag not in row_by_tag:
-            row_by_tag[asset_tag] = row_number
+        for column_number in range(1, column_count + 1):
+            cell = sheet.cell(row=row_number, column=column_number)
+            if cell.data_type == "f" and column_number not in formula_templates:
+                formula_templates[column_number] = (cell.coordinate, cell.value)
 
-    updated_rows = 0
-    appended_rows = 0
+    for merged_range in list(sheet.merged_cells.ranges):
+        if merged_range.max_row >= data_start_row:
+            sheet.unmerge_cells(str(merged_range))
+    if sheet.max_row >= data_start_row:
+        sheet.delete_rows(data_start_row, sheet.max_row - data_start_row + 1)
+
+    output_row_count = max(1, len(records))
     written_cells = 0
-    last_data_row = max(row_by_tag.values(), default=data_start_row - 1)
-    template_row = max(data_start_row, last_data_row)
+    formula_columns = set(formula_templates)
+    writable_columns = {
+        field_name: [column_number for column_number in column_numbers if column_number not in formula_columns]
+        for field_name, column_numbers in columns.items()
+    }
 
-    for record in records:
-        asset_tag = normalize_asset_tag(record.get("asset_tag_number") or "")
-        if not asset_tag:
-            continue
-        row_number = row_by_tag.get(asset_tag)
-        if row_number:
-            updated_rows += 1
-        else:
-            row_number = last_data_row + 1
-            copy_excel_row_style(sheet, template_row, row_number)
-            row_by_tag[asset_tag] = row_number
-            last_data_row = row_number
-            template_row = row_number
-            appended_rows += 1
-        written_cells += write_excel_record(sheet, row_number, columns, record)
+    for index in range(output_row_count):
+        row_number = data_start_row + index
+        for column_number, style in enumerate(template_styles, start=1):
+            sheet.cell(row=row_number, column=column_number)._style = copy(style)
+        sheet.row_dimensions[row_number].height = template_row_height
+        sheet.row_dimensions[row_number].hidden = template_row_hidden
+        for column_number, (origin, formula) in formula_templates.items():
+            target = f"{get_column_letter(column_number)}{row_number}"
+            try:
+                translated = Translator(formula, origin=origin).translate_formula(target)
+            except Exception:
+                translated = formula
+            sheet.cell(row=row_number, column=column_number).value = translated
 
-    expand_excel_data_ranges(sheet, header_row_number, last_data_row)
+        if index < len(records):
+            written_cells += write_excel_record(
+                sheet,
+                row_number,
+                writable_columns,
+                records[index],
+            )
+
+    last_data_row = header_row_number + output_row_count
+    for table in sheet.tables.values():
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        if min_row <= header_row_number <= max_row:
+            table.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{last_data_row}"
+            )
+    auto_filter_ref = getattr(sheet.auto_filter, "ref", None)
+    if auto_filter_ref:
+        min_col, min_row, max_col, max_row = range_boundaries(auto_filter_ref)
+        if min_row <= header_row_number <= max_row:
+            sheet.auto_filter.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{last_data_row}"
+            )
 
     return {
-        "updated_rows": updated_rows,
-        "appended_rows": appended_rows,
+        "updated_rows": len(records),
+        "appended_rows": 0,
         "written_cells": written_cells,
         "exported_records": len(records),
     }
@@ -6279,18 +6422,35 @@ def get_asset_delete_preview(
     }
 
 
-def delete_assets_cascade(asset_ids: list[int]) -> dict:
+def delete_assets_cascade(
+    asset_ids: list[int],
+    request: Optional[Request] = None,
+) -> dict:
     asset_ids = [int(asset_id) for asset_id in asset_ids if asset_id]
     if not asset_ids:
         return {"deleted_assets": 0}
 
-    transfers = fetch_rows_by_asset_ids("asset_transfers", asset_ids, "transfer_id,asset_id")
+    transfers = fetch_rows_by_asset_ids(
+        "asset_transfers",
+        asset_ids,
+        "transfer_id,asset_id",
+        request=request,
+    )
     transfer_ids = [row.get("transfer_id") for row in transfers if row.get("transfer_id")]
     if transfer_ids:
-        tenant_filter(supabase.table("asset_transfer_projects").delete()).in_("transfer_id", transfer_ids).execute()
+        tenant_filter(
+            supabase.table("asset_transfer_projects").delete(),
+            request=request,
+        ).in_("transfer_id", transfer_ids).execute()
     for table_name in ["asset_transfers", "asset_assignments", "asset_payments", "asset_projects"]:
-        tenant_filter(supabase.table(table_name).delete()).in_("asset_id", asset_ids).execute()
-    tenant_filter(supabase.table("assets").delete()).in_("asset_id", asset_ids).execute()
+        tenant_filter(
+            supabase.table(table_name).delete(),
+            request=request,
+        ).in_("asset_id", asset_ids).execute()
+    tenant_filter(
+        supabase.table("assets").delete(),
+        request=request,
+    ).in_("asset_id", asset_ids).execute()
     return {"deleted_assets": len(asset_ids)}
 
 
@@ -8807,7 +8967,10 @@ def admin_asset_create(
 
     created_assets = response.data or []
     created_by_tag = {
-        normalize_asset_tag(row.get("asset_tag_number") or ""): row
+        normalize_asset_tag(row.get("asset_tag_number") or ""): {
+            **insert_data_base,
+            **row,
+        }
         for row in created_assets
         if row.get("asset_tag_number")
     }
@@ -8815,7 +8978,10 @@ def admin_asset_create(
         if generated_tag not in created_by_tag:
             created_asset = get_asset_by_tag(generated_tag) or {}
             if created_asset.get("asset_id"):
-                created_by_tag[generated_tag] = created_asset
+                created_by_tag[generated_tag] = {
+                    **insert_data_base,
+                    **created_asset,
+                }
 
     created_assets_in_order = [created_by_tag.get(generated_tag) for generated_tag in asset_tags_to_create]
     created_assets_in_order = [asset for asset in created_assets_in_order if asset and asset.get("asset_id")]
@@ -8859,7 +9025,7 @@ def admin_asset_create(
         except Exception as error:
             created_ids = [asset.get("asset_id") for asset in created_assets_in_order if asset.get("asset_id")]
             try:
-                delete_assets_cascade(created_ids)
+                delete_assets_cascade(created_ids, request=request)
                 set_flash(
                     request,
                     "error",
@@ -8898,7 +9064,7 @@ def admin_asset_create(
         except Exception as error:
             created_ids = [asset.get("asset_id") for asset in created_assets_in_order if asset.get("asset_id")]
             try:
-                delete_assets_cascade(created_ids)
+                delete_assets_cascade(created_ids, request=request)
                 set_flash(
                     request,
                     "error",
@@ -8934,7 +9100,7 @@ def admin_asset_create(
         except Exception as error:
             created_ids = [asset.get("asset_id") for asset in created_assets_in_order if asset.get("asset_id")]
             try:
-                delete_assets_cascade(created_ids)
+                delete_assets_cascade(created_ids, request=request)
                 set_flash(
                     request,
                     "error",
@@ -8944,6 +9110,34 @@ def admin_asset_create(
             except Exception:
                 set_flash(request, "error", f"Asset was created, but initial assignment was not saved and rollback failed: {describe_assignment_update_error(error)}")
                 return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
+
+    try:
+        registration_context = build_sync_context(request=request)
+        for created_asset in created_assets_in_order:
+            create_asset_registration_transfer(
+                created_asset,
+                registration_context,
+                request,
+                audit_source="Asset creation",
+                audit_actor=get_admin_actor(request),
+            )
+    except Exception as error:
+        created_ids = [asset.get("asset_id") for asset in created_assets_in_order if asset.get("asset_id")]
+        try:
+            delete_assets_cascade(created_ids, request=request)
+            set_flash(
+                request,
+                "error",
+                f"Registration history was not saved, so the newly created asset record(s) were rolled back: {error}",
+            )
+            return RedirectResponse(url="/admin/assets/new", status_code=303)
+        except Exception:
+            set_flash(
+                request,
+                "error",
+                f"Asset was created, but registration history was not saved and rollback failed: {error}",
+            )
+            return RedirectResponse(url=f"/admin/assets/{first_created_asset_id}", status_code=303)
 
     for created_asset in created_assets_in_order:
         created_tag = created_asset.get("asset_tag_number")

@@ -768,6 +768,7 @@ def empty_sync_context():
         "payments_by_asset_id": {},
         "transfers_by_id": {},
         "transfer_signatures": set(),
+        "registration_asset_ids": set(),
         "supports_asset_project_purchase_origin": False,
     }
 
@@ -785,10 +786,13 @@ def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch)
                     "tenant_id": app_module.DEFAULT_TENANT_ID,
                 }
             ],
+            ("asset_transfers", "insert"): [{"transfer_id": 501}],
         }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
     monkeypatch.setattr(app_module, "build_sync_context", lambda request: empty_sync_context())
+    monkeypatch.setattr(app_module, "asset_tag_exists", lambda asset_tag: False)
+    monkeypatch.setattr(app_module, "ensure_parent_tenant", lambda *args, **kwargs: None)
     request = make_admin_request()
 
     result = app_module.apply_sync_preview(
@@ -817,6 +821,14 @@ def test_excel_sync_new_asset_insert_includes_tenant_id(app_module, monkeypatch)
     assert asset_insert["table"] == "assets"
     assert asset_insert["payload"]["tenant_id"] == app_module.DEFAULT_TENANT_ID
     assert asset_insert["payload"]["asset_tag_number"] == "HELP-UKR-0753"
+    transfer_inserts = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_transfers" and operation["action"] == "insert"
+    ]
+    assert len(transfer_inserts) == 1
+    assert transfer_inserts[0]["payload"]["tenant_id"] == app_module.DEFAULT_TENANT_ID
+    assert transfer_inserts[0]["payload"]["transfer_reason"] == app_module.REGISTRATION_TRANSFER_REASON
 
 
 def test_tenant_two_excel_apply_keeps_new_asset_and_audit_in_tenant(app_module, monkeypatch):
@@ -827,6 +839,8 @@ def test_tenant_two_excel_apply_keeps_new_asset_and_audit_in_tenant(app_module, 
             ("assets", "insert"): [
                 {"asset_id": 201, "asset_tag_number": "SYN-T2-EXCEL-001", "tenant_id": TENANT_TWO_ID}
             ],
+            ("assets", "select"): [{"asset_id": 201, "tenant_id": TENANT_TWO_ID}],
+            ("asset_transfers", "insert"): [{"transfer_id": 601}],
         }
     )
     monkeypatch.setattr(app_module, "supabase", fake_supabase)
@@ -861,6 +875,96 @@ def test_tenant_two_excel_apply_keeps_new_asset_and_audit_in_tenant(app_module, 
     assert result["inserted"] == 1
     assert asset_insert["payload"]["tenant_id"] == TENANT_TWO_ID
     assert audit_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+    transfer_inserts = [
+        operation
+        for operation in fake_supabase.operations
+        if operation["table"] == "asset_transfers" and operation["action"] == "insert"
+    ]
+    assert len(transfer_inserts) == 1
+    assert transfer_inserts[0]["payload"]["tenant_id"] == TENANT_TWO_ID
+
+
+def test_web_asset_creation_path_creates_exactly_one_registration_transfer(app_module, monkeypatch):
+    request = make_admin_request(TENANT_TWO_ID)
+    fake_supabase = RecordingSupabase(
+        {
+            ("assets", "insert"): [
+                {
+                    "asset_id": 301,
+                    "asset_tag_number": "SYN-T2-WEB-001",
+                    "tenant_id": TENANT_TWO_ID,
+                    "created_at": "2026-09-02T10:00:00+00:00",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(app_module, "supabase", fake_supabase)
+    monkeypatch.setattr(app_module, "require_admin", lambda request: None)
+    monkeypatch.setattr(app_module, "get_asset_tag_standards", lambda: {"standard": {}})
+    monkeypatch.setattr(app_module, "validate_asset_tag_format", lambda value: None)
+    monkeypatch.setattr(app_module, "get_asset_tag_warning", lambda *args: "")
+    monkeypatch.setattr(app_module, "asset_tag_exists", lambda value: False)
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request=None: empty_sync_context())
+    registration_calls = []
+    monkeypatch.setattr(
+        app_module,
+        "create_asset_registration_transfer",
+        lambda asset, context, received_request, **kwargs: registration_calls.append(
+            (asset, received_request, kwargs)
+        ) or 1,
+    )
+    monkeypatch.setattr(app_module, "audit_log_event", lambda **kwargs: True)
+
+    response = app_module.admin_asset_create(
+        request,
+        asset_tag_number="SYN-T2-WEB-001",
+        usage_type="standard",
+        item_description="Tenant two web asset",
+        brand_make="",
+        model="",
+        asset_classification="EQUIPMENT",
+        asset_sub_classification="Other",
+        quantity="1",
+        clone_count="1",
+        single_quantity_bundle=None,
+        purchase_price="",
+        currency="EUR",
+        serial_number="",
+        current_status="functional",
+        current_status_custom="",
+        remarks="",
+        payment_date=[],
+        payment_amount=[],
+        payment_currency=[],
+        payment_eur_amount=[],
+        payment_status=[],
+        payment_notes="",
+        funding_project_id=[],
+        funding_donor_id=[],
+        funding_allocation_percent=[],
+        funding_note=[],
+        initial_assignment_enabled=None,
+        initial_person_id="",
+        initial_assignment_department="",
+        initial_assignment_city="",
+        initial_location_id="",
+        initial_assignment_date="",
+        initial_assignment_status="",
+        initial_assignment_scope="warehouse",
+        initial_handover_condition="",
+        initial_custody_note="",
+        initial_assignment_notes="",
+        confirm_nonstandard_asset_tag="",
+        confirm_payment_total_mismatch="",
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/assets/301"
+    assert len(registration_calls) == 1
+    assert registration_calls[0][0]["asset_id"] == 301
+    assert registration_calls[0][0]["tenant_id"] == TENANT_TWO_ID
+    assert registration_calls[0][1] is request
+    assert registration_calls[0][2]["audit_source"] == "Asset creation"
 
 
 def test_tenant_two_excel_apply_updates_existing_asset_in_tenant(app_module, monkeypatch):

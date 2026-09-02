@@ -744,6 +744,21 @@ def test_excel_read_helpers_use_request_tenant(app_module, mixed_tenant_supabase
     assert 61 not in sync_context["transfers_by_id"]
 
 
+def test_database_excel_export_records_never_cross_tenant_boundaries(
+    app_module,
+    mixed_tenant_supabase,
+):
+    tenant_one_records = app_module.build_database_excel_records(
+        request=authenticated_request(TENANT_ONE)
+    )
+    tenant_two_records = app_module.build_database_excel_records(
+        request=authenticated_request(TENANT_TWO)
+    )
+
+    assert [row["asset_tag_number"] for row in tenant_one_records] == ["TENANT-ONE-ASSET"]
+    assert [row["asset_tag_number"] for row in tenant_two_records] == ["TENANT-TWO-ASSET"]
+
+
 def test_client_supplied_tenant_id_cannot_change_read_scope(app_module, mixed_tenant_supabase):
     request = authenticated_request(TENANT_ONE, tenant_id=TENANT_TWO)
 
