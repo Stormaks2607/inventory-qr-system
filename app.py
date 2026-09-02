@@ -3853,6 +3853,60 @@ def write_transfer_log_records_to_excel_sheet(sheet, records: list[dict]) -> dic
     }
 
 
+def rebuild_transfer_log_records_in_excel_sheet(sheet, records: list[dict]) -> dict:
+    try:
+        from openpyxl.utils import get_column_letter, range_boundaries  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Excel transfer export requires openpyxl support: {exc}") from exc
+
+    system_id_column = ensure_transfer_system_id_column(sheet)
+    header_row_number = EXCEL_TRANSFER_LOG_HEADER_ROW + 1
+    data_start_row = EXCEL_TRANSFER_LOG_HEADER_ROW + 2
+    column_count = max(sheet.max_column, system_id_column)
+    template_styles = [
+        copy(sheet.cell(row=data_start_row, column=column_number)._style)
+        for column_number in range(1, column_count + 1)
+    ]
+    template_row_height = sheet.row_dimensions[data_start_row].height
+
+    for merged_range in list(sheet.merged_cells.ranges):
+        if merged_range.max_row >= data_start_row:
+            sheet.unmerge_cells(str(merged_range))
+
+    if sheet.max_row >= data_start_row:
+        sheet.delete_rows(data_start_row, sheet.max_row - data_start_row + 1)
+
+    for column_number, style in enumerate(template_styles, start=1):
+        sheet.cell(row=data_start_row, column=column_number)._style = copy(style)
+    sheet.row_dimensions[data_start_row].height = template_row_height
+
+    sheet.data_validations.dataValidation = []
+    sheet.conditional_formatting._cf_rules.clear()
+
+    result = write_transfer_log_records_to_excel_sheet(sheet, records)
+    last_data_row = header_row_number + len(records)
+    range_last_row = max(data_start_row, last_data_row)
+
+    for table in sheet.tables.values():
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        if min_row <= header_row_number <= max_row:
+            table.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{range_last_row}"
+            )
+
+    auto_filter_ref = getattr(sheet.auto_filter, "ref", None)
+    if auto_filter_ref:
+        min_col, min_row, max_col, max_row = range_boundaries(auto_filter_ref)
+        if min_row <= header_row_number <= max_row:
+            sheet.auto_filter.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{range_last_row}"
+            )
+
+    return result
+
+
 def export_supabase_to_excel(request: Request) -> dict:
     require_active_sync_tenant_id(request)
     paths = ensure_sync_storage(request)
@@ -3889,7 +3943,7 @@ def export_supabase_to_excel(request: Request) -> dict:
         "exported_records": 0,
     }
     if EXCEL_TRANSFER_LOG_SHEET_NAME in workbook.sheetnames:
-        transfer_result = write_transfer_log_records_to_excel_sheet(
+        transfer_result = rebuild_transfer_log_records_in_excel_sheet(
             workbook[EXCEL_TRANSFER_LOG_SHEET_NAME],
             build_database_transfer_log_records(request=request),
         )

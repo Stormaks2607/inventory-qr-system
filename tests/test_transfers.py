@@ -1,7 +1,12 @@
+import hashlib
 from types import SimpleNamespace
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
+from openpyxl.formatting.rule import CellIsRule
+from openpyxl.styles import Font
+from openpyxl.worksheet.datavalidation import DataValidation
 
 
 TRANSFER_HEADERS = [
@@ -31,6 +36,28 @@ def create_transfer_workbook(path, *, include_system_id=False):
         sheet.cell(row=1, column=16).value = "System Transfer ID"
         sheet.column_dimensions["P"].hidden = True
     workbook.save(path)
+
+
+def populate_legacy_transfer_rows(sheet, count):
+    for index in range(1, count + 1):
+        row_number = index + 1
+        values = [
+            index,
+            "29.08.2026",
+            "Standard",
+            f"LEGACY-{index:04d}",
+            f"Legacy item {index}",
+            None,
+            "Warehouse",
+            "LEGACY-PROJECT",
+            "LEGACY-PROJECT",
+            "Legacy holder",
+            "functional",
+            None,
+            "Legacy transfer",
+        ]
+        for column_number, value in enumerate(values, start=3):
+            sheet.cell(row=row_number, column=column_number).value = value
 
 
 def existing_transfer_record(transfer_id=188):
@@ -195,7 +222,7 @@ def test_same_looking_transfers_with_distinct_system_ids_remain_distinct(
     assert preview["summary"]["skipped_existing"] == 2
 
 
-@pytest.mark.parametrize("system_id", ["abc", "1.5", -1, True])
+@pytest.mark.parametrize("system_id", ["abc", "1.5", 0, -1, True])
 def test_invalid_system_transfer_id_fails_closed(app_module, system_id):
     with pytest.raises(ValueError, match="invalid System Transfer ID"):
         app_module.normalize_excel_transfer_record(
@@ -383,6 +410,191 @@ def test_registration_transfer_semantic_fallback_is_idempotent(app_module):
         transfer_context(app_module, existing),
     )
 
+    assert preview["summary"]["new_records"] == 0
+    assert preview["summary"]["skipped_existing"] == 1
+
+
+def test_generated_export_rebuilds_populated_legacy_transfer_log(
+    app_module,
+    monkeypatch,
+    tmp_path,
+):
+    source_path = tmp_path / "official_inventory.xlsx"
+    export_path = tmp_path / "supabase_inventory_export.xlsx"
+    workbook = Workbook()
+    standard_sheet = workbook.active
+    standard_sheet.title = "Standard Asset List Format"
+    standard_sheet.cell(row=8, column=1).value = (
+        "Asset Tag No. / Inventory Code\n(new standardised system)"
+    )
+    transfer_sheet = workbook.create_sheet("Transfer log")
+    for column_number, header in enumerate(TRANSFER_HEADERS, start=3):
+        transfer_sheet.cell(row=1, column=column_number).value = header
+        transfer_sheet.cell(row=1, column=column_number).font = Font(bold=True)
+    transfer_sheet.column_dimensions["A"].hidden = True
+    transfer_sheet.column_dimensions["F"].width = 24
+    transfer_sheet.freeze_panes = "C2"
+    transfer_sheet.auto_filter.ref = "A1:O4"
+    populate_legacy_transfer_rows(transfer_sheet, 3)
+    workbook.save(source_path)
+    workbook.close()
+    source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+
+    exported_record = existing_transfer_record(188)
+    monkeypatch.setattr(app_module, "require_active_sync_tenant_id", lambda request: request.session["tenant_id"])
+    monkeypatch.setattr(
+        app_module,
+        "ensure_sync_storage",
+        lambda request: {"export": str(export_path)},
+    )
+    monkeypatch.setattr(app_module, "ensure_sync_workbook_template", lambda request: str(source_path))
+    monkeypatch.setattr(app_module, "build_database_excel_records", lambda usage_type, request=None: [])
+    monkeypatch.setattr(
+        app_module,
+        "build_database_transfer_log_records",
+        lambda request=None: [exported_record],
+    )
+
+    result = app_module.export_supabase_to_excel(
+        SimpleNamespace(session={"tenant_id": "00000000-0000-4000-8000-000000000002"})
+    )
+
+    assert hashlib.sha256(source_path.read_bytes()).hexdigest() == source_hash
+    source = load_workbook(source_path)
+    assert source["Transfer log"]["P1"].value is None
+    assert source["Transfer log"]["F2"].value == "LEGACY-0001"
+    source.close()
+
+    exported = load_workbook(export_path)
+    sheet = exported["Transfer log"]
+    assert sheet["P1"].value == "System Transfer ID"
+    assert sheet.column_dimensions["P"].hidden is True
+    assert sheet.column_dimensions["A"].hidden is True
+    assert sheet.column_dimensions["F"].width == 24
+    assert sheet.freeze_panes == "C2"
+    assert sheet.auto_filter.ref == "A1:O2"
+    assert sheet["C1"].font.bold is True
+    assert sheet["P2"].value == 188
+    assert sheet["F2"].value == "SYN-T2-0001"
+    assert all(sheet.cell(row=row, column=6).value is None for row in range(3, sheet.max_row + 1))
+    exported.close()
+    assert result["transfer_exported_records"] == 1
+
+
+def test_rebuild_175_legacy_rows_keeps_only_authoritative_history(app_module, tmp_path):
+    workbook_path = tmp_path / "legacy-175.xlsx"
+    create_transfer_workbook(workbook_path)
+    workbook = load_workbook(workbook_path)
+    sheet = workbook["Transfer log"]
+    populate_legacy_transfer_rows(sheet, 175)
+    sheet["G2"] = "=1+1"
+    sheet["G2"].comment = Comment("legacy", "legacy")
+    sheet["G2"].hyperlink = "https://legacy.invalid"
+    validation = DataValidation(type="list", formula1='"Legacy"')
+    sheet.add_data_validation(validation)
+    validation.add("M2:M176")
+    sheet.conditional_formatting.add(
+        "M2:M176",
+        CellIsRule(operator="equal", formula=['"functional"']),
+    )
+    records = [existing_transfer_record(188), existing_transfer_record(189)]
+
+    result = app_module.rebuild_transfer_log_records_in_excel_sheet(sheet, records)
+    workbook.save(workbook_path)
+    workbook.close()
+
+    rebuilt = load_workbook(workbook_path, data_only=False)
+    sheet = rebuilt["Transfer log"]
+    parsed = app_module.load_excel_transfer_log_rows(str(workbook_path))
+    assert result["exported_records"] == 2
+    assert [row["system_transfer_id"] for row in parsed] == [188, 189]
+    assert [row["asset_tag_number"] for row in parsed] == ["SYN-T2-0001", "SYN-T2-0001"]
+    assert all("LEGACY-" not in str(cell.value or "") for row in sheet.iter_rows() for cell in row)
+    assert not any(cell.comment or cell.hyperlink for row in sheet.iter_rows() for cell in row)
+    assert len(sheet.data_validations.dataValidation) == 0
+    assert len(sheet.conditional_formatting) == 0
+    rebuilt.close()
+
+
+def test_rebuilt_export_reimports_as_existing_with_fresh_context(app_module, tmp_path):
+    workbook_path = tmp_path / "rebuilt-roundtrip.xlsx"
+    create_transfer_workbook(workbook_path)
+    workbook = load_workbook(workbook_path)
+    sheet = workbook["Transfer log"]
+    populate_legacy_transfer_rows(sheet, 2)
+    record = existing_transfer_record(188)
+    app_module.rebuild_transfer_log_records_in_excel_sheet(sheet, [record])
+    workbook.save(workbook_path)
+    workbook.close()
+
+    imported = app_module.load_excel_transfer_log_rows(str(workbook_path))
+    fresh_context = transfer_context(
+        app_module,
+        {"transfer_id": 188, "asset_id": 1232, **record},
+    )
+    preview = app_module.build_transfer_log_preview(
+        imported,
+        {"SYN-T2-0001": {"asset_id": 1232}},
+        fresh_context,
+    )
+
+    assert preview["summary"]["new_records"] == 0
+    assert preview["summary"]["skipped_existing"] == 1
+
+
+def test_repeat_rebuild_keeps_row_count_and_one_system_id_column(app_module, tmp_path):
+    workbook_path = tmp_path / "repeat-export.xlsx"
+    create_transfer_workbook(workbook_path)
+    workbook = load_workbook(workbook_path)
+    sheet = workbook["Transfer log"]
+    populate_legacy_transfer_rows(sheet, 4)
+    records = [existing_transfer_record(188), existing_transfer_record(189)]
+
+    app_module.rebuild_transfer_log_records_in_excel_sheet(sheet, records)
+    app_module.rebuild_transfer_log_records_in_excel_sheet(sheet, records)
+    workbook.save(workbook_path)
+    workbook.close()
+
+    rebuilt = load_workbook(workbook_path)
+    sheet = rebuilt["Transfer log"]
+    parsed = app_module.load_excel_transfer_log_rows(str(workbook_path))
+    assert len(parsed) == 2
+    assert [row["system_transfer_id"] for row in parsed] == [188, 189]
+    assert sum(cell.value == "System Transfer ID" for cell in sheet[1]) == 1
+    rebuilt.close()
+
+
+def test_registration_transfer_roundtrips_through_rebuild_and_parser(app_module, tmp_path):
+    workbook_path = tmp_path / "registration-roundtrip.xlsx"
+    create_transfer_workbook(workbook_path)
+    workbook = load_workbook(workbook_path)
+    record = {
+        "system_transfer_id": 187,
+        "source_log_no": None,
+        "asset_tag_number": "SYN-T2-0001",
+        "transfer_date": "2026-08-01",
+        "from_holder_name": "Supplier",
+        "to_holder_name": "Warehouse",
+        "transfer_reason": "Registration of the new asset",
+    }
+    app_module.rebuild_transfer_log_records_in_excel_sheet(
+        workbook["Transfer log"],
+        [record],
+    )
+    workbook.save(workbook_path)
+    workbook.close()
+
+    imported = app_module.load_excel_transfer_log_rows(str(workbook_path))
+    preview = app_module.build_transfer_log_preview(
+        imported,
+        {"SYN-T2-0001": {"asset_id": 1232}},
+        transfer_context(
+            app_module,
+            {"transfer_id": 187, "asset_id": 1232, **record},
+        ),
+    )
+
+    assert imported[0]["transfer_key"] == "registration:SYN-T2-0001"
     assert preview["summary"]["new_records"] == 0
     assert preview["summary"]["skipped_existing"] == 1
 
