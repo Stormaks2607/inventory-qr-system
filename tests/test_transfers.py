@@ -262,35 +262,60 @@ def test_transfer_rebuild_numbers_null_source_logs_deterministically(app_module,
     workbook.close()
 
 
-def test_transfer_export_normalizes_only_low_cost_compatibility_label(app_module, tmp_path):
+def test_transfer_export_normalizes_compatibility_labels_only(app_module, tmp_path):
     workbook_path = tmp_path / "transfer-type-labels.xlsx"
     create_transfer_workbook(workbook_path)
     workbook = load_workbook(workbook_path)
-    persisted_low_cost = {
+    persisted_standard = {
         **existing_transfer_record(188),
+        "source_log_no": 151,
+        "source_asset_type": "Standard asset",
+    }
+    derived_standard = {
+        **existing_transfer_record(189),
+        "source_log_no": 152,
+        "source_asset_type": app_module.get_asset_usage_type_label("standard"),
+    }
+    persisted_low_cost = {
+        **existing_transfer_record(190),
+        "source_log_no": 153,
         "source_asset_type": "Low-cost item",
     }
     derived_low_cost = {
-        **existing_transfer_record(189),
+        **existing_transfer_record(191),
+        "source_log_no": 154,
         "source_asset_type": app_module.get_asset_usage_type_label("low_cost"),
     }
-    standard = {
-        **existing_transfer_record(190),
-        "source_asset_type": "Standard asset",
+    unrelated = {
+        **existing_transfer_record(192),
+        "source_log_no": 155,
+        "source_asset_type": "Legacy custom label",
     }
+    records = [persisted_standard, derived_standard, persisted_low_cost, derived_low_cost, unrelated]
 
     app_module.write_transfer_log_records_to_excel_sheet(
         workbook["Transfer log"],
-        [persisted_low_cost, derived_low_cost, standard],
+        records,
     )
 
     sheet = workbook["Transfer log"]
-    assert [sheet.cell(row=row, column=5).value for row in range(2, 5)] == [
+    assert [sheet.cell(row=row, column=5).value for row in range(2, 7)] == [
+        "Standart",
+        "Standart",
         "Low-cost",
         "Low-cost",
-        "Standard asset",
+        "Legacy custom label",
     ]
-    assert [sheet.cell(row=row, column=16).value for row in range(2, 5)] == [188, 189, 190]
+    assert [sheet.cell(row=row, column=3).value for row in range(2, 7)] == [151, 152, 153, 154, 155]
+    assert [sheet.cell(row=row, column=16).value for row in range(2, 7)] == [188, 189, 190, 191, 192]
+    assert [record["source_asset_type"] for record in records] == [
+        "Standard asset",
+        "Standard asset",
+        "Low-cost item",
+        "Low-cost item",
+        "Legacy custom label",
+    ]
+    assert [record["source_log_no"] for record in records] == [151, 152, 153, 154, 155]
     workbook.close()
 
 

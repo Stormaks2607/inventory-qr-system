@@ -3993,8 +3993,12 @@ def write_database_records_to_excel_sheet(sheet, records: list[dict]) -> dict:
 
 
 def normalize_transfer_log_asset_type_label(value):
-    if isinstance(value, str) and value.strip().casefold() == "low-cost item":
-        return "Low-cost"
+    if isinstance(value, str):
+        compatibility_labels = {
+            "low-cost item": "Low-cost",
+            "standard asset": "Standart",
+        }
+        return compatibility_labels.get(value.strip().casefold(), value)
     return value
 
 
