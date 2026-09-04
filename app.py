@@ -74,6 +74,7 @@ EXCEL_TRANSFER_LOG_SHEET_NAME = "Transfer log"
 EXCEL_TRANSFER_SYSTEM_ID_HEADER = "System Transfer ID"
 EXCEL_SYNC_HEADER_ROW = 7
 EXCEL_TRANSFER_LOG_HEADER_ROW = 0
+ASSIGNMENT_SCOPE_VALUES = {"personal", "department_shared", "warehouse"}
 PROJECT_NUMBER_PATTERN = r"\b[A-Z]{2,5}-\d{1,5}\b"
 REGISTRATION_TRANSFER_HOLDER = "Supplier"
 REGISTRATION_TRANSFER_CONDITION = "New"
@@ -92,6 +93,7 @@ EXCEL_SYNC_COLUMN_MAP = {
     "Department ": "department_name",
     "Name of Recipient": "recipient_name",
     "Position of Recipient": "recipient_position",
+    "Assignment type": "assignment_scope",
     "Date (Year) of Purchase": "purchase_date_raw",
     "Purchase price": "purchase_price",
     "Currency": "currency",
@@ -1569,6 +1571,21 @@ def clean_excel_value(value):
     return value
 
 
+def parse_excel_assignment_scope(value, asset_tag: str) -> Optional[str]:
+    cleaned = clean_excel_value(value)
+    if cleaned is None:
+        return None
+
+    normalized = str(cleaned).casefold()
+    if normalized not in ASSIGNMENT_SCOPE_VALUES:
+        allowed = ", ".join(sorted(ASSIGNMENT_SCOPE_VALUES))
+        raise ValueError(
+            f"Excel asset {asset_tag} has invalid Assignment type {cleaned!r}. "
+            f"Allowed values: {allowed}."
+        )
+    return normalized
+
+
 SYNC_VALUE_ALIASES = {
     "asset_sub_classification": {
         "other...": "other",
@@ -1836,6 +1853,7 @@ def normalize_excel_asset_record(row: dict, usage_type: str = "standard", source
         "department_name": clean_excel_value(row.get("department_name")),
         "recipient_name": clean_excel_value(row.get("recipient_name")),
         "recipient_position": clean_excel_value(row.get("recipient_position")),
+        "assignment_scope": parse_excel_assignment_scope(row.get("assignment_scope"), asset_tag),
         "purchased_project_no": clean_excel_value(row.get("purchased_project_no")),
         "transferred_project_no": clean_excel_value(row.get("transferred_project_no")),
         "purchased_donor_name": clean_excel_value(row.get("purchased_donor_name") or row.get("donor_name")),
@@ -2824,8 +2842,19 @@ def build_sync_preview(
     }
 
 
-def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict, request: Request) -> int:
+def apply_sync_assignment(
+    asset_id: int,
+    record: dict,
+    sync_context: dict,
+    request: Request,
+    *,
+    assignment_scope: Optional[str] = None,
+) -> int:
     ensure_parent_tenant("assets", "asset_id", asset_id, request=request)
+    validated_assignment_scope = parse_excel_assignment_scope(
+        assignment_scope,
+        record.get("asset_tag_number") or str(asset_id),
+    )
     excel_recipient = normalize_sync_string(record.get("recipient_name"))
     assignment_date = record.get("last_transfer_date") or datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
     actor = "Excel import"
@@ -2860,20 +2889,24 @@ def apply_sync_assignment(asset_id: int, record: dict, sync_context: dict, reque
     if record.get("remarks"):
         notes_parts.append(f"Remarks: {record.get('remarks')}")
 
+    assignment_payload = {
+        "asset_id": asset_id,
+        "person_id": person.get("person_id"),
+        "location_id": location.get("location_id"),
+        "assignment_date": assignment_date,
+        "return_date": None,
+        "status": record.get("current_status"),
+        "notes": " | ".join(notes_parts) if notes_parts else None,
+    }
+    if validated_assignment_scope is not None:
+        assignment_payload["assignment_scope"] = validated_assignment_scope
+
     close_current_assignments(asset_id, assignment_date, actor, request=request)
     supabase.table("asset_assignments").insert(
         add_tenant_id(
             add_assignment_actor_fields(
                 add_assignment_department_field(
-                    {
-                        "asset_id": asset_id,
-                        "person_id": person.get("person_id"),
-                        "location_id": location.get("location_id"),
-                        "assignment_date": assignment_date,
-                        "return_date": None,
-                        "status": record.get("current_status"),
-                        "notes": " | ".join(notes_parts) if notes_parts else None,
-                    },
+                    assignment_payload,
                     assignment_department,
                 ),
                 actor,
@@ -3209,6 +3242,16 @@ def preflight_sync_preview(preview: dict, sync_context: dict, request: Request) 
                     ensure_parent_tenant("projects", "project_id", project.get("project_id"), request=request)
 
 
+def validate_excel_assignment_scopes(preview: dict) -> None:
+    records = list(preview.get("new_records", []))
+    records.extend((item.get("record") or {}) for item in preview.get("changed_records", []))
+    for record in records:
+        parse_excel_assignment_scope(
+            record.get("assignment_scope"),
+            record.get("asset_tag_number") or "<missing asset tag>",
+        )
+
+
 def compensate_excel_created_asset(asset_id: int, request: Request) -> dict:
     failed_steps = []
     transfer_ids = []
@@ -3255,6 +3298,7 @@ def compensate_excel_created_asset(asset_id: int, request: Request) -> dict:
 
 def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict:
     validate_sync_preview_ownership(preview, request)
+    validate_excel_assignment_scopes(preview)
     inserted = 0
     updated = 0
     assignment_updated = 0
@@ -3310,7 +3354,13 @@ def apply_sync_preview(preview: dict, request: Optional[Request] = None) -> dict
             if not audit_created:
                 raise RuntimeError("Asset creation audit was not saved.")
             if record.get("_has_recipient_column") and normalize_sync_string(record.get("recipient_name")):
-                asset_assignment_updated = apply_sync_assignment(asset_id, record, sync_context, request)
+                asset_assignment_updated = apply_sync_assignment(
+                    asset_id,
+                    record,
+                    sync_context,
+                    request,
+                    assignment_scope=record.get("assignment_scope"),
+                )
             if record.get("_has_project_column") and (
                 get_excel_purchased_project_allocations(record) or get_excel_transferred_project_allocations(record)
             ):
@@ -3440,6 +3490,8 @@ def resolve_excel_header_field(header_value) -> Optional[str]:
         return "recipient_name"
     if normalized == "position of recipient":
         return "recipient_position"
+    if normalized == "assignment type":
+        return "assignment_scope"
     if normalized.startswith("date") and "purchase" in normalized:
         return "purchase_date_raw"
     if normalized == "purchase price":
@@ -3571,6 +3623,7 @@ def build_database_excel_records(
                 "department_name": assignment.get("department"),
                 "recipient_name": assignment.get("responsible_person"),
                 "recipient_position": None,
+                "assignment_scope": assignment.get("assignment_scope"),
                 "purchase_date_raw": get_current_payment_period_for_preview(asset, asset_payments),
                 "purchase_price": asset.get("purchase_price"),
                 "currency": asset.get("currency"),
@@ -5772,7 +5825,7 @@ def describe_assignment_update_error(error: Exception) -> str:
 
 def normalize_assignment_scope(value: str) -> str:
     normalized = (value or "").strip()
-    return normalized if normalized in {"personal", "department_shared", "warehouse"} else "personal"
+    return normalized if normalized in ASSIGNMENT_SCOPE_VALUES else "personal"
 
 
 def apply_asset_assignment_change(

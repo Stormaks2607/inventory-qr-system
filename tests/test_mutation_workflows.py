@@ -924,6 +924,46 @@ def excel_new_asset_record(asset_tag):
     }
 
 
+def build_help_0502_sync_context(app_module, database):
+    context = empty_sync_context()
+    person = database.tables["persons"][0]
+    location = database.tables["locations"][0]
+    projects_by_id = {row["project_id"]: row for row in database.tables["projects"]}
+    donors_by_id = {row["donor_id"]: row for row in database.tables["donors"]}
+    context.update(
+        {
+            "person_lookup": app_module.build_person_lookup([person]),
+            "location_lookup": app_module.build_location_lookup([location]),
+            "project_lookup": app_module.build_project_lookup(database.tables["projects"]),
+            "donor_lookup": app_module.build_donor_lookup(database.tables["donors"]),
+            "supports_asset_project_purchase_origin": True,
+        }
+    )
+    for assignment in database.tables["asset_assignments"]:
+        context["assignment_by_asset_id"][assignment["asset_id"]] = {
+            **assignment,
+            "responsible_person": person["name_eng"],
+            "location_name": location["city"],
+        }
+    for asset_project in database.tables["asset_projects"]:
+        project = projects_by_id[asset_project["project_id"]]
+        donor = donors_by_id.get(asset_project.get("donor_id"), {})
+        context["projects_by_asset_id"].setdefault(asset_project["asset_id"], []).append(
+            {
+                **asset_project,
+                "project_number": project["project_number"],
+                "donor_name": donor.get("donor_name"),
+            }
+        )
+    for payment in database.tables["asset_payments"]:
+        context["payments_by_asset_id"].setdefault(payment["asset_id"], []).append(payment)
+    for transfer in database.tables["asset_transfers"]:
+        context["transfers_by_id"][transfer["transfer_id"]] = transfer
+        if transfer.get("transfer_reason") == app_module.REGISTRATION_TRANSFER_REASON:
+            context["registration_asset_ids"].add(transfer["asset_id"])
+    return context
+
+
 def configure_stateful_excel_apply(app_module, monkeypatch, database):
     monkeypatch.setattr(app_module, "supabase", database)
     monkeypatch.setattr(app_module, "validate_sync_preview_ownership", lambda *args, **kwargs: None)
@@ -1047,6 +1087,7 @@ def test_excel_new_asset_success_keeps_complete_durable_state(app_module, monkey
     }
     assert [row["asset_id"] for row in database.tables["assets"]] == [401]
     assert [row["asset_id"] for row in database.tables["asset_assignments"]] == [401]
+    assert "assignment_scope" not in database.tables["asset_assignments"][0]
     assert [row["asset_id"] for row in database.tables["asset_projects"]] == [401]
     assert [row["asset_id"] for row in database.tables["asset_payments"]] == [401]
     assert len(database.tables["asset_transfers"]) == 1
@@ -1054,6 +1095,266 @@ def test_excel_new_asset_success_keeps_complete_durable_state(app_module, monkey
     assert database.tables["asset_transfers"][0]["transfer_id"] == 701
     assert database.tables["asset_transfers"][0]["tenant_id"] == app_module.DEFAULT_TENANT_ID
     assert {row["entity_type"] for row in database.tables["audit_log"]} == {"Asset", "Transfer"}
+
+
+@pytest.mark.parametrize(
+    ("raw_scope", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("PERSONAL", "personal"),
+        (" Personal ", "personal"),
+        ("department_shared", "department_shared"),
+        ("WAREHOUSE", "warehouse"),
+    ],
+)
+def test_excel_assignment_scope_normalization_is_optional_and_strict(
+    app_module,
+    raw_scope,
+    expected,
+):
+    record = app_module.normalize_excel_asset_record(
+        {
+            "asset_tag_number": "SYN-HELP-0502",
+            "assignment_scope": raw_scope,
+        }
+    )
+
+    assert record["assignment_scope"] == expected
+
+
+def test_excel_assignment_type_header_is_parsed_from_workbook(app_module, tmp_path):
+    from openpyxl import Workbook
+
+    workbook_path = tmp_path / "assignment-scope.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = app_module.EXCEL_SYNC_SHEET_NAME
+    sheet.cell(row=8, column=1).value = "Asset Tag No. / Inventory Code\n(new standardised system)"
+    sheet.cell(row=8, column=2).value = "Assignment type"
+    sheet.cell(row=9, column=1).value = "SYN-HELP-0502"
+    sheet.cell(row=9, column=2).value = " Department_Shared "
+    workbook.save(workbook_path)
+
+    records = app_module.load_excel_sync_sheet_rows(
+        str(workbook_path),
+        app_module.EXCEL_SYNC_SHEET_NAME,
+        "standard",
+        required=True,
+    )
+
+    assert len(records) == 1
+    assert records[0]["assignment_scope"] == "department_shared"
+
+
+def test_excel_export_exposes_assignment_scope_only_when_optional_header_exists(
+    app_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        app_module,
+        "list_asset_records",
+        lambda request=None: [
+            {
+                "asset_id": 501,
+                "asset_tag_number": "SYN-HELP-0502",
+                "usage_type": "standard",
+            }
+        ],
+    )
+    context = empty_sync_context()
+    context["assignment_by_asset_id"][501] = {
+        "assignment_scope": "department_shared",
+        "responsible_person": "Vasyl Panasenko",
+        "department": "PROGRAM",
+        "city": "Mykolaiv",
+    }
+    monkeypatch.setattr(app_module, "build_sync_context", lambda request=None: context)
+
+    records = app_module.build_database_excel_records("standard", request=make_admin_request())
+
+    assert records[0]["assignment_scope"] == "department_shared"
+    assert app_module.resolve_excel_header_field("Assignment type") == "assignment_scope"
+
+
+def test_excel_invalid_assignment_scope_fails_before_any_mutation(app_module, monkeypatch):
+    database = StatefulSupabase(app_module.REGISTRATION_TRANSFER_REASON)
+    database.tables["tenants"] = [
+        {"tenant_id": app_module.DEFAULT_TENANT_ID, "status": "active"}
+    ]
+    monkeypatch.setattr(app_module, "supabase", database)
+    request = make_admin_request()
+
+    with pytest.raises(
+        ValueError,
+        match=r"SYN-HELP-0502.*invalid Assignment type 'shared'",
+    ):
+        app_module.apply_sync_preview(
+            {
+                "tenant_id": app_module.DEFAULT_TENANT_ID,
+                "new_records": [
+                    {
+                        "asset_tag_number": "SYN-HELP-0502",
+                        "assignment_scope": "shared",
+                    }
+                ],
+                "changed_records": [],
+                "transfer_log": {"new_records": []},
+            },
+            request,
+        )
+
+    assert not any(
+        operation["action"] in {"insert", "update", "delete"}
+        for operation in database.operations
+    )
+    assert all(not rows for table, rows in database.tables.items() if table != "tenants")
+
+
+def test_excel_help_0502_creation_persists_authoritative_assignment_scope_and_graph(
+    app_module,
+    monkeypatch,
+):
+    tenant_id = app_module.DEFAULT_TENANT_ID
+    database = StatefulSupabase(app_module.REGISTRATION_TRANSFER_REASON)
+    database.tables["tenants"] = [{"tenant_id": tenant_id, "status": "active"}]
+    database.tables["persons"] = [
+        {
+            "person_id": 14,
+            "name_eng": "Vasyl Panasenko",
+            "department": "PROGRAM",
+            "tenant_id": tenant_id,
+        }
+    ]
+    database.tables["locations"] = [
+        {
+            "location_id": 30,
+            "city": "Mykolaiv",
+            "department": "PROGRAM",
+            "tenant_id": tenant_id,
+        }
+    ]
+    database.tables["projects"] = [
+        {"project_id": 4, "project_number": "UKR-011", "tenant_id": tenant_id},
+        {"project_id": 5, "project_number": "UKR-018", "tenant_id": tenant_id},
+    ]
+    database.tables["donors"] = [
+        {"donor_id": 2, "donor_name": "ADH", "tenant_id": tenant_id}
+    ]
+    monkeypatch.setattr(app_module, "supabase", database)
+    monkeypatch.setattr(
+        app_module,
+        "build_sync_context",
+        lambda request=None: build_help_0502_sync_context(app_module, database),
+    )
+    request = make_admin_request()
+    description = (
+        "Type: Multi-functional unit (Printer/Scan/Photocopier)\n"
+        "Wi-Fi® Direct\n"
+        "Print speed:\n"
+        "Single-sided - Up to 42 ppm (A4)\n"
+        "Printing method:\n"
+        "Monochrome laser printing"
+    )
+    record = app_module.normalize_excel_asset_record(
+        {
+            "asset_tag_number": "SYN-HELP-0502",
+            "asset_classification": "IT",
+            "asset_sub_classification": "Multi-functional unit (Printer/Scan/Photocopier)",
+            "item_description": description,
+            "brand_make": "HP",
+            "model": "LaserJet Pro 4103fdw (2Z629A)",
+            "serial_number": "SYN-CNBRQ2L9MV",
+            "quantity": 1,
+            "purchase_price": 555.152678,
+            "currency": "EUR",
+            "current_status": "functional",
+            "remarks": "40325.00 UAH - 29.02.2024",
+            "location_name": "Mykolaiv",
+            "department_name": "PROGRAM",
+            "recipient_name": "Vasyl Panasenko",
+            "assignment_scope": "department_shared",
+            "purchased_project_no": "UKR-011",
+            "purchased_donor_name": "ADH",
+            "transferred_project_no": "UKR-018",
+            "transferred_donor_name": "ADH",
+            "last_transfer_date": "2025-06-15",
+        },
+        usage_type="standard",
+        source_sheet=app_module.EXCEL_SYNC_SHEET_NAME,
+    )
+    record["_has_recipient_column"] = True
+    record["_has_project_column"] = True
+
+    result = app_module.apply_sync_preview(
+        stateful_excel_preview(app_module, [record]),
+        request,
+    )
+
+    assert result == {
+        "inserted": 1,
+        "updated": 0,
+        "assignment_updated": 1,
+        "project_updated": 2,
+        "payment_updated": 1,
+        "transfer_updated": 0,
+        "skipped_relationships": 0,
+    }
+    assert len(database.tables["assets"]) == 1
+    asset = database.tables["assets"][0]
+    assert asset["item_description"] == description
+    assert "Wi-Fi® Direct" in asset["item_description"]
+
+    assert len(database.tables["asset_assignments"]) == 1
+    assignment = database.tables["asset_assignments"][0]
+    assert assignment["person_id"] == 14
+    assert assignment["location_id"] == 30
+    assert assignment["assignment_date"] == "2025-06-15"
+    assert assignment["assignment_scope"] == "department_shared"
+    assert assignment["return_date"] is None
+    assert not any(row.get("assignment_scope") == "personal" for row in database.tables["asset_assignments"])
+
+    assert len(database.tables["asset_projects"]) == 2
+    projects = {row["project_id"]: row for row in database.tables["asset_projects"]}
+    assert projects[4]["donor_id"] == 2
+    assert projects[4]["is_purchase_origin"] is True
+    assert projects[4]["is_current"] is False
+    assert projects[5]["donor_id"] == 2
+    assert projects[5]["is_purchase_origin"] is False
+    assert projects[5]["is_current"] is True
+
+    assert len(database.tables["asset_payments"]) == 1
+    payment = database.tables["asset_payments"][0]
+    assert payment["payment_amount"] == 40325.0
+    assert payment["currency"] == "UAH"
+    assert payment["payment_date"] == "2024-02-29"
+    assert payment["payment_status"] == "paid"
+
+    assert len(database.tables["asset_transfers"]) == 1
+    transfer = database.tables["asset_transfers"][0]
+    assert transfer["transfer_reason"] == app_module.REGISTRATION_TRANSFER_REASON
+    assert transfer["from_holder_name"] == "Supplier"
+    assert transfer["to_person_id"] == 14
+    assert transfer["to_location_id"] == 30
+    assert transfer["to_holder_name"] == "Vasyl Panasenko"
+    assert transfer["transfer_date"] == "2025-06-15"
+    assert transfer["from_project_raw"] == "UKR-018"
+    assert transfer["to_project_raw"] == "UKR-018"
+    assert transfer["asset_status"] == "functional"
+
+    transfer_projects = database.tables["asset_transfer_projects"]
+    assert len(transfer_projects) == 2
+    assert {row["direction"] for row in transfer_projects} == {"from", "to"}
+    assert all(row["project_id"] == 5 for row in transfer_projects)
+    assert all(row["project_number_raw"] == "UKR-018" for row in transfer_projects)
+    assert all(row["allocation_percent"] == 100 for row in transfer_projects)
+
+    assert {row["entity_type"] for row in database.tables["audit_log"]} == {"Asset", "Transfer"}
+    assert not any(
+        row.get("transfer_reason") == "Initial assignment set during asset creation"
+        for row in database.tables["asset_transfers"]
+    )
 
 
 def test_excel_first_asset_registration_failure_compensates_all_created_state(
@@ -1512,6 +1813,7 @@ def test_tenant_two_sync_assignment_uses_tenant_parents_and_payload(app_module, 
             "location_name": "Synthetic City",
             "department_name": "PROGRAM",
             "current_status": "functional",
+            "assignment_scope": "department_shared",
         },
         context,
         request,
@@ -1527,6 +1829,7 @@ def test_tenant_two_sync_assignment_uses_tenant_parents_and_payload(app_module, 
     ]
     assert applied == 1
     assert assignment_insert["payload"]["tenant_id"] == TENANT_TWO_ID
+    assert "assignment_scope" not in assignment_insert["payload"]
     assert all(("eq", "tenant_id", TENANT_TWO_ID) in operation["filters"] for operation in parent_selects)
 
 
